@@ -39,13 +39,16 @@ built here (no WebKit/audio toolchain in the audit sandbox); findings come from 
 ## Open question
 `database/manager.rs` auto-copies a legacy `meeting_minutes.db` into the app dir; remove with the rebrand.
 
-## M0 status (branch `m0-safety-cleanup`, written without compiling the Tauri app -- run `cargo check` first)
+## M0 status (branch `remove-telemetry-updater`; Rust parts are unverified until you run `cargo check`, frontend type-checks with `tsc`)
 Done:
-- Telemetry hard-disabled at its single choke point (`analytics/commands.rs`: empty key, no host, `enabled: false`).
-  All `track_*` calls become no-ops. **Still to do:** delete the `analytics/` module, `posthog-rs`, and the ~30 frontend call sites/UI.
-- Updater neutralized in `tauri.conf.json` (`endpoints: []`, `createUpdaterArtifacts: false`) so the app can never be replaced by upstream Meetily builds.
-  **Still to do:** remove the plugin registration (`lib.rs`), the `updater:default` capability, the Cargo dependency, and `Update*` UI; the update check will now error until then.
-- Deleted `backend/` (+ `.gitmodules`), `lib_old_complex.rs`, `audio/core-old.rs`, `audio/recording_saver_old.rs`, `recording_commands.rs.backup`,
-  `frontend/build_backup.bat`, `frontend/vs_buildtools.exe`, `src-tauri/logs/`. None were referenced by `mod` declarations or CI; two test paths in
-  `audio/import.rs` pointed at `backend/whisper.cpp/samples` (check those tests still behave as you expect).
-Not done: rebrand, license/PRO removal, keychain for API keys, encrypted DB, CSP tightening.
+- **Telemetry removed.** Deleted the Rust `analytics/` module, the PostHog dependency, all `analytics::commands::*` registrations and the
+  meeting-ended tracking block in `audio/recording_commands.rs`. Frontend: deleted the analytics provider/consent switch/data modal and
+  replaced `lib/analytics.ts` with an inert no-op shim so the ~100 remaining call sites compile. **Follow-up:** delete those call sites, then the shim.
+- **Updater removed.** Deleted the `tauri-plugin-updater` dependency and registration, the `updater:default` permission, the `plugins.updater` config and
+  `createUpdaterArtifacts`; frontend update dialog/notification/provider/service/hook removed and `@tauri-apps/plugin-updater` dropped from `package.json`.
+  **Follow-up:** CI release workflows and `scripts/*update*` still reference updater manifests.
+- Deleted legacy `backend/`, dead `*_old` files, committed binaries and logs (earlier commit).
+- Rebrand to Matchwise (earlier commit). `About.tsx` rewritten (no upstream marketing or links).
+- Lockfiles: run `cargo check` (prunes `posthog-rs`/updater entries from `Cargo.lock`) and `pnpm install` (prunes `plugin-updater` from `pnpm-lock.yaml`), then commit the lock changes.
+
+Not done: license/PRO removal (`api/api.rs`, licensing migrations), keychain for API keys, encrypted DB, CSP tightening, CI cleanup.
