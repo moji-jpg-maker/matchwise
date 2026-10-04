@@ -51,4 +51,9 @@ Done:
 - Rebrand to Matchwise (earlier commit). `About.tsx` rewritten (no upstream marketing or links).
 - Lockfiles: run `cargo check` (prunes `posthog-rs`/updater entries from `Cargo.lock`) and `pnpm install` (prunes `plugin-updater` from `pnpm-lock.yaml`), then commit the lock changes.
 
-Not done: license/PRO removal (`api/api.rs`, licensing migrations), keychain for API keys, encrypted DB, CSP tightening, CI cleanup.
+- **License/PRO code removed** (branch `remove-license`, unverified until `cargo check`): deleted the `api_get_profile` / `api_save_profile` / `api_update_profile`
+  commands, their request/response structs and the now-unused `make_api_request` helper (they only called the removed localhost:5167 backend).
+  Existing migrations are left untouched (editing applied migrations breaks checksum validation on existing dev databases); the new migration
+  `20261004000000_drop_licensing.sql` drops the `licensing` table. CI no longer passes `MEETILY_RSA_PUBLIC_KEY` / `SUPABASE_*`.
+
+Not done: keychain for API keys, encrypted DB, CSP tightening (remove `localhost:5167/8178`), release workflow/updater manifest scripts, shim call-site cleanup.
