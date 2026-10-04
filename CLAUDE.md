@@ -4,11 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Meetily** is a privacy-first AI meeting assistant that captures, transcribes, and summarizes meetings entirely on local infrastructure. The supported application is the Tauri desktop app with a Rust core.
+**Matchwise** is a privacy-first, AI-assisted matchmaking desktop platform for human matchmakers. It is a fork of the
+MIT-licensed Meetily meeting assistant (see `LICENSE.md`); the Tauri desktop shell, Rust core, SQLite persistence and LLM
+provider layer are inherited, and meeting-specific features (audio capture, transcription) are being phased out or repurposed.
+Planning docs: `docs/matchmaking/PLAN.md` (roadmap) and `docs/matchmaking/M0_AUDIT.md` (fork audit and cleanup status).
 
-1. **Frontend**: Tauri-based desktop application (Rust + Next.js + TypeScript)
-2. **Rust Backend**: Tauri commands, audio capture, transcription, storage, and summarization orchestration
-3. **Legacy Backend Archive**: the old Python/FastAPI, Docker, and standalone whisper-server backend under `backend/` is archived and unsupported
+1. **Frontend**: Tauri desktop app, Next.js + TypeScript in `frontend/src/`
+2. **Rust app core**: `frontend/src-tauri/` (Tauri commands/events, sqlx + SQLite, LLM orchestration)
+3. **`matchmaking-core/`**: pure-Rust domain engine (field registry, profiles with provenance, three-valued rule engine).
+   It must not depend on Tauri, SQLite, Telegram, or any LLM provider. Build/test it with `cargo test -p matchmaking-core`.
+
+### Matchwise conventions
+- Missing information is `Unknown`, never silently treated as pass or fail.
+- AI-inferred values must carry `Provenance::AiInferred` and must never overwrite user/matchmaker data.
+- Profile data is sensitive: no telemetry, no hard-coded endpoints, secrets belong in the OS keychain, cloud-LLM calls need explicit consent.
+- Inherited Meetily code is being removed in stages; do not build new features on `analytics/`, the updater, or license code.
 
 ### Key Technology Stack
 - **Desktop App**: Tauri 2.x (Rust) + Next.js 14 + React 18

@@ -1,4 +1,4 @@
-# Matchmaking Platform -- MVP & Phased Roadmap (revised)
+# Matchwise -- MVP & Phased Roadmap (revised)
 
 Revision of the original plan after auditing the fork. Original feature scope is unchanged; **changes are marked
 `[CHANGED]` or `[NEW]`**. See `M0_AUDIT.md` for evidence.
