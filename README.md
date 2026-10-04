@@ -26,6 +26,12 @@ docs/                 plan, audit, and inherited build documentation
 Build instructions inherited from the upstream base are in [`docs/BUILDING.md`](docs/BUILDING.md) and
 [`docs/building_in_linux.md`](docs/building_in_linux.md) (some content still refers to the old product name).
 
+The app database is encrypted. On Linux/WSL, install `libdbus-1-dev`, `perl` and `make` to build, and either run a Secret Service
+(gnome-keyring) or provide a key yourself before starting the app:
+```bash
+export MATCHWISE_DB_KEY=$(openssl rand -hex 32)   # keep a copy; without it the database cannot be read
+```
+
 ```bash
 cargo test -p matchmaking-core          # engine tests
 cd frontend && pnpm install && pnpm run tauri:dev

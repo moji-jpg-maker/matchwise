@@ -17,7 +17,7 @@ Planning docs: `docs/matchmaking/PLAN.md` (roadmap) and `docs/matchmaking/M0_AUD
 ### Matchwise conventions
 - Missing information is `Unknown`, never silently treated as pass or fail.
 - AI-inferred values must carry `Provenance::AiInferred` and must never overwrite user/matchmaker data.
-- Profile data is sensitive: no telemetry, no hard-coded endpoints, secrets belong in the OS keychain, cloud-LLM calls need explicit consent.
+- Profile data is sensitive: no telemetry, no hard-coded endpoints, the database is SQLCipher-encrypted with a key held in the OS credential store (`database/encryption.rs`; `MATCHWISE_DB_KEY` override), cloud-LLM calls need explicit consent.
 - Inherited Meetily code is being removed in stages; do not build new features on `analytics/`, the updater, or license code.
 
 ### Key Technology Stack

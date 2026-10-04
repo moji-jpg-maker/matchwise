@@ -1,4 +1,7 @@
-use sqlx::{migrate::MigrateDatabase, Result, Sqlite, SqlitePool, Transaction};
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{Result, Sqlite, SqlitePool, Transaction};
+
+use super::encryption;
 use std::fs;
 use std::path::Path;
 use tauri::Manager;
@@ -16,21 +19,36 @@ impl DatabaseManager {
             }
         }
 
-        if !Path::new(tauri_db_path).exists() {
-            if Path::new(backend_db_path).exists() {
-                log::info!(
-                    "Copying database from {} to {}",
-                    backend_db_path,
-                    tauri_db_path
-                );
-                fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
-            } else {
-                log::info!("Creating database at {}", tauri_db_path);
-                Sqlite::create_database(tauri_db_path).await?;
-            }
+        // A legacy plaintext database (imported from an older install) is copied into place first and
+        // converted to an encrypted database below.
+        if !Path::new(tauri_db_path).exists() && Path::new(backend_db_path).exists() {
+            log::info!(
+                "Copying database from {} to {}",
+                backend_db_path,
+                tauri_db_path
+            );
+            fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
         }
 
-        let pool = SqlitePool::connect(tauri_db_path).await?;
+        let db_path = Path::new(tauri_db_path);
+        let plaintext = encryption::is_plaintext_sqlite(db_path).map_err(sqlx::Error::Io)?;
+        let existing_encrypted = !plaintext
+            && fs::metadata(db_path).map(|m| m.len() > 0).unwrap_or(false);
+
+        // Only create a brand-new key when there is no encrypted database that depends on an old one.
+        let key = encryption::database_key(!existing_encrypted)
+            .map_err(|e| sqlx::Error::Configuration(e.into()))?;
+
+        if plaintext {
+            log::warn!("Plaintext database found; converting to an encrypted database");
+            encryption::encrypt_in_place(db_path, &key).await?;
+        }
+
+        let options = SqliteConnectOptions::new()
+            .filename(db_path)
+            .create_if_missing(true)
+            .pragma("key", encryption::key_pragma_value(&key));
+        let pool = SqlitePool::connect_with(options).await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
 

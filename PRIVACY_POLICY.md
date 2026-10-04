@@ -4,7 +4,7 @@ This draft describes how the code currently behaves. It is not legal advice; hav
 (for example GDPR if you handle EU residents' data) before collecting real profiles.
 
 - **Storage.** Profile and application data is stored locally on the device running Matchwise.
-  (Database encryption at rest is planned but not yet implemented.)
+  The database is encrypted at rest (SQLCipher); its key is kept in the operating system's credential store, or supplied through the `MATCHWISE_DB_KEY` environment variable. Backups and exports are not yet encrypted separately.
 - **Telemetry.** Matchwise sends no analytics. The inherited analytics code has been disabled and is scheduled for removal.
 - **AI providers.** If you configure an LLM provider, text you submit to it is sent to that provider under its own terms.
   A local provider (for example Ollama) keeps data on your machine.

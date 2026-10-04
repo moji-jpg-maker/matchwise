@@ -56,4 +56,15 @@ Done:
   Existing migrations are left untouched (editing applied migrations breaks checksum validation on existing dev databases); the new migration
   `20261004000000_drop_licensing.sql` drops the `licensing` table. CI no longer passes `MEETILY_RSA_PUBLIC_KEY` / `SUPABASE_*`.
 
-Not done: keychain for API keys, encrypted DB, CSP tightening (remove `localhost:5167/8178`), release workflow/updater manifest scripts, shim call-site cleanup.
+- **CSP tightened** (`tauri.conf.json`): `connect-src 'self'` only (the frontend makes no network requests; all HTTP is done in Rust), plus `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`.
+- **Database encrypted at rest** (SQLCipher, via `libsqlite3-sys` `bundled-sqlcipher-vendored-openssl` alongside sqlx's bundled `sqlite` feature).
+  Revised design: instead of moving each API key into the OS keychain, one random 256-bit master key lives in the OS credential store
+  (Windows Credential Manager / macOS Keychain / Linux Secret Service) and encrypts the whole database, so API keys, profiles and everything else are protected together.
+  - `MATCHWISE_DB_KEY` (64 hex chars) overrides the credential store: needed on WSL/headless Linux without a Secret Service daemon.
+  - A new key is created only when no encrypted database exists; if the key is lost the data is unrecoverable by design.
+  - An existing plaintext database (old dev DB or imported legacy DB) is converted automatically; the plaintext original is kept as `<db>.plaintext.bak`
+    and **must be deleted by you** once verified. Verified in a scratch crate: conversion, user_version, wrong-key rejection.
+  - Build requirements: `perl` and `make` (vendored OpenSSL); Linux also needs the D-Bus dev package (`libdbus-1-dev`) for the keyring crate.
+    Windows-native builds of vendored OpenSSL additionally need Strawberry Perl and NASM (untested). `sqlx`'s `sqlite-unbundled` must not be enabled.
+
+Not done: encrypted photo storage (no photo feature yet), release workflow/updater manifest scripts, shim call-site cleanup, legacy-import UI removal.
