@@ -38,3 +38,14 @@ built here (no WebKit/audio toolchain in the audit sandbox); findings come from 
 
 ## Open question
 `database/manager.rs` auto-copies a legacy `meeting_minutes.db` into the app dir; remove with the rebrand.
+
+## M0 status (branch `m0-safety-cleanup`, written without compiling the Tauri app -- run `cargo check` first)
+Done:
+- Telemetry hard-disabled at its single choke point (`analytics/commands.rs`: empty key, no host, `enabled: false`).
+  All `track_*` calls become no-ops. **Still to do:** delete the `analytics/` module, `posthog-rs`, and the ~30 frontend call sites/UI.
+- Updater neutralized in `tauri.conf.json` (`endpoints: []`, `createUpdaterArtifacts: false`) so the app can never be replaced by upstream Meetily builds.
+  **Still to do:** remove the plugin registration (`lib.rs`), the `updater:default` capability, the Cargo dependency, and `Update*` UI; the update check will now error until then.
+- Deleted `backend/` (+ `.gitmodules`), `lib_old_complex.rs`, `audio/core-old.rs`, `audio/recording_saver_old.rs`, `recording_commands.rs.backup`,
+  `frontend/build_backup.bat`, `frontend/vs_buildtools.exe`, `src-tauri/logs/`. None were referenced by `mod` declarations or CI; two test paths in
+  `audio/import.rs` pointed at `backend/whisper.cpp/samples` (check those tests still behave as you expect).
+Not done: rebrand, license/PRO removal, keychain for API keys, encrypted DB, CSP tightening.

@@ -9,9 +9,12 @@ static ANALYTICS_CLIENT: std::sync::Mutex<Option<Arc<AnalyticsClient>>> = std::s
 #[command]
 pub async fn init_analytics() -> Result<(), String> {
     let config = AnalyticsConfig {
-        api_key: "phc_ohznXPkRSJYWmrfez9mYxtXv5U5Nekq3iiUts87dJfcr".to_string(),
-        host: Some("https://us.i.posthog.com".to_string()),
-        enabled: true,
+        // Telemetry is hard-disabled in this fork: no key, no host, never enabled.
+        // AnalyticsClient::new only builds a PostHog client when enabled && key is non-empty,
+        // so every track_* call becomes a no-op. Full removal of the module is a follow-up.
+        api_key: String::new(),
+        host: None,
+        enabled: false,
     };
     
     let client = Arc::new(AnalyticsClient::new(config).await);
