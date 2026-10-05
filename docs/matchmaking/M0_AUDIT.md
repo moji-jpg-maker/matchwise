@@ -67,4 +67,22 @@ Done:
   - Build requirements: `perl` and `make` (vendored OpenSSL); Linux also needs the D-Bus dev package (`libdbus-1-dev`) for the keyring crate.
     Windows-native builds of vendored OpenSSL additionally need Strawberry Perl and NASM (untested). `sqlx`'s `sqlite-unbundled` must not be enabled.
 
+- **Encryption review fixes** (branch `fix-encryption-review`):
+  - Conversion is now crash-safe. The plaintext original is never renamed away: the encrypted copy is built and verified first
+    (key opens it, `integrity_check`, `user_version`, per-table row counts), the plaintext is *copied* to `.plaintext.bak` and compared byte-for-byte,
+    and only then is the encrypted file atomically renamed over the database. A crash at any step leaves a complete database at the path;
+    a stale `.enc.tmp` is discarded and an identical `.bak` is reused on the next start. A `.bak` that differs from the database blocks
+    conversion with an error instead of being overwritten.
+  - `database::encryption::open_database` is now the single entry point used by `DatabaseManager::new`. For an existing encrypted database it asks for the
+    key with creation disabled, and proves the key opens the file (read-only) *before* connecting or migrating; on failure it returns an error and
+    modifies nothing. It also refuses to start a new empty database when a `.plaintext.bak` exists but the database is missing.
+  - Tests now cover that real path (10 tests): fresh install, conversion, wrong key (directory byte-for-byte unchanged), missing key, interrupted conversion,
+    conflicting backup, missing database next to a backup, row-count verification, and a compile-time check that the future is `Send`.
+    They run in a scratch crate here; in the app they run with `cargo test` (`database::encryption::tests`). What remains untested: the OS credential-store
+    branch (needs a real Secret Service/Keychain/Credential Manager) and `DatabaseManager::new` itself (needs the migrations and a Tauri build).
+  - CSP: `asset.localhost` appears only in `img-src`, unchanged from upstream; upstream's `connect-src` never allowed it either, and the frontend does not
+    use `convertFileSrc` or asset URLs for audio (it uses `AudioContext`). So this change removed no asset access, but the running app still needs a
+    manual check: open the WebView devtools console, exercise onboarding, settings, a recording playback and the summary editor, and confirm there are no
+    "Refused to ..." CSP messages.
+
 Not done: encrypted photo storage (no photo feature yet), release workflow/updater manifest scripts, shim call-site cleanup, legacy-import UI removal.

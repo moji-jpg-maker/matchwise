@@ -1,4 +1,3 @@
-use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Result, Sqlite, SqlitePool, Transaction};
 
 use super::encryption;
@@ -30,25 +29,9 @@ impl DatabaseManager {
             fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
         }
 
-        let db_path = Path::new(tauri_db_path);
-        let plaintext = encryption::is_plaintext_sqlite(db_path).map_err(sqlx::Error::Io)?;
-        let existing_encrypted = !plaintext
-            && fs::metadata(db_path).map(|m| m.len() > 0).unwrap_or(false);
-
-        // Only create a brand-new key when there is no encrypted database that depends on an old one.
-        let key = encryption::database_key(!existing_encrypted)
-            .map_err(|e| sqlx::Error::Configuration(e.into()))?;
-
-        if plaintext {
-            log::warn!("Plaintext database found; converting to an encrypted database");
-            encryption::encrypt_in_place(db_path, &key).await?;
-        }
-
-        let options = SqliteConnectOptions::new()
-            .filename(db_path)
-            .create_if_missing(true)
-            .pragma("key", encryption::key_pragma_value(&key));
-        let pool = SqlitePool::connect_with(options).await?;
+        // Single entry point: creates, converts, or opens the encrypted database, and refuses (without
+        // modifying anything) if the available key does not open an existing database.
+        let pool = encryption::open_database(Path::new(tauri_db_path), &encryption::database_key).await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
 
