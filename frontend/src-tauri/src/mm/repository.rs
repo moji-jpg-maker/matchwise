@@ -1,8 +1,11 @@
 use chrono::Utc;
-use matchmaking_core::{FieldDef, FieldRegistry, Profile};
+use matchmaking_core::{FieldDef, FieldRegistry, Preference, Profile};
 use sqlx::{Row, SqlitePool};
 
 pub const ORG: &str = "default";
+
+/// Version of the default field set. v1 = first M1 release (no `children`), v2 = adds `children`, curated order.
+const FIELD_SEED_VERSION: i64 = 2;
 
 pub struct MmRepository;
 
@@ -18,16 +21,48 @@ fn bad(msg: impl Into<String>) -> sqlx::Error {
 }
 
 impl MmRepository {
-    /// Load the field registry, seeding the default field set the first time.
+    /// Load the field registry. Default fields are seeded (insert-or-ignore, so a matchmaker's edits to an
+    /// existing field are never overwritten) whenever the stored seed version is older than
+    /// `FIELD_SEED_VERSION`. Bump that constant when the default set gains a field.
     pub async fn registry(pool: &SqlitePool) -> Result<FieldRegistry, sqlx::Error> {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mm_field_definitions WHERE org_id = ?")
+        let seeded: i64 = sqlx::query_scalar::<_, String>("SELECT value FROM mm_meta WHERE org_id = ? AND key = 'fields_seed_version'")
             .bind(ORG)
-            .fetch_one(pool)
-            .await?;
-        if count == 0 {
-            for (i, def) in matchmaking_core::default_registry().defs().enumerate() {
-                Self::save_field(pool, def, i as i64).await?;
+            .fetch_optional(pool)
+            .await?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if seeded < FIELD_SEED_VERSION {
+            let defaults = matchmaking_core::default_registry();
+            let mut tx = pool.begin().await?;
+            for (i, def) in defaults.defs().enumerate() {
+                let json = serde_json::to_string(def).map_err(|e| bad(e.to_string()))?;
+                sqlx::query("INSERT OR IGNORE INTO mm_field_definitions (org_id, key, definition, sort_order) VALUES (?, ?, ?, ?)")
+                    .bind(ORG)
+                    .bind(&def.key)
+                    .bind(json)
+                    .bind(i as i64)
+                    .execute(&mut *tx)
+                    .await?;
+                // Default fields follow the curated order (earlier versions sorted them alphabetically).
+                sqlx::query("UPDATE mm_field_definitions SET sort_order = ? WHERE org_id = ? AND key = ?")
+                    .bind(i as i64)
+                    .bind(ORG)
+                    .bind(&def.key)
+                    .execute(&mut *tx)
+                    .await?;
             }
+            // Matchmaker-defined fields come after the defaults.
+            sqlx::query("UPDATE mm_field_definitions SET sort_order = sort_order + 1000 WHERE org_id = ? AND sort_order < 1000 AND key NOT IN (SELECT value FROM json_each(?))")
+                .bind(ORG)
+                .bind(serde_json::to_string(&defaults.keys().collect::<Vec<_>>()).map_err(|e| bad(e.to_string()))?)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("INSERT INTO mm_meta (org_id, key, value) VALUES (?, 'fields_seed_version', ?) ON CONFLICT(org_id, key) DO UPDATE SET value = excluded.value")
+                .bind(ORG)
+                .bind(FIELD_SEED_VERSION.to_string())
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
         }
         let rows = sqlx::query("SELECT definition FROM mm_field_definitions WHERE org_id = ? ORDER BY sort_order, key")
             .bind(ORG)
@@ -140,6 +175,33 @@ impl MmRepository {
             .execute(pool)
             .await?;
         Ok(r.rows_affected())
+    }
+
+    pub async fn get_preferences(pool: &SqlitePool, profile_id: &str) -> Result<Vec<Preference>, sqlx::Error> {
+        let data: Option<String> = sqlx::query_scalar("SELECT data FROM mm_preferences WHERE profile_id = ? AND org_id = ?")
+            .bind(profile_id)
+            .bind(ORG)
+            .fetch_optional(pool)
+            .await?;
+        match data {
+            Some(d) => serde_json::from_str(&d).map_err(|e| bad(format!("preferences of {profile_id}: {e}"))),
+            None => Ok(vec![]),
+        }
+    }
+
+    pub async fn save_preferences(pool: &SqlitePool, profile_id: &str, prefs: &[Preference]) -> Result<(), sqlx::Error> {
+        let data = serde_json::to_string(prefs).map_err(|e| bad(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO mm_preferences (profile_id, org_id, data, updated_at) VALUES (?, ?, ?, ?)
+             ON CONFLICT(profile_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+        )
+        .bind(profile_id)
+        .bind(ORG)
+        .bind(data)
+        .bind(Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     /// Append an audit entry. `detail` must never contain field values.

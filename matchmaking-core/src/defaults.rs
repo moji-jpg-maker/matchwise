@@ -34,6 +34,13 @@ pub fn default_registry() -> FieldRegistry {
         f("marital_status", "Marriage history", choice(&["never_married", "divorced", "widowed", "separated"]), false, true),
         f("has_children", "Has children", Bool, false, true),
         f("children_count", "Number of children", Number, false, false),
+        f("children", "Children (details)", Records(vec![
+            f("gender", "Gender", choice(&["female", "male"]), false, false),
+            f("age", "Age", Number, false, false),
+            f("custody", "Custody", choice(&["with_me", "shared", "with_other_parent", "other"]), false, false),
+            f("living_arrangement", "Currently living", choice(&["with_me", "with_other_parent", "boarding_or_school", "independent", "other"]), false, false),
+            f("notes", "Other circumstances", Text, false, false),
+        ]), true, false),
         f("accepts_children", "Accepts a partner's children", Bool, false, false),
         f("siblings_count", "Number of siblings", Number, false, false),
         f("father_occupation", "Father's occupation", Text, false, false),

@@ -1,7 +1,8 @@
 use super::repository::{MmRepository, StoredProfile};
 use crate::state::AppState;
 use matchmaking_core::{
-    conditions_to_expr, search, Condition, FieldDef, FieldKind, Profile, Provenance, ValidationIssue, Value,
+    conditions_to_expr, evaluate_preferences, preferences_to_ruleset, search, validate_preference, Condition, FieldDef,
+    FieldKind, MatchOutcome, Preference, Profile, Provenance, ValidationIssue, Value,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -215,8 +216,12 @@ pub async fn mm_search_profiles(
     let pool = state.db_manager.pool();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     for c in &conditions {
-        if reg.get(&c.field).is_none() {
-            return Err(format!("unknown field '{}'", c.field));
+        match reg.get(&c.field) {
+            None => return Err(format!("unknown field '{}'", c.field)),
+            Some(d) if matches!(d.kind, FieldKind::Records(_)) => {
+                return Err(format!("'{}' cannot be used as a search condition", d.label))
+            }
+            Some(_) => {}
         }
     }
     let filter = conditions_to_expr(&conditions)?;
@@ -257,4 +262,58 @@ pub async fn mm_delete_profile(state: State<'_, AppState>, id: String) -> Result
     }
     MmRepository::audit(pool, "delete", "profile", &id, None).await;
     Ok(())
+}
+
+const MAX_PREFERENCES: usize = 100;
+
+#[tauri::command]
+pub async fn mm_get_preferences(state: State<'_, AppState>, profile_id: String) -> Result<Vec<Preference>, String> {
+    MmRepository::get_preferences(state.db_manager.pool(), &profile_id).await.map_err(err)
+}
+
+/// Replace a person's partner preferences. Every preference is validated against the field registry;
+/// nothing is saved if any is invalid. Returns the saved list (ids are assigned to new items).
+#[tauri::command]
+pub async fn mm_save_preferences(
+    state: State<'_, AppState>,
+    profile_id: String,
+    items: Vec<Preference>,
+) -> Result<Vec<Preference>, String> {
+    let pool = state.db_manager.pool();
+    if items.len() > MAX_PREFERENCES {
+        return Err(format!("At most {MAX_PREFERENCES} preferences per profile"));
+    }
+    MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+    let reg = MmRepository::registry(pool).await.map_err(err)?;
+    let mut items = items;
+    let mut seen = std::collections::BTreeSet::new();
+    for p in items.iter_mut() {
+        if p.id.trim().is_empty() {
+            p.id = uuid::Uuid::new_v4().to_string();
+        }
+        if !seen.insert(p.id.clone()) {
+            return Err("Duplicate preference id".into());
+        }
+        validate_preference(p, &reg)?;
+    }
+    preferences_to_ruleset(&items, 1)?; // must compile into rules
+    MmRepository::save_preferences(pool, &profile_id, &items).await.map_err(err)?;
+    // Count only: preferences can reveal sensitive information.
+    MmRepository::audit(pool, "update_preferences", "profile", &profile_id, Some(&format!("{} items", items.len()))).await;
+    Ok(items)
+}
+
+/// Dry run: how well does `candidate_id` fit `profile_id`'s preferences? (One direction only; mutual
+/// matching and ranking arrive with the rule engine milestone.)
+#[tauri::command]
+pub async fn mm_evaluate_preferences(
+    state: State<'_, AppState>,
+    profile_id: String,
+    candidate_id: String,
+) -> Result<MatchOutcome, String> {
+    let pool = state.db_manager.pool();
+    let owner = MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+    let cand = MmRepository::get_profile(pool, &candidate_id).await.map_err(err)?.ok_or("Candidate not found")?;
+    let prefs = MmRepository::get_preferences(pool, &profile_id).await.map_err(err)?;
+    evaluate_preferences(&prefs, &owner.profile, &cand.profile)
 }

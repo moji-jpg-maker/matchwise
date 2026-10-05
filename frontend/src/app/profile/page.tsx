@@ -7,7 +7,9 @@ import { ArrowLeft, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { FieldDef, ProfileView, UpdateResult, Value, kindName, kindOptions } from '@/types/matchmaking';
+import { FieldDef, ProfileView, RecordValue, UpdateResult, Value, kindName, kindOptions, recordFields } from '@/types/matchmaking';
+import { RecordsInput } from '@/components/matchmaking/RecordsInput';
+import { PreferencesPanel } from '@/components/matchmaking/PreferencesPanel';
 
 const SOURCE_LABEL: Record<string, string> = {
   user: 'entered by the candidate',
@@ -109,7 +111,7 @@ function ProfileEditor() {
         </select>
       );
     if (kind === 'multi_choice') {
-      const sel = Array.isArray(v) ? v : [];
+      const sel = Array.isArray(v) ? (v as string[]) : [];
       return (
         <div className="flex flex-wrap gap-3">
           {kindOptions(def.kind).map((o) => (
@@ -123,6 +125,17 @@ function ProfileEditor() {
             </label>
           ))}
         </div>
+      );
+    }
+    if (kind === 'records') {
+      const entries = Array.isArray(v) ? (v as RecordValue[]).filter((x) => typeof x === 'object' && x !== null) : [];
+      return (
+        <RecordsInput
+          defs={recordFields(def.kind)}
+          entries={entries}
+          entryLabel={def.key === 'children' ? 'Child' : 'Entry'}
+          onChange={(next) => setField(def.key, next)}
+        />
       );
     }
     return <Input value={typeof v === 'string' ? v : ''} onChange={(e) => clearOnEmpty(e.target.value, (s) => s)} />;
@@ -176,6 +189,8 @@ function ProfileEditor() {
             );
           })}
         </div>
+
+        <PreferencesPanel profileId={id} fields={fields} />
 
         <div className="flex items-center justify-between pt-2">
           <Button variant="outline" onClick={toggleActive}>

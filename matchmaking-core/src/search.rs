@@ -20,6 +20,14 @@ pub enum ConditionOp {
     Exists,
 }
 
+/// A value defined relative to the preference owner's own field, e.g. "own age + 8".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelativeValue {
+    pub field: String,
+    #[serde(default)]
+    pub offset: f64,
+}
+
 /// One row of the search form, e.g. `age between 27 and 34`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Condition {
@@ -30,57 +38,77 @@ pub struct Condition {
     /// Upper bound for `between`.
     #[serde(default)]
     pub value2: Option<Value>,
+    /// If set, replaces `value` with "<owner's field> + offset". Only valid in partner preferences.
+    #[serde(default)]
+    pub value_rel: Option<RelativeValue>,
+    /// If set, replaces `value2` (upper bound) likewise.
+    #[serde(default)]
+    pub value2_rel: Option<RelativeValue>,
 }
 
-fn field(key: &str) -> Operand {
-    Operand::Field { of: Side::A, key: key.to_string() }
-}
-
-fn lit(v: &Value) -> Operand {
+fn lit_operand(v: &Value) -> Operand {
     Operand::Lit { value: v.clone() }
 }
 
-/// Build a filter expression from form conditions (all must hold).
+/// Build a filter expression from form conditions (all must hold). Relative values are not allowed here
+/// because a plain search has no "owner" profile to be relative to.
 pub fn conditions_to_expr(conditions: &[Condition]) -> Result<Expr, String> {
     let mut args = Vec::with_capacity(conditions.len());
     for c in conditions {
-        let need = |v: &Option<Value>| v.clone().ok_or_else(|| format!("condition on '{}' needs a value", c.field));
-        let e = match c.op {
-            ConditionOp::Exists => Expr::Exists { value: field(&c.field) },
-            ConditionOp::Between => Expr::Between {
-                value: field(&c.field),
-                lo: lit(&need(&c.value)?),
-                hi: lit(&need(&c.value2)?),
-            },
-            ConditionOp::In => {
-                // `in` with a list means "any of"; build an OR of single-value tests so it works for
-                // both single-choice and multi-choice fields.
-                match need(&c.value)? {
-                    Value::List(items) => Expr::Or {
-                        args: items
-                            .into_iter()
-                            .map(|i| Expr::Cmp { left: field(&c.field), cmp: CmpOp::In, right: lit(&Value::Text(i)) })
-                            .collect(),
-                    },
-                    v => Expr::Cmp { left: field(&c.field), cmp: CmpOp::In, right: lit(&v) },
-                }
-            }
-            op => {
-                let cmp = match op {
-                    ConditionOp::Eq => CmpOp::Eq,
-                    ConditionOp::Ne => CmpOp::Ne,
-                    ConditionOp::Lt => CmpOp::Lt,
-                    ConditionOp::Le => CmpOp::Le,
-                    ConditionOp::Gt => CmpOp::Gt,
-                    ConditionOp::Ge => CmpOp::Ge,
-                    _ => unreachable!(),
-                };
-                Expr::Cmp { left: field(&c.field), cmp, right: lit(&need(&c.value)?) }
-            }
-        };
-        args.push(e);
+        args.push(condition_to_expr(c, Side::A, None)?);
     }
     Ok(Expr::And { args })
+}
+
+/// Build the expression for one condition. `subject` is the profile whose field is tested; `owner` is the
+/// profile that relative values refer to (the preference owner), if any.
+pub fn condition_to_expr(c: &Condition, subject: Side, owner: Option<Side>) -> Result<Expr, String> {
+    let subj = Operand::Field { of: subject, key: c.field.clone() };
+    let operand = |lit: &Option<Value>, rel: &Option<RelativeValue>| -> Result<Operand, String> {
+        if let Some(r) = rel {
+            let own = owner.ok_or_else(|| format!("'{}': relative values are only valid in partner preferences", c.field))?;
+            return Ok(Operand::Offset {
+                base: Box::new(Operand::Field { of: own, key: r.field.clone() }),
+                by: r.offset,
+            });
+        }
+        lit.as_ref()
+            .map(lit_operand)
+            .ok_or_else(|| format!("condition on '{}' needs a value", c.field))
+    };
+    Ok(match c.op {
+        ConditionOp::Exists => Expr::Exists { value: subj },
+        ConditionOp::Between => Expr::Between {
+            value: subj,
+            lo: operand(&c.value, &c.value_rel)?,
+            hi: operand(&c.value2, &c.value2_rel)?,
+        },
+        ConditionOp::In => {
+            // `in` with a list means "any of"; build an OR of single-value tests so it works for
+            // both single-choice and multi-choice fields.
+            match c.value.clone().ok_or_else(|| format!("condition on '{}' needs a value", c.field))? {
+                Value::List(items) => Expr::Or {
+                    args: items
+                        .into_iter()
+                        .map(|i| Expr::Cmp { left: subj.clone(), cmp: CmpOp::In, right: lit_operand(&Value::Text(i)) })
+                        .collect(),
+                },
+                v => Expr::Cmp { left: subj, cmp: CmpOp::In, right: lit_operand(&v) },
+            }
+        }
+        op => {
+            let cmp = match op {
+                ConditionOp::Eq => CmpOp::Eq,
+                ConditionOp::Ne => CmpOp::Ne,
+                ConditionOp::Lt => CmpOp::Lt,
+                ConditionOp::Le => CmpOp::Le,
+                ConditionOp::Gt => CmpOp::Gt,
+                ConditionOp::Ge => CmpOp::Ge,
+                _ => unreachable!(),
+            };
+            Expr::Cmp { left: subj, cmp, right: operand(&c.value, &c.value_rel)? }
+        }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -22,7 +22,7 @@ fn pool() -> Vec<Profile> {
 }
 
 fn cond(field: &str, op: ConditionOp, v: Option<Value>, v2: Option<Value>) -> Condition {
-    Condition { field: field.into(), op, value: v, value2: v2 }
+    Condition { field: field.into(), op, value: v, value2: v2, value_rel: None, value2_rel: None }
 }
 
 fn ids(h: &[SearchHit]) -> Vec<&str> { h.iter().map(|x| x.profile_id.as_str()).collect() }
@@ -81,4 +81,19 @@ fn validation_and_completeness() {
     // sensitive flags drive redaction/visibility
     assert!(reg.is_sensitive("religion") && !reg.is_sensitive("city"));
     assert!(reg.is_sensitive("not_registered")); // unknown => sensitive by default
+}
+
+#[test]
+fn registry_keeps_curated_order_and_replaces_in_place() {
+    let reg = default_registry();
+    let keys: Vec<&str> = reg.keys().map(|s| s.as_str()).collect();
+    assert_eq!(keys[0], "full_name");
+    assert_eq!(keys[1], "gender");
+    assert!(keys.contains(&"children"));
+    let mut reg = reg;
+    let mut def = reg.get("city").unwrap().clone();
+    def.label = "Town".into();
+    reg.register(def);
+    assert_eq!(reg.get("city").unwrap().label, "Town");
+    assert_eq!(reg.keys().filter(|k| k.as_str() == "city").count(), 1);
 }

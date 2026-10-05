@@ -19,6 +19,7 @@ impl Value {
             Value::Num(_) => "number",
             Value::Text(_) => "text",
             Value::List(_) => "list",
+            Value::Records(_) => "records",
         }
     }
 }
@@ -42,6 +43,9 @@ pub enum Value {
     Num(f64),
     Text(String),
     List(Vec<String>),
+    /// Repeating sub-records, e.g. one entry per child. (An empty JSON array reads back as an empty
+    /// `List`; validation accepts that as "no records".)
+    Records(Vec<BTreeMap<String, Value>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

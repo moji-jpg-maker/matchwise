@@ -1,6 +1,5 @@
 use crate::profile::Value;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -11,9 +10,11 @@ pub enum FieldKind {
     /// Single choice from a fixed set.
     Choice(Vec<String>),
     MultiChoice(Vec<String>),
+    /// A repeating group of sub-fields (for example children: gender, age, custody, ...).
+    Records(Vec<FieldDef>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldDef {
     pub key: String,
     pub label: String,
@@ -44,6 +45,21 @@ impl FieldKind {
                     None => Ok(()),
                 }
             }
+            (FieldKind::Records(_), Value::List(items)) if items.is_empty() => Ok(()),
+            (FieldKind::Records(defs), Value::Records(rows)) => {
+                if rows.len() > 50 {
+                    return Err("too many entries (max 50)".into());
+                }
+                for (i, row) in rows.iter().enumerate() {
+                    for (k, v) in row {
+                        match defs.iter().find(|d| &d.key == k) {
+                            Some(d) => d.kind.validate(v).map_err(|e| format!("entry {}: {k}: {e}", i + 1))?,
+                            None => return Err(format!("entry {}: unknown sub-field '{k}'", i + 1)),
+                        }
+                    }
+                }
+                Ok(())
+            }
             (k, v) => Err(format!("expected {}, got {}", k.name(), v.type_name())),
         }
     }
@@ -55,32 +71,38 @@ impl FieldKind {
             FieldKind::Text => "text",
             FieldKind::Choice(_) => "choice",
             FieldKind::MultiChoice(_) => "multi_choice",
+            FieldKind::Records(_) => "records",
         }
     }
 }
 
-/// Matchmakers add fields here at runtime; no schema migration needed.
+/// Matchmakers add fields here at runtime; no schema migration needed. Keeps insertion order so the
+/// UI shows fields in the order the matchmaker (or the default set) defines.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FieldRegistry {
-    fields: BTreeMap<String, FieldDef>,
+    fields: Vec<FieldDef>,
 }
 
 impl FieldRegistry {
     pub fn new() -> Self { Self::default() }
 
+    /// Add a field, or replace the definition of an existing key in place (keeping its position).
     pub fn register(&mut self, def: FieldDef) {
-        self.fields.insert(def.key.clone(), def);
+        match self.fields.iter_mut().find(|d| d.key == def.key) {
+            Some(existing) => *existing = def,
+            None => self.fields.push(def),
+        }
     }
 
-    pub fn get(&self, key: &str) -> Option<&FieldDef> { self.fields.get(key) }
+    pub fn get(&self, key: &str) -> Option<&FieldDef> { self.fields.iter().find(|d| d.key == key) }
 
     pub fn is_sensitive(&self, key: &str) -> bool {
         self.get(key).map(|d| d.sensitive).unwrap_or(true) // unknown => treat as sensitive
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = &String> { self.fields.keys() }
+    pub fn keys(&self) -> impl Iterator<Item = &String> { self.fields.iter().map(|d| &d.key) }
 
-    pub fn defs(&self) -> impl Iterator<Item = &FieldDef> { self.fields.values() }
+    pub fn defs(&self) -> impl Iterator<Item = &FieldDef> { self.fields.iter() }
 
     /// Validate a value for a registered field. Unknown fields are rejected.
     pub fn validate_value(&self, key: &str, value: &Value) -> Result<(), String> {

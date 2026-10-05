@@ -3557,6 +3557,7 @@ dependencies = [
  "lazy_static",
  "libsqlite3-sys",
  "log",
+ "matchmaking-core",
  "memory-stats",
  "ndarray",
  "nnnoiseless",

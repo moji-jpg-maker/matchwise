@@ -14,70 +14,10 @@ import {
   ProfileSummary,
   ProfileView,
   SearchResultRow,
-  Value,
   kindName,
   kindOptions,
 } from '@/types/matchmaking';
-
-const OPS_BY_KIND: Record<string, { op: ConditionOp; label: string }[]> = {
-  number: [
-    { op: 'between', label: 'between' },
-    { op: 'eq', label: '=' },
-    { op: 'ge', label: '≥' },
-    { op: 'le', label: '≤' },
-    { op: 'exists', label: 'is filled in' },
-  ],
-  text: [
-    { op: 'eq', label: 'is' },
-    { op: 'ne', label: 'is not' },
-    { op: 'exists', label: 'is filled in' },
-  ],
-  bool: [
-    { op: 'eq', label: 'is' },
-    { op: 'exists', label: 'is filled in' },
-  ],
-  choice: [
-    { op: 'in', label: 'is any of' },
-    { op: 'ne', label: 'is not' },
-    { op: 'exists', label: 'is filled in' },
-  ],
-  multi_choice: [
-    { op: 'in', label: 'includes any of' },
-    { op: 'exists', label: 'is filled in' },
-  ],
-};
-
-interface Row {
-  field: string;
-  op: ConditionOp;
-  a: string;
-  b: string;
-  multi: string[];
-}
-
-function toCondition(r: Row, def: FieldDef): Condition | string {
-  const kind = kindName(def.kind);
-  if (r.op === 'exists') return { field: r.field, op: 'exists' };
-  if (kind === 'number') {
-    if (r.a.trim() === '' || Number.isNaN(Number(r.a))) return `${def.label}: enter a number`;
-    if (r.op === 'between') {
-      if (r.b.trim() === '' || Number.isNaN(Number(r.b))) return `${def.label}: enter an upper bound`;
-      return { field: r.field, op: 'between', value: Number(r.a), value2: Number(r.b) };
-    }
-    return { field: r.field, op: r.op, value: Number(r.a) };
-  }
-  if (kind === 'bool') return { field: r.field, op: r.op, value: r.a === 'true' };
-  if (kind === 'choice' || kind === 'multi_choice') {
-    if (r.op === 'in') {
-      if (r.multi.length === 0) return `${def.label}: pick at least one option`;
-      return { field: r.field, op: 'in', value: r.multi };
-    }
-    if (!r.a) return `${def.label}: pick an option`;
-    return { field: r.field, op: r.op, value: r.a };
-  }
-  if (r.a.trim() === '') return `${def.label}: enter a value`;
-  return { field: r.field, op: r.op, value: r.a.trim() as Value };
-}
+import { OPS_BY_KIND, Row, defaultOp, isConditionField, toCondition } from '@/lib/conditions';
 
 export default function ProfilesPage() {
   const router = useRouter();
@@ -105,7 +45,7 @@ export default function ProfilesPage() {
   useEffect(() => {
     (async () => {
       try {
-        setFields(await invoke<FieldDef[]>('mm_list_fields'));
+        setFields((await invoke<FieldDef[]>('mm_list_fields')).filter(isConditionField));
       } catch (e) {
         toast.error(`Could not load fields: ${e}`);
       } finally {
@@ -121,7 +61,7 @@ export default function ProfilesPage() {
   const addRow = () => {
     const first = fields[0];
     if (!first) return;
-    setRows((r) => [...r, { field: first.key, op: OPS_BY_KIND[kindName(first.kind)][0].op, a: '', b: '', multi: [] }]);
+    setRows((r) => [...r, { field: first.key, op: defaultOp(first), a: '', b: '', multi: [] }]);
   };
 
   const runSearch = async () => {

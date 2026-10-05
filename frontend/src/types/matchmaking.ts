@@ -5,7 +5,8 @@ export type FieldKind =
   | 'number'
   | 'text'
   | { choice: string[] }
-  | { multi_choice: string[] };
+  | { multi_choice: string[] }
+  | { records: FieldDef[] };
 
 export interface FieldDef {
   key: string;
@@ -15,7 +16,10 @@ export interface FieldDef {
   required: boolean;
 }
 
-export type Value = boolean | number | string | string[];
+export interface RecordValue {
+  [key: string]: Value;
+}
+export type Value = boolean | number | string | string[] | RecordValue[];
 export type Provenance = 'user' | 'matchmaker' | 'questionnaire' | 'ai_inferred';
 
 export interface ProfileEntry {
@@ -55,6 +59,40 @@ export interface Condition {
   op: ConditionOp;
   value?: Value | null;
   value2?: Value | null;
+  /** "<owner's field> + offset"; only valid in partner preferences. */
+  value_rel?: RelativeValue | null;
+  value2_rel?: RelativeValue | null;
+}
+
+export interface RelativeValue {
+  field: string;
+  offset: number;
+}
+
+export type Strength = 'required' | 'deal_breaker' | 'preferred' | 'flexible';
+
+export interface Preference {
+  id: string;
+  condition: Condition;
+  strength: Strength;
+  importance: number;
+  note?: string | null;
+}
+
+export interface RuleResult {
+  rule_id: string;
+  kind: 'hard' | 'soft';
+  result: 'true' | 'false' | 'unknown';
+}
+
+export interface MatchOutcome {
+  rule_set: string;
+  rule_set_version: number;
+  eligible: boolean;
+  needs_info: string[];
+  soft_score: number | null;
+  unknown_soft: string[];
+  results: RuleResult[];
 }
 
 export interface UpdateResult {
@@ -62,12 +100,20 @@ export interface UpdateResult {
   rejected: string[];
 }
 
-export function kindName(k: FieldKind): 'bool' | 'number' | 'text' | 'choice' | 'multi_choice' {
+export function kindName(k: FieldKind): 'bool' | 'number' | 'text' | 'choice' | 'multi_choice' | 'records' {
   if (typeof k === 'string') return k;
-  return 'choice' in k ? 'choice' : 'multi_choice';
+  if ('choice' in k) return 'choice';
+  if ('multi_choice' in k) return 'multi_choice';
+  return 'records';
 }
 
 export function kindOptions(k: FieldKind): string[] {
   if (typeof k === 'string') return [];
-  return 'choice' in k ? k.choice : k.multi_choice;
+  if ('choice' in k) return k.choice;
+  if ('multi_choice' in k) return k.multi_choice;
+  return [];
+}
+
+export function recordFields(k: FieldKind): FieldDef[] {
+  return typeof k !== 'string' && 'records' in k ? k.records : [];
 }
