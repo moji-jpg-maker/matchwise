@@ -41,6 +41,7 @@ pub mod config;
 pub mod console_utils;
 pub mod database;
 pub mod notifications;
+pub mod mm;
 pub mod ollama;
 pub mod onboarding;
 pub mod openai;
@@ -770,6 +771,15 @@ pub fn run() {
             audio::permissions::trigger_system_audio_permission_command,
             // Database import commands
             database::commands::check_first_launch,
+            mm::commands::mm_list_fields,
+            mm::commands::mm_save_field,
+            mm::commands::mm_create_profile,
+            mm::commands::mm_update_profile_fields,
+            mm::commands::mm_get_profile,
+            mm::commands::mm_list_profiles,
+            mm::commands::mm_search_profiles,
+            mm::commands::mm_set_profile_active,
+            mm::commands::mm_delete_profile,
             database::commands::select_legacy_database_path,
             database::commands::detect_legacy_database,
             database::commands::check_default_legacy_database,

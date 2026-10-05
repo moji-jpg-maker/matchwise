@@ -13,6 +13,7 @@ Planning docs: `docs/matchmaking/PLAN.md` (roadmap) and `docs/matchmaking/M0_AUD
 2. **Rust app core**: `frontend/src-tauri/` (Tauri commands/events, sqlx + SQLite, LLM orchestration)
 3. **`matchmaking-core/`**: pure-Rust domain engine (field registry, profiles with provenance, three-valued rule engine).
    It must not depend on Tauri, SQLite, Telegram, or any LLM provider. Build/test it with `cargo test -p matchmaking-core`.
+4. **`frontend/src-tauri/src/mm/`**: persistence (`repository.rs`, runtime sqlx queries) and `mm_*` Tauri commands wrapping the core; UI in `frontend/src/app/profiles` and `profile`.
 
 ### Matchwise conventions
 - Missing information is `Unknown`, never silently treated as pass or fail.

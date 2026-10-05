@@ -107,6 +107,11 @@ fn compare(l: &Value, op: CmpOp, r: &Value) -> Tri {
             In => b(ys.iter().any(|y| y.eq_ignore_ascii_case(x))),
             _ => Tri::Unknown,
         },
+        // multi-choice field contains the given value
+        (Value::List(xs), Value::Text(y)) => match op {
+            In => b(xs.iter().any(|x| x.eq_ignore_ascii_case(y))),
+            _ => Tri::Unknown,
+        },
         (Value::List(xs), Value::List(ys)) => match op {
             // any overlap
             In => b(xs.iter().any(|x| ys.iter().any(|y| y.eq_ignore_ascii_case(x)))),
