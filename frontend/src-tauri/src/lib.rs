@@ -790,6 +790,8 @@ pub fn run() {
             mm::rules_commands::mm_archive_rule_set,
             mm::rules_commands::mm_evaluate_match,
             mm::rules_commands::mm_find_matches,
+            mm::rules_commands::mm_dimension_catalog,
+            mm::rules_commands::mm_score_pair,
             database::commands::select_legacy_database_path,
             database::commands::detect_legacy_database,
             database::commands::check_default_legacy_database,

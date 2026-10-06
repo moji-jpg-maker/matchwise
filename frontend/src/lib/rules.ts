@@ -70,7 +70,7 @@ export function newRule(existing: Rule[], fields: FieldDef[]): Rule {
 }
 
 export function emptyRuleSet(): RuleSet {
-  return { name: '', version: 0, rules: [], group_weights: {}, min_score: null };
+  return { name: '', version: 0, rules: [], group_weights: {}, min_score: null, prior_score: null };
 }
 
 /** Convert a node to another type, keeping children where it makes sense. */

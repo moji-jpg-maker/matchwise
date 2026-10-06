@@ -9,6 +9,7 @@ pub mod expr;
 pub mod field;
 pub mod preferences;
 pub mod rule_validation;
+pub mod scoring;
 pub mod profile;
 pub mod search;
 
@@ -24,3 +25,7 @@ pub mod rules;
 pub use rules::{evaluate_pair, evaluate_ruleset_mutual, Direction, MatchOutcome, Rule, RuleKind, RuleResult, RuleScope, RuleSet};
 pub use matching::{evaluate_match, MatchEvaluation};
 pub use rule_validation::{validate_ruleset, RuleIssue};
+pub use scoring::{
+    dimension_catalog, resolve_dimension, score_pair, DimStatus, DimensionDef, DimensionScore, Finding, FindingSource, HardConstraints,
+    HardStatus, MissingField, ScoreCard,
+};

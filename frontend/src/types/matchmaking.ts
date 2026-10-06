@@ -121,10 +121,74 @@ export interface MatchEvaluation {
 export interface MatchCandidate extends ProfileSummary {
   eligible: boolean;
   needs_info: boolean;
+  /** confidence-adjusted ranking score */
+  score: number | null;
+  overall: number | null;
+  confidence: number | null;
+  blocking: string[];
+  strengths: string[];
+  concerns: string[];
+  unknown_count: number;
+}
+
+// ---- scorecard
+export type DimStatus = 'strong' | 'mixed' | 'concern' | 'clear' | 'unknown' | 'not_applicable' | 'not_assessed';
+
+export interface DimensionDef {
+  key: string;
+  label: string;
+  description: string;
+}
+
+export interface DimensionScore extends DimensionDef {
   score: number | null;
   coverage: number | null;
-  blocking: string[];
-  unknown_count: number;
+  status: DimStatus;
+  weight: number;
+  checks: number;
+}
+
+export interface MissingField {
+  who: 'a' | 'b';
+  field: string;
+}
+
+export interface Finding {
+  source: 'rule' | 'preference_a' | 'preference_b';
+  id: string;
+  description: string;
+  dimension: string;
+  direction: Direction;
+  kind: 'hard' | 'soft';
+  result: Tri;
+  weight: number;
+  priority: number;
+  missing: MissingField[];
+}
+
+export interface ScoreCard {
+  rule_set: string;
+  rule_set_version: number;
+  eligible: boolean;
+  hard_constraints: {
+    status: 'pass' | 'fail' | 'needs_info';
+    passed: number;
+    violations: Finding[];
+    undecided: Finding[];
+  };
+  dimensions: DimensionScore[];
+  overall: number | null;
+  confidence: number | null;
+  ranking_score: number | null;
+  meets_threshold: boolean | null;
+  strengths: Finding[];
+  concerns: Finding[];
+  unknowns: Finding[];
+}
+
+export interface MatchView {
+  scorecard: ScoreCard;
+  evaluation: MatchEvaluation;
 }
 
 // ---- rule sets (mirror matchmaking-core serde output) ----
@@ -164,6 +228,7 @@ export interface RuleSet {
   rules: Rule[];
   group_weights: Record<string, number>;
   min_score: number | null;
+  prior_score?: number | null;
 }
 
 export interface RuleIssue {

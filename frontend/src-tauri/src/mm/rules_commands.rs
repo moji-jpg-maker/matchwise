@@ -1,8 +1,10 @@
 use super::commands::{summary, ProfileSummary};
 use super::repository::{MmRepository, RuleSetRow};
 use crate::state::AppState;
-use matchmaking_core::expr::Tri;
-use matchmaking_core::{evaluate_match, validate_ruleset, Direction, MatchEvaluation, RuleIssue, RuleKind, RuleSet};
+use matchmaking_core::{
+    dimension_catalog, evaluate_match, score_pair, validate_ruleset, Direction, DimensionDef, Finding, HardStatus, MatchEvaluation,
+    RuleIssue, RuleSet, ScoreCard,
+};
 use serde::Serialize;
 use tauri::State;
 
@@ -162,18 +164,57 @@ pub async fn mm_evaluate_match(
     evaluate_match(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)
 }
 
+/// Everything the match view needs: the dimension scorecard plus the underlying rule-by-rule evaluation.
+#[derive(Serialize)]
+pub struct MatchView {
+    pub scorecard: ScoreCard,
+    pub evaluation: MatchEvaluation,
+}
+
+#[tauri::command]
+pub async fn mm_dimension_catalog() -> Result<Vec<DimensionDef>, String> {
+    Ok(dimension_catalog())
+}
+
+#[tauri::command]
+pub async fn mm_score_pair(
+    state: State<'_, AppState>,
+    rule_set_id: String,
+    profile_a: String,
+    profile_b: String,
+    version: Option<u32>,
+) -> Result<MatchView, String> {
+    let pool = state.db_manager.pool();
+    let (_, set, _) = MmRepository::get_rule_set(pool, &rule_set_id, version).await.map_err(err)?.ok_or("Rule set not found")?;
+    let a = MmRepository::get_profile(pool, &profile_a).await.map_err(err)?.ok_or("First profile not found")?;
+    let b = MmRepository::get_profile(pool, &profile_b).await.map_err(err)?.ok_or("Second profile not found")?;
+    let a_prefs = MmRepository::get_preferences(pool, &profile_a).await.map_err(err)?;
+    let b_prefs = MmRepository::get_preferences(pool, &profile_b).await.map_err(err)?;
+    Ok(MatchView {
+        scorecard: score_pair(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)?,
+        evaluation: evaluate_match(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)?,
+    })
+}
+
 #[derive(Serialize)]
 pub struct MatchCandidate {
     #[serde(flatten)]
     pub summary: ProfileSummary,
     pub eligible: bool,
+    /// Some must-have could not be decided because information is missing.
     pub needs_info: bool,
+    /// Confidence-adjusted score used for ranking (0..=100).
     pub score: Option<f64>,
-    /// How much of the score is backed by data (0..=1); a perfect score with low coverage means "little is known".
-    pub coverage: Option<f64>,
+    /// Raw coverage-weighted mean of the dimension scores, before the confidence adjustment.
+    pub overall: Option<f64>,
+    /// How much of the picture is backed by data (0..=1).
+    pub confidence: Option<f64>,
     /// Plain-language reasons the pair is excluded (empty when eligible).
     pub blocking: Vec<String>,
-    /// Rules that could not be evaluated because information is missing.
+    /// Top strengths and concerns, for the list view.
+    pub strengths: Vec<String>,
+    pub concerns: Vec<String>,
+    /// Number of checks that could not be evaluated because information is missing.
     pub unknown_count: usize,
 }
 
@@ -185,9 +226,19 @@ fn direction_suffix(d: Direction) -> &'static str {
     }
 }
 
-/// Rank all active candidates for one person under a rule set. Eligible candidates come first, by score
-/// (higher first), then by coverage, then those with fewer unknowns. `include_ineligible` also returns excluded candidates
-/// with the reasons, so a matchmaker can see why someone was left out.
+fn describe(f: &Finding) -> String {
+    use matchmaking_core::FindingSource::*;
+    let who = match f.source {
+        Rule => direction_suffix(f.direction).to_string(),
+        PreferenceA => " [this person's preference]".to_string(),
+        PreferenceB => " [candidate's preference]".to_string(),
+    };
+    format!("{}{}", f.description, who)
+}
+
+/// Rank all active candidates for one person under a rule set by the confidence-adjusted score. Eligible
+/// candidates come first. `include_ineligible` also returns excluded candidates with the reasons, so a
+/// matchmaker can see why someone was left out.
 #[tauri::command]
 pub async fn mm_find_matches(
     state: State<'_, AppState>,
@@ -208,35 +259,22 @@ pub async fn mm_find_matches(
     let mut out = vec![];
     for cand in all.iter().filter(|c| c.profile.id != profile_id) {
         let cand_prefs = prefs.get(&cand.profile.id).unwrap_or(&none);
-        let ev = evaluate_match(&set, &me.profile, &cand.profile, my_prefs, cand_prefs)?;
-        let mut blocking = vec![];
-        if !ev.eligible {
-            for r in ev.rules.results.iter().filter(|r| r.applicable && r.kind == RuleKind::Hard && r.result == Tri::False) {
-                blocking.push(format!("{}{}", r.description, direction_suffix(r.direction)));
-            }
-            for (who, o) in [("this person's preference", &ev.a_preferences), ("candidate's preference", &ev.b_preferences)] {
-                for r in o.results.iter().filter(|r| r.applicable && r.kind == RuleKind::Hard && r.result == Tri::False) {
-                    blocking.push(format!("{} [{}]", r.description, who));
-                }
-            }
-            if ev.meets_threshold == Some(false) {
-                blocking.push(format!("Score below the minimum of {}", set.min_score.unwrap_or(0.0)));
-            }
+        let card = score_pair(&set, &me.profile, &cand.profile, my_prefs, cand_prefs)?;
+        let mut blocking: Vec<String> = card.hard_constraints.violations.iter().map(describe).collect();
+        if card.meets_threshold == Some(false) {
+            blocking.push(format!("Score below the minimum of {}", set.min_score.unwrap_or(0.0)));
         }
-        let unknown_count = ev.rules.unknown_soft.len()
-            + ev.rules.needs_info.len()
-            + ev.a_preferences.unknown_soft.len()
-            + ev.a_preferences.needs_info.len()
-            + ev.b_preferences.unknown_soft.len()
-            + ev.b_preferences.needs_info.len();
         out.push(MatchCandidate {
             summary: summary(cand, &reg),
-            eligible: ev.eligible,
-            needs_info: ev.needs_info,
-            score: ev.score,
-            coverage: ev.coverage,
+            eligible: card.eligible,
+            needs_info: card.hard_constraints.status == HardStatus::NeedsInfo,
+            score: card.ranking_score,
+            overall: card.overall,
+            confidence: card.confidence,
             blocking,
-            unknown_count,
+            strengths: card.strengths.iter().take(2).map(describe).collect(),
+            concerns: card.concerns.iter().take(2).map(describe).collect(),
+            unknown_count: card.unknowns.len(),
         });
     }
     if !include_ineligible.unwrap_or(false) {
@@ -246,7 +284,7 @@ pub async fn mm_find_matches(
         y.eligible
             .cmp(&x.eligible)
             .then(y.score.unwrap_or(-1.0).partial_cmp(&x.score.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal))
-            .then(y.coverage.unwrap_or(-1.0).partial_cmp(&x.coverage.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal))
+            .then(y.confidence.unwrap_or(-1.0).partial_cmp(&x.confidence.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal))
             .then(x.unknown_count.cmp(&y.unknown_count))
     });
     out.truncate(limit.unwrap_or(50).min(500));

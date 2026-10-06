@@ -162,6 +162,11 @@ pub fn validate_ruleset(set: &RuleSet, reg: &FieldRegistry) -> Vec<RuleIssue> {
             top("The minimum score must be between 0 and 100".into());
         }
     }
+    if let Some(m) = set.prior_score {
+        if !(m.is_finite() && (0.0..=100.0).contains(&m)) {
+            top("The neutral baseline score must be between 0 and 100".into());
+        }
+    }
     for (g, w) in &set.group_weights {
         if g.trim().is_empty() || !w.is_finite() || !(0.0..=10.0).contains(w) {
             top(format!("Group weight for '{g}' must be between 0 and 10"));

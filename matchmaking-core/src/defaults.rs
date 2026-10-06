@@ -98,11 +98,11 @@ pub fn default_ruleset() -> RuleSet {
             hi: Operand::Offset { base: Box::new(fld(Side::A, "age")), by: 8.0 },
         },
     );
-    age_gap.group = Some("age".into());
+    age_gap.group = Some("age_life_stage".into());
     age_gap.priority = 20;
 
     let mut city = Rule::new("same_city", "Live in the same city", RuleKind::Soft, 2.0, eq(fld(Side::A, "city"), fld(Side::B, "city")));
-    city.group = Some("location".into());
+    city.group = Some("geography".into());
     city.priority = 10;
 
     let mut religion = Rule::new(
@@ -135,8 +135,25 @@ pub fn default_ruleset() -> RuleSet {
     );
     window.when = Some(Expr::Between { value: fld(Side::A, "age"), lo: lit(Value::Num(25.0)), hi: lit(Value::Num(30.0)) });
     window.scope = RuleScope::Directional;
-    window.group = Some("age".into());
+    window.group = Some("age_life_stage".into());
     window.enabled = false;
 
-    RuleSet::new("Default program", 1, vec![kids, age_gap, city, religion, window])
+    let mut observance = Rule::new(
+        "religiosity_close",
+        "Similar level of religious observance",
+        RuleKind::Soft,
+        2.0,
+        eq(fld(Side::A, "religiosity"), fld(Side::B, "religiosity")),
+    );
+    observance.group = Some("religion".into());
+    observance.priority = 25;
+
+    let mut smoking = Rule::new("smoking_match", "Same smoking habits", RuleKind::Soft, 1.0, eq(fld(Side::A, "smoking"), fld(Side::B, "smoking")));
+    smoking.group = Some("lifestyle".into());
+    smoking.priority = 5;
+
+    let mut education = Rule::new("education_match", "Same education level", RuleKind::Soft, 1.0, eq(fld(Side::A, "education"), fld(Side::B, "education")));
+    education.group = Some("financial_practical".into());
+
+    RuleSet::new("Default program", 1, vec![kids, age_gap, city, religion, observance, smoking, education, window])
 }

@@ -8,12 +8,12 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ExprEditor } from '@/components/matchmaking/ExprEditor';
+import { RuleResultList } from '@/components/matchmaking/RuleResultList';
 import { isConditionField } from '@/lib/conditions';
 import { describeExpr, emptyRuleSet, newNode, newRule } from '@/lib/rules';
-import { FieldDef, MatchEvaluation, ProfileSummary, Rule, RuleIssue, RuleSetView } from '@/types/matchmaking';
+import { DimensionDef, FieldDef, MatchEvaluation, ProfileSummary, Rule, RuleIssue, RuleSetView } from '@/types/matchmaking';
 
 const sel = 'border rounded-md px-2 py-1.5 text-sm bg-white';
-const DIRECTION_LABEL = { pair: '', a_to_b: ' (A → B)', b_to_a: ' (B → A)' } as const;
 
 function Editor() {
   const router = useRouter();
@@ -21,6 +21,8 @@ function Editor() {
   const isNew = idParam === 'new' || !idParam;
 
   const [fields, setFields] = useState<FieldDef[]>([]);
+  const [dims, setDims] = useState<DimensionDef[]>([]);
+  const [priorScore, setPriorScore] = useState('');
   const [meta, setMeta] = useState<RuleSetView | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -46,6 +48,7 @@ function Editor() {
     setDescription(v.description);
     setRules(v.definition.rules);
     setMinScore(v.definition.min_score == null ? '' : String(v.definition.min_score));
+    setPriorScore(v.definition.prior_score == null ? '' : String(v.definition.prior_score));
     setGroupWeights(Object.entries(v.definition.group_weights).map(([group, w]) => ({ group, weight: String(w) })));
     setNote('');
     setDirty(false);
@@ -55,11 +58,13 @@ function Editor() {
   const load = useCallback(
     async (version?: number) => {
       try {
-        const [f, plist] = await Promise.all([
+        const [f, plist, catalog] = await Promise.all([
           invoke<FieldDef[]>('mm_list_fields'),
           invoke<ProfileSummary[]>('mm_list_profiles', { includeDeactivated: false }),
+          invoke<DimensionDef[]>('mm_dimension_catalog'),
         ]);
         setFields(f);
+        setDims(catalog);
         setProfiles(plist);
         if (isNew) {
           const e = emptyRuleSet();
@@ -68,6 +73,7 @@ function Editor() {
           setDescription('');
           setRules(e.rules);
           setMinScore('');
+          setPriorScore('');
           setGroupWeights([]);
           setDirty(false);
         } else {
@@ -92,8 +98,9 @@ function Editor() {
       rules,
       group_weights: gw,
       min_score: minScore.trim() === '' ? null : Number(minScore),
+      prior_score: priorScore.trim() === '' ? null : Number(priorScore),
     };
-  }, [groupWeights, meta, minScore, name, rules]);
+  }, [groupWeights, meta, minScore, name, priorScore, rules]);
 
   // live validation (debounced); the backend is the single source of truth for what is valid
   useEffect(() => {
@@ -174,21 +181,27 @@ function Editor() {
             <Input className="col-span-2" value={name} onChange={(e) => { setName(e.target.value); touch(); }} />
             <label className="text-sm font-medium">Description</label>
             <Input className="col-span-2" value={description} onChange={(e) => { setDescription(e.target.value); touch(); }} />
-            <label className="text-sm font-medium" title="Pairs scoring below this are not recommended">Minimum score (0-100)</label>
+            <label className="text-sm font-medium" title="Pairs whose confidence-adjusted match score is below this are not recommended">Minimum match score (0-100)</label>
             <Input className="w-28" type="number" placeholder="none" value={minScore} onChange={(e) => { setMinScore(e.target.value); touch(); }} />
+            <label className="text-sm font-medium" title="Scores resting on little information are pulled towards this neutral value">Neutral baseline (0-100)</label>
+            <Input className="w-28" type="number" placeholder="50" value={priorScore} onChange={(e) => { setPriorScore(e.target.value); touch(); }} />
           </div>
 
           <div>
             <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Group weights</span>
+              <span className="text-sm font-medium">Dimension weights</span>
               <button className="text-sm text-blue-600 hover:underline" onClick={() => { setGroupWeights((g) => [...g, { group: '', weight: '1' }]); touch(); }}>
                 + add
               </button>
             </div>
-            <p className="text-xs text-gray-500">Multiplies the weight of every soft rule in that group (1 = unchanged, 0 = ignore, 3 = triple).</p>
+            <p className="text-xs text-gray-500">How much each dimension counts in the overall score (1 = normal, 0 = ignore, 3 = triple). A rule belongs to the dimension named in its group.</p>
             {groupWeights.map((g, i) => (
               <div key={i} className="flex items-center gap-2 mt-1">
-                <Input className="w-44" placeholder="group name" value={g.group} onChange={(e) => { setGroupWeights((gs) => gs.map((x, j) => (j === i ? { ...x, group: e.target.value } : x))); touch(); }} />
+                <select className={sel} value={g.group} onChange={(e) => { setGroupWeights((gs) => gs.map((x, j) => (j === i ? { ...x, group: e.target.value } : x))); touch(); }}>
+                  <option value="">choose a dimension…</option>
+                  {dims.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+                  {g.group !== '' && !dims.some((d) => d.key === g.group) && <option value={g.group}>{g.group} (custom)</option>}
+                </select>
                 <span className="text-sm">×</span>
                 <Input className="w-24" type="number" step="0.1" value={g.weight} onChange={(e) => { setGroupWeights((gs) => gs.map((x, j) => (j === i ? { ...x, weight: e.target.value } : x))); touch(); }} />
                 <button className="p-1 rounded hover:bg-gray-100" aria-label="Remove group weight" onClick={() => { setGroupWeights((gs) => gs.filter((_, j) => j !== i)); touch(); }}>
@@ -260,9 +273,13 @@ function Editor() {
                           <option value="directional">Each person in turn (A→B and B→A)</option>
                         </select>
                       </div>
-                      <label className="text-sm font-medium">Group / priority</label>
+                      <label className="text-sm font-medium">Dimension / priority</label>
                       <div className="col-span-3 flex items-center gap-3">
-                        <Input className="w-44" placeholder="group (optional)" value={r.group ?? ''} onChange={(e) => updateRule(i, { group: e.target.value === '' ? null : e.target.value })} />
+                        <select className={sel} title="The dimension this rule contributes to" value={r.group ?? ''} onChange={(e) => updateRule(i, { group: e.target.value === '' ? null : e.target.value })}>
+                          <option value="">no dimension (other)</option>
+                          {dims.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+                          {r.group && !dims.some((d) => d.key === r.group) && <option value={r.group}>{r.group} (maps to Other)</option>}
+                        </select>
                         <label className="flex items-center gap-1 text-sm" title="Higher priority results are listed first">priority <Input className="w-20" type="number" value={String(r.priority)} onChange={(e) => updateRule(i, { priority: Number(e.target.value) })} /></label>
                         <label className="flex items-center gap-1 text-sm">id <Input className="w-36" value={r.id} onChange={(e) => updateRule(i, { id: e.target.value })} /></label>
                       </div>
@@ -335,9 +352,9 @@ function Editor() {
                     {evalResult.meets_threshold === false && <span className="text-red-700">below the minimum score</span>}
                     {evalResult.needs_info && <span className="text-amber-700">some must-haves cannot be decided: information missing</span>}
                   </div>
-                  <ResultTable title={`Rules: ${nameOf(pa)} & ${nameOf(pb)}`} results={evalResult.rules.results} />
-                  <ResultTable title={`${nameOf(pa)}'s preferences about ${nameOf(pb)}`} results={evalResult.a_preferences.results} />
-                  <ResultTable title={`${nameOf(pb)}'s preferences about ${nameOf(pa)}`} results={evalResult.b_preferences.results} />
+                  <RuleResultList title={`Rules: ${nameOf(pa)} & ${nameOf(pb)}`} results={evalResult.rules.results} />
+                  <RuleResultList title={`${nameOf(pa)}'s preferences about ${nameOf(pb)}`} results={evalResult.a_preferences.results} />
+                  <RuleResultList title={`${nameOf(pb)}'s preferences about ${nameOf(pa)}`} results={evalResult.b_preferences.results} />
                 </div>
               )}
             </div>
@@ -359,28 +376,6 @@ function Editor() {
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function ResultTable({ title, results }: { title: string; results: MatchEvaluation['rules']['results'] }) {
-  if (results.length === 0) return null;
-  return (
-    <div>
-      <div className="font-medium mb-1">{title}</div>
-      <ul className="space-y-1">
-        {results.map((r, k) => {
-          const text = !r.applicable ? 'skipped' : r.result === 'unknown' ? 'unknown' : r.kind === 'hard' ? (r.result === 'true' ? 'ok' : 'violated') : r.result === 'true' ? 'met' : 'not met';
-          const style = !r.applicable ? 'bg-gray-100 text-gray-600' : r.result === 'true' ? 'bg-green-100 text-green-800' : r.result === 'false' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800';
-          return (
-            <li key={k} className="flex items-center gap-2">
-              <span className={`px-1.5 py-0.5 rounded text-xs w-16 text-center ${style}`}>{text}</span>
-              <span>{r.description}{DIRECTION_LABEL[r.direction]}</span>
-              {r.kind === 'soft' && r.applicable && <span className="text-xs text-gray-400">weight {r.weight}</span>}
-            </li>
-          );
-        })}
-      </ul>
     </div>
   );
 }
