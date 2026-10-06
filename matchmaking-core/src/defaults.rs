@@ -1,7 +1,10 @@
 //! Starter field set from the product plan. Matchmakers can add, edit, or hide fields at runtime;
 //! this is only the seed used for a new organization.
 
+use crate::expr::{CmpOp, Expr, Operand, Side};
 use crate::field::{FieldDef, FieldKind, FieldRegistry};
+use crate::profile::Value;
+use crate::rules::{Rule, RuleKind, RuleScope, RuleSet};
 
 fn f(key: &str, label: &str, kind: FieldKind, sensitive: bool, required: bool) -> FieldDef {
     FieldDef { key: key.into(), label: label.into(), kind, sensitive, required }
@@ -55,4 +58,85 @@ pub fn default_registry() -> FieldRegistry {
         r.register(d);
     }
     r
+}
+
+fn fld(of: Side, key: &str) -> Operand {
+    Operand::Field { of, key: key.into() }
+}
+
+fn lit(v: Value) -> Operand {
+    Operand::Lit { value: v }
+}
+
+fn eq(l: Operand, r: Operand) -> Expr {
+    Expr::Cmp { left: l, cmp: CmpOp::Eq, right: r }
+}
+
+/// Starter rule set shown to a new organization. It demonstrates the rule features (conditional rules,
+/// directional rules, groups, an example that is switched off) and is meant to be edited.
+pub fn default_ruleset() -> RuleSet {
+    let mut kids = Rule::new(
+        "kids",
+        "If one person has children, the partner must accept children",
+        RuleKind::Hard,
+        1.0,
+        eq(fld(Side::B, "accepts_children"), lit(Value::Bool(true))),
+    );
+    kids.when = Some(eq(fld(Side::A, "has_children"), lit(Value::Bool(true))));
+    kids.scope = RuleScope::Directional;
+    kids.group = Some("children".into());
+    kids.priority = 100;
+
+    let mut age_gap = Rule::new(
+        "age_gap",
+        "Ages within 8 years of each other",
+        RuleKind::Soft,
+        2.0,
+        Expr::Between {
+            value: fld(Side::B, "age"),
+            lo: Operand::Offset { base: Box::new(fld(Side::A, "age")), by: -8.0 },
+            hi: Operand::Offset { base: Box::new(fld(Side::A, "age")), by: 8.0 },
+        },
+    );
+    age_gap.group = Some("age".into());
+    age_gap.priority = 20;
+
+    let mut city = Rule::new("same_city", "Live in the same city", RuleKind::Soft, 2.0, eq(fld(Side::A, "city"), fld(Side::B, "city")));
+    city.group = Some("location".into());
+    city.priority = 10;
+
+    let mut religion = Rule::new(
+        "religion_aligned",
+        "Same religion when both are highly observant",
+        RuleKind::Soft,
+        3.0,
+        eq(fld(Side::A, "religion"), fld(Side::B, "religion")),
+    );
+    religion.when = Some(Expr::And {
+        args: vec![
+            eq(fld(Side::A, "religiosity"), lit(Value::Text("high".into()))),
+            eq(fld(Side::B, "religiosity"), lit(Value::Text("high".into()))),
+        ],
+    });
+    religion.group = Some("religion".into());
+    religion.priority = 30;
+
+    // Example from the product plan, disabled by default because it excludes many pairs.
+    let mut window = Rule::new(
+        "age_window_example",
+        "Example: when a candidate is 25-30, the partner must be 0-8 years older",
+        RuleKind::Hard,
+        1.0,
+        Expr::Between {
+            value: fld(Side::B, "age"),
+            lo: fld(Side::A, "age"),
+            hi: Operand::Offset { base: Box::new(fld(Side::A, "age")), by: 8.0 },
+        },
+    );
+    window.when = Some(Expr::Between { value: fld(Side::A, "age"), lo: lit(Value::Num(25.0)), hi: lit(Value::Num(30.0)) });
+    window.scope = RuleScope::Directional;
+    window.group = Some("age".into());
+    window.enabled = false;
+
+    RuleSet::new("Default program", 1, vec![kids, age_gap, city, religion, window])
 }

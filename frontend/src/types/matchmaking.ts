@@ -79,10 +79,20 @@ export interface Preference {
   note?: string | null;
 }
 
+export type Direction = 'pair' | 'a_to_b' | 'b_to_a';
+export type Tri = 'true' | 'false' | 'unknown';
+
 export interface RuleResult {
   rule_id: string;
+  description: string;
   kind: 'hard' | 'soft';
-  result: 'true' | 'false' | 'unknown';
+  group: string | null;
+  priority: number;
+  direction: Direction;
+  /** false = the rule's "applies when" condition was false, so it was skipped */
+  applicable: boolean;
+  result: Tri;
+  weight: number;
 }
 
 export interface MatchOutcome {
@@ -92,7 +102,94 @@ export interface MatchOutcome {
   needs_info: string[];
   soft_score: number | null;
   unknown_soft: string[];
+  coverage: number | null;
+  meets_threshold: boolean | null;
   results: RuleResult[];
+}
+
+export interface MatchEvaluation {
+  rules: MatchOutcome;
+  a_preferences: MatchOutcome;
+  b_preferences: MatchOutcome;
+  eligible: boolean;
+  needs_info: boolean;
+  score: number | null;
+  coverage: number | null;
+  meets_threshold: boolean | null;
+}
+
+export interface MatchCandidate extends ProfileSummary {
+  eligible: boolean;
+  needs_info: boolean;
+  score: number | null;
+  coverage: number | null;
+  blocking: string[];
+  unknown_count: number;
+}
+
+// ---- rule sets (mirror matchmaking-core serde output) ----
+export type Side = 'a' | 'b';
+export type CmpOp = 'eq' | 'ne' | 'lt' | 'le' | 'gt' | 'ge' | 'in';
+
+export type Operand =
+  | { field: { of: Side; key: string } }
+  | { lit: { value: Value } }
+  | { offset: { base: Operand; by: number } };
+
+export type Expr =
+  | { op: 'and'; args: Expr[] }
+  | { op: 'or'; args: Expr[] }
+  | { op: 'not'; arg: Expr }
+  | { op: 'cmp'; left: Operand; cmp: CmpOp; right: Operand }
+  | { op: 'between'; value: Operand; lo: Operand; hi: Operand }
+  | { op: 'exists'; value: Operand }
+  | { op: 'if'; when: Expr; then: Expr };
+
+export interface Rule {
+  id: string;
+  description: string;
+  kind: 'hard' | 'soft';
+  weight: number;
+  expr: Expr;
+  when?: Expr | null;
+  group?: string | null;
+  priority: number;
+  scope: 'pair' | 'directional';
+  enabled: boolean;
+}
+
+export interface RuleSet {
+  name: string;
+  version: number;
+  rules: Rule[];
+  group_weights: Record<string, number>;
+  min_score: number | null;
+}
+
+export interface RuleIssue {
+  rule_id: string | null;
+  message: string;
+}
+
+export interface RuleSetSummary {
+  id: string;
+  name: string;
+  description: string;
+  current_version: number;
+  archived: boolean;
+  rule_count: number;
+  updated_at: string;
+}
+
+export interface RuleSetView {
+  id: string;
+  name: string;
+  description: string;
+  archived: boolean;
+  current_version: number;
+  version: number;
+  definition: RuleSet;
+  versions: { version: number; created_at: string; note: string | null }[];
 }
 
 export interface UpdateResult {

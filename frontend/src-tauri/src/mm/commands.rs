@@ -86,7 +86,7 @@ fn view(sp: StoredProfile, reg: &matchmaking_core::FieldRegistry) -> ProfileView
     }
 }
 
-fn summary(sp: &StoredProfile, reg: &matchmaking_core::FieldRegistry) -> ProfileSummary {
+pub(crate) fn summary(sp: &StoredProfile, reg: &matchmaking_core::FieldRegistry) -> ProfileSummary {
     // The display name is a sensitive field by default; show it in the matchmaker's own list but never
     // use sensitive fields anywhere that could leave the device.
     let text = |k: &str| match sp.profile.get(k) {

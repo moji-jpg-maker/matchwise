@@ -59,7 +59,7 @@ impl Preference {
             Strength::Preferred => (RuleKind::Soft, expr, self.importance as f64),
             Strength::Flexible => (RuleKind::Soft, expr, self.importance as f64 * 0.5),
         };
-        Ok(Rule { id: self.id.clone(), description, kind, weight, expr })
+        Ok(Rule::new(&self.id, &description, kind, weight, expr))
     }
 }
 
@@ -133,7 +133,7 @@ pub fn validate_preference(p: &Preference, registry: &FieldRegistry) -> Result<(
 /// Compile preferences into a rule set (preferences first become rules, then run through the rule engine).
 pub fn preferences_to_ruleset(prefs: &[Preference], version: u32) -> Result<RuleSet, String> {
     let rules = prefs.iter().map(Preference::to_rule).collect::<Result<Vec<_>, _>>()?;
-    Ok(RuleSet { name: "partner_preferences".into(), version, rules })
+    Ok(RuleSet::new("partner_preferences", version, rules))
 }
 
 /// Evaluate `owner`'s preferences against a `candidate` partner.

@@ -13,21 +13,21 @@ fn f(of: Side, k: &str) -> Operand { Operand::Field { of, key: k.into() } }
 fn lit_b(v: bool) -> Operand { Operand::Lit { value: Value::Bool(v) } }
 
 fn ruleset() -> RuleSet {
-    RuleSet { name: "default".into(), version: 3, rules: vec![
+    RuleSet::new("default", 3, vec![
         // From the plan: IF candidate.has_children THEN partner.accepts_children MUST = true
-        Rule { id: "kids".into(), description: "partner accepts children".into(), kind: RuleKind::Hard, weight: 1.0,
-            expr: Expr::If {
+        Rule::new("kids", "partner accepts children", RuleKind::Hard, 1.0,
+            Expr::If {
                 when: Box::new(Expr::Cmp { left: f(Side::A, "has_children"), cmp: CmpOp::Eq, right: lit_b(true) }),
                 then: Box::new(Expr::Cmp { left: f(Side::B, "accepts_children"), cmp: CmpOp::Eq, right: lit_b(true) }),
-            } },
+            }),
         // Partner age within [age, age+8]
-        Rule { id: "age".into(), description: "partner age 0..8 above".into(), kind: RuleKind::Soft, weight: 2.0,
-            expr: Expr::Between {
+        Rule::new("age", "partner age 0..8 above", RuleKind::Soft, 2.0,
+            Expr::Between {
                 value: f(Side::B, "age"),
                 lo: f(Side::A, "age"),
                 hi: Operand::Offset { base: Box::new(f(Side::A, "age")), by: 8.0 },
-            } },
-    ]}
+            }),
+    ])
 }
 
 #[test]

@@ -24,7 +24,7 @@ frontend/src/            matchmaker dashboard (Next.js)
 Same feature set as before, ordered so something works end to end early.
 - **M0 Cleanup & safety** -- remove telemetry, updater, license code, legacy backend, dead code, rebrand, keychain for secrets, encrypted DB. (`M0_AUDIT.md`)
 - **M1 Profiles & search** -- field registry (custom fields at runtime), profiles with provenance, deterministic filters, import/export. *(first slice written: see `M1_STATUS.md`)*
-- **M2 Rules** -- data-driven rule engine, hard constraints, versioned rule sets, admin UI, evaluation traces. *(core engine started in `matchmaking-core`)*
+- **M2 Rules** -- data-driven rule engine, hard constraints, versioned rule sets, admin UI, evaluation traces. *(first slice written: see `M2_STATUS.md`)*
 - **M3 Scoring & match view** -- multi-dimension scores, strengths/concerns/unknowns, explanations.
 - **M4 Workflow** -- match lifecycle, matchmaker approve/reject/override, notes, audit log.
 - **M5 Telegram** -- adapter, account linking, notifications.

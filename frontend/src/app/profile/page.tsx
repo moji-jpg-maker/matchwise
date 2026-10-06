@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { FieldDef, ProfileView, RecordValue, UpdateResult, Value, kindName, kindOptions, recordFields } from '@/types/matchmaking';
 import { RecordsInput } from '@/components/matchmaking/RecordsInput';
 import { PreferencesPanel } from '@/components/matchmaking/PreferencesPanel';
+import { MatchesPanel } from '@/components/matchmaking/MatchesPanel';
 
 const SOURCE_LABEL: Record<string, string> = {
   user: 'entered by the candidate',
@@ -191,6 +192,8 @@ function ProfileEditor() {
         </div>
 
         <PreferencesPanel profileId={id} fields={fields} />
+
+        <MatchesPanel profileId={id} />
 
         <div className="flex items-center justify-between pt-2">
           <Button variant="outline" onClick={toggleActive}>
