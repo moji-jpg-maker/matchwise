@@ -279,3 +279,93 @@ export function kindOptions(k: FieldKind): string[] {
 export function recordFields(k: FieldKind): FieldDef[] {
   return typeof k !== 'string' && 'records' in k ? k.records : [];
 }
+
+// ---- match workflow (mirror matchmaking-core lifecycle + src-tauri mm/match_commands.rs)
+export type MatchStatus =
+  | 'identified'
+  | 'recommended'
+  | 'reviewed'
+  | 'approved'
+  | 'introduction_proposed'
+  | 'both_interested'
+  | 'contact_exchanged'
+  | 'conversation'
+  | 'meeting'
+  | 'feedback'
+  | 'closed'
+  | 'rejected'
+  | 'declined'
+  | 'stopped';
+
+export type Interest = 'unknown' | 'interested' | 'not_interested';
+
+export type Outcome =
+  | 'interested'
+  | 'not_interested'
+  | 'first_conversation'
+  | 'first_meeting'
+  | 'continued'
+  | 'stopped'
+  | 'relationship_formed'
+  | 'married'
+  | 'unknown';
+
+export interface MatchNote {
+  id: number;
+  text: string;
+  created_at: string;
+}
+
+export interface MatchEvent {
+  at: string;
+  actor: string;
+  kind: string;
+  from_status: string | null;
+  to_status: string | null;
+  detail: string | null;
+}
+
+export interface MatchDetail {
+  id: string;
+  profile_a: string;
+  profile_b: string;
+  name_a: string | null;
+  name_b: string | null;
+  source_profile: string | null;
+  rule_set_id: string;
+  rule_set_name: string | null;
+  rule_set_version: number;
+  status: MatchStatus;
+  allowed_next: MatchStatus[];
+  eligible: boolean;
+  can_record_responses: boolean;
+  can_record_outcome: boolean;
+  hold_reason: string | null;
+  a_response: Interest;
+  b_response: Interest;
+  outcome: Outcome | null;
+  override_reason: string | null;
+  weight_overrides: Record<string, number>;
+  hidden: boolean;
+  created_at: string;
+  updated_at: string;
+  scorecard: ScoreCard | null;
+  scorecard_at: string | null;
+  scorecard_trigger: string | null;
+  snapshot_count: number;
+  notes: MatchNote[];
+  events: MatchEvent[];
+}
+
+export interface MatchSummary {
+  id: string;
+  name_a: string | null;
+  name_b: string | null;
+  status: MatchStatus;
+  on_hold: boolean;
+  hidden: boolean;
+  eligible: boolean;
+  score: number | null;
+  outcome: Outcome | null;
+  updated_at: string;
+}

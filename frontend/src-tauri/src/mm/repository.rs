@@ -329,6 +329,10 @@ impl MmRepository {
         Ok(Some((meta, def, versions)))
     }
 
+    pub async fn get_rule_set_name(pool: &SqlitePool, id: &str) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT name FROM mm_rule_sets WHERE id = ? AND org_id = ?").bind(id).bind(ORG).fetch_optional(pool).await
+    }
+
     pub async fn rule_set_name_taken(pool: &SqlitePool, name: &str, except_id: Option<&str>) -> Result<bool, sqlx::Error> {
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM mm_rule_sets WHERE org_id = ? AND name = ? AND id != ?")
             .bind(ORG)

@@ -6,6 +6,7 @@
 pub mod defaults;
 pub mod matching;
 pub mod expr;
+pub mod lifecycle;
 pub mod field;
 pub mod preferences;
 pub mod rule_validation;
@@ -28,4 +29,8 @@ pub use rule_validation::{validate_ruleset, RuleIssue};
 pub use scoring::{
     dimension_catalog, resolve_dimension, score_pair, DimStatus, DimensionDef, DimensionScore, Finding, FindingSource, HardConstraints,
     HardStatus, MissingField, ScoreCard,
+};
+pub use lifecycle::{
+    apply_responses, can_record_outcome, can_record_responses, validate_text, validate_transition, Interest, MatchStatus, Outcome,
+    TransitionContext, TransitionPlan, TransitionRequest,
 };
