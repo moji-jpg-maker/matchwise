@@ -61,6 +61,9 @@ pub struct MatchDetail {
     pub eligible: bool,
     pub can_record_responses: bool,
     pub can_record_outcome: bool,
+    /// Whether each person can currently receive Telegram messages (linked, agreed to the notice, notifications on).
+    pub reachable_a: bool,
+    pub reachable_b: bool,
     pub hold_reason: Option<String>,
     pub a_response: Interest,
     pub b_response: Interest,
@@ -89,7 +92,10 @@ async fn detail(pool: &SqlitePool, id: &str) -> Result<MatchDetail, String> {
     let rule_set_name = MmRepository::get_rule_set_name(pool, &m.rule_set_id).await.map_err(err)?;
     let notes = MatchRepo::notes(pool, id).await.map_err(err)?;
     let events = MatchRepo::events(pool, id).await.map_err(err)?;
+    let (reachable_a, reachable_b) = crate::telegram::notify::reachable_sides(pool, &m).await?;
     Ok(MatchDetail {
+        reachable_a,
+        reachable_b,
         name_a: name_of(pool, &m.profile_a).await?,
         name_b: name_of(pool, &m.profile_b).await?,
         allowed_next: m.status.allowed_next(),
@@ -297,25 +303,37 @@ pub async fn mm_transition_match(
     MatchRepo::record_transition(pool, &id, m.status, to_status, plan.outcome, override_text.as_deref(), detail_text.as_deref()).await.map_err(err)?;
     // The global audit log keeps the move, never the free text.
     MmRepository::audit(pool, "match_transition", "match", &id, Some(&format!("{} -> {}{}", m.status.as_str(), to_status.as_str(), if plan.override_used { " (override)" } else { "" }))).await;
+    crate::telegram::notify::after_status_change(pool, &id, m.status, to_status).await;
     detail(pool, &id).await
+}
+
+/// Record one person's answer and let it move the match. Used by the app and by the Telegram bot, so both
+/// follow the same rules and trigger the same notifications. Returns the status before and after.
+pub(crate) async fn set_response_inner(pool: &SqlitePool, id: &str, side: &str, response: Interest) -> Result<(MatchStatus, MatchStatus), String> {
+    let m = require_match(pool, id).await?;
+    if !can_record_responses(m.status) {
+        return Err("Responses can only be recorded while an introduction is in progress".into());
+    }
+    let (a, b) = match side {
+        "a" => (response, m.b_response),
+        "b" => (m.a_response, response),
+        _ => return Err("side must be 'a' or 'b'".into()),
+    };
+    let next = apply_responses(m.status, a, b);
+    MatchRepo::record_responses(pool, id, m.status, a, b, next, side).await.map_err(err)?;
+    MmRepository::audit(pool, "match_response", "match", id, next.map(|s| s.as_str())).await;
+    let new_status = next.unwrap_or(m.status);
+    if new_status != m.status {
+        crate::telegram::notify::after_status_change(pool, id, m.status, new_status).await;
+    }
+    Ok((m.status, new_status))
 }
 
 /// Record whether a person is interested in the introduction. Two "yes" answers advance the match; a "no" ends it.
 #[tauri::command]
 pub async fn mm_set_response(state: State<'_, AppState>, id: String, side: String, response: Interest) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    let m = require_match(pool, &id).await?;
-    if !can_record_responses(m.status) {
-        return Err("Responses can only be recorded while an introduction is in progress".into());
-    }
-    let (a, b) = match side.as_str() {
-        "a" => (response, m.b_response),
-        "b" => (m.a_response, response),
-        _ => return Err("side must be 'a' or 'b'".into()),
-    };
-    let next = apply_responses(m.status, a, b);
-    MatchRepo::record_responses(pool, &id, m.status, a, b, next, &side).await.map_err(err)?;
-    MmRepository::audit(pool, "match_response", "match", &id, next.map(|s| s.as_str())).await;
+    set_response_inner(pool, &id, &side, response).await?;
     detail(pool, &id).await
 }
 

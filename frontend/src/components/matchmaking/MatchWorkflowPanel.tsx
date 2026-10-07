@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ import {
   describeEvent,
   eventText,
 } from '@/lib/workflow';
-import { DimensionDef, Interest, MatchDetail, MatchStatus, Outcome } from '@/types/matchmaking';
+import { DimensionDef, Interest, IntroPreview, MatchDetail, MatchStatus, Outcome } from '@/types/matchmaking';
 
 const sel = 'border rounded-md px-2 py-1.5 text-sm bg-white';
 
@@ -41,6 +41,8 @@ export function MatchWorkflowPanel({ detail: d, dims, onChange }: Props) {
   const [latestRules, setLatestRules] = useState(false);
   const [weightRows, setWeightRows] = useState<{ key: string; weight: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<IntroPreview | null>(null);
+  const [holdSide, setHoldSide] = useState<'a' | 'b'>('a');
 
   const run = async <T,>(fn: () => Promise<T>, after?: (r: T) => void) => {
     setBusy(true);
@@ -61,6 +63,15 @@ export function MatchWorkflowPanel({ detail: d, dims, onChange }: Props) {
     setOverride('');
     setCloseOutcome(d.outcome ?? '');
   };
+
+  // Proposing an introduction sends messages: show exactly what, and to whom, before the matchmaker confirms.
+  useEffect(() => {
+    if (pending !== 'introduction_proposed') {
+      setPreview(null);
+      return;
+    }
+    invoke<IntroPreview>('tg_preview_introduction', { matchId: d.id }).then(setPreview).catch(() => setPreview(null));
+  }, [pending, d.id]);
 
   const needsOverride = pending !== null && ['recommended', 'approved'].includes(pending) && !d.eligible;
   const needsOutcome = pending === 'closed' && !d.outcome;
@@ -187,6 +198,24 @@ export function MatchWorkflowPanel({ detail: d, dims, onChange }: Props) {
                 </select>
               </div>
             )}
+            {pending === 'introduction_proposed' && preview && (
+              <div className="border rounded-md p-2 bg-white space-y-2 text-sm">
+                <div className="font-medium">What this will send through Telegram</div>
+                {([['a', nameA, preview.a], ['b', nameB, preview.b]] as const).map(([k, name, side]) => (
+                  <div key={k}>
+                    <div className="text-xs text-gray-500">To {name}</div>
+                    {side.reachable && side.message ? (
+                      <pre className="whitespace-pre-wrap text-xs bg-gray-50 border rounded p-2 font-sans">{side.message}</pre>
+                    ) : (
+                      <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+                        Not reachable on Telegram: nothing will be sent. Tell {name} about the introduction yourself and record their answer below once the introduction is proposed.
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <p className="text-xs text-gray-500">Each person can answer with buttons. Contact details are never included.</p>
+              </div>
+            )}
             <div>
               <label className="text-xs font-medium">Note for the record (optional)</label>
               <Input className="mt-1" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={NEGATIVE.includes(pending) ? 'Why?' : 'Anything worth remembering'} />
@@ -240,9 +269,33 @@ export function MatchWorkflowPanel({ detail: d, dims, onChange }: Props) {
       <div className="bg-white rounded-lg border p-4 space-y-3">
         {!d.hold_reason && !d.status.match(/^(closed|rejected|declined|stopped)$/) && (
           <div className="flex items-center gap-2">
-            <Input className="flex-1" placeholder="Request more information, e.g. “need her education level”" value={holdText} onChange={(e) => setHoldText(e.target.value)} />
-            <Button size="sm" variant="outline" disabled={busy || holdText.trim() === ''} onClick={() => run(() => invoke<MatchDetail>('mm_set_match_hold', { id: d.id, reason: holdText }), (r) => { setHoldText(''); apply(r); })}>
-              Request
+            <select className={sel} value={holdSide} onChange={(e) => setHoldSide(e.target.value as 'a' | 'b')} aria-label="Ask whom">
+              <option value="a">{nameA}</option>
+              <option value="b">{nameB}</option>
+            </select>
+            <Input className="flex-1" placeholder="Request more information, e.g. “what is your education level?”" value={holdText} onChange={(e) => setHoldText(e.target.value)} />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || holdText.trim() === ''}
+              title={(holdSide === 'a' ? d.reachable_a : d.reachable_b) ? 'Sent to them on Telegram' : 'They are not on Telegram: the request is only recorded'}
+              onClick={() =>
+                run(
+                  async () => {
+                    if (holdSide === 'a' ? d.reachable_a : d.reachable_b) {
+                      await invoke('tg_request_info', { matchId: d.id, side: holdSide, text: holdText });
+                      return invoke<MatchDetail>('mm_get_match', { id: d.id });
+                    }
+                    return invoke<MatchDetail>('mm_set_match_hold', { id: d.id, reason: holdText });
+                  },
+                  (r) => {
+                    setHoldText('');
+                    apply(r);
+                  }
+                )
+              }
+            >
+              {(holdSide === 'a' ? d.reachable_a : d.reachable_b) ? 'Ask on Telegram' : 'Record request'}
             </Button>
           </div>
         )}

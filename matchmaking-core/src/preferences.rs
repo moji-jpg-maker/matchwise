@@ -171,3 +171,41 @@ pub fn evaluate_mutual(
         b_wants_a,
     })
 }
+
+/// One-line, human wording for a stored preference (used where the editor is not available, for example in chat).
+pub fn describe_preference(p: &Preference, registry: &FieldRegistry) -> String {
+    use crate::search::ConditionOp::*;
+    let c = &p.condition;
+    let label = registry.get(&c.field).map(|d| d.label.as_str()).unwrap_or(c.field.as_str());
+    let show = |v: &Option<Value>| match v {
+        Some(Value::List(l)) => l.iter().map(|s| s.replace('_', " ")).collect::<Vec<_>>().join(" or "),
+        Some(v) => crate::sharing::display_value(v).unwrap_or_default(),
+        None => String::new(),
+    };
+    let rel = |r: &Option<crate::search::RelativeValue>| {
+        r.as_ref().map(|r| {
+            let off = if r.offset == 0.0 { String::new() } else if r.offset > 0.0 { format!(" + {}", r.offset) } else { format!(" - {}", r.offset.abs()) };
+            format!("own {}{}", registry.get(&r.field).map(|d| d.label.to_lowercase()).unwrap_or_else(|| r.field.clone()), off)
+        })
+    };
+    let lo = rel(&c.value_rel).unwrap_or_else(|| show(&c.value));
+    let hi = rel(&c.value2_rel).unwrap_or_else(|| show(&c.value2));
+    let body = match c.op {
+        Eq => format!("{label} is {lo}"),
+        Ne => format!("{label} is not {lo}"),
+        Lt => format!("{label} is below {lo}"),
+        Le => format!("{label} is at most {lo}"),
+        Gt => format!("{label} is above {lo}"),
+        Ge => format!("{label} is at least {lo}"),
+        In => format!("{label} is {lo}"),
+        Between => format!("{label} between {lo} and {hi}"),
+        Exists => format!("{label} is given"),
+    };
+    let tag = match p.strength {
+        Strength::Required => "must have",
+        Strength::DealBreaker => "deal-breaker",
+        Strength::Preferred => "preferred",
+        Strength::Flexible => "nice to have",
+    };
+    format!("{body} ({tag})")
+}

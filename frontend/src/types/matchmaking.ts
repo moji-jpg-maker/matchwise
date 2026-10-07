@@ -340,6 +340,8 @@ export interface MatchDetail {
   eligible: boolean;
   can_record_responses: boolean;
   can_record_outcome: boolean;
+  reachable_a: boolean;
+  reachable_b: boolean;
   hold_reason: string | null;
   a_response: Interest;
   b_response: Interest;
@@ -368,4 +370,74 @@ export interface MatchSummary {
   score: number | null;
   outcome: Outcome | null;
   updated_at: string;
+}
+
+// ---- Telegram (mirror src-tauri/src/telegram/commands.rs)
+export interface TelegramStatus {
+  configured: boolean;
+  token_source: string | null;
+  running: boolean;
+  bot_username: string | null;
+  last_error: string | null;
+  last_activity: string | null;
+  processed_updates: number;
+  sent_messages: number;
+  consent_version: number;
+  introduction_fields: string[];
+  show_first_name: boolean;
+  never_shared: string[];
+  unread_messages: number;
+  open_requests: number;
+}
+
+export interface TelegramLink {
+  linked: boolean;
+  consented: boolean;
+  notifications_enabled: boolean;
+  username: string | null;
+  linked_at: string | null;
+  open_invite: boolean;
+  unread: number;
+}
+
+export interface TelegramInvite {
+  code: string;
+  link: string | null;
+  expires_at: string;
+}
+
+export interface TelegramMessage {
+  id: number;
+  direction: 'in' | 'out';
+  text: string;
+  match_id: string | null;
+  created_at: string;
+  is_read: boolean;
+}
+
+export interface IntroPreviewSide {
+  profile_id: string;
+  name: string | null;
+  reachable: boolean;
+  message: string | null;
+}
+
+export interface IntroPreview {
+  a: IntroPreviewSide;
+  b: IntroPreviewSide;
+}
+
+export interface OutboxItem {
+  kind: string;
+  text: string;
+  status: 'pending' | 'sent' | 'failed' | 'cancelled';
+  attempts: number;
+  created_at: string;
+  sent_at: string | null;
+  last_error: string | null;
+}
+
+export interface TelegramInbox {
+  unread: { profile_id: string; name: string | null; unread: number }[];
+  requests: { id: number; profile_id: string; name: string | null; kind: string; created_at: string }[];
 }

@@ -13,13 +13,14 @@ pub mod rule_validation;
 pub mod scoring;
 pub mod profile;
 pub mod search;
+pub mod sharing;
 
 pub use expr::{evaluate, Expr, Trace};
 pub use field::{FieldDef, FieldKind, FieldRegistry};
 pub use defaults::{default_registry, default_ruleset};
 pub use profile::{Profile, Provenance, ValidationIssue, Value};
 pub use preferences::{
-    evaluate_mutual, evaluate_preferences, preferences_to_ruleset, validate_preference, MutualOutcome, Preference, Strength,
+    describe_preference, evaluate_mutual, evaluate_preferences, preferences_to_ruleset, validate_preference, MutualOutcome, Preference, Strength,
 };
 pub use search::{condition_to_expr, conditions_to_expr, search, Condition, ConditionOp, RelativeValue, SearchHit};
 pub mod rules;
@@ -34,3 +35,4 @@ pub use lifecycle::{
     apply_responses, can_record_outcome, can_record_responses, validate_text, validate_transition, Interest, MatchStatus, Outcome,
     TransitionContext, TransitionPlan, TransitionRequest,
 };
+pub use sharing::{build_introduction_card, display_value, first_name, IntroCard, DEFAULT_INTRODUCTION_FIELDS, NEVER_SHARED};

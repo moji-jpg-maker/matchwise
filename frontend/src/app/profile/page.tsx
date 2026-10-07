@@ -11,6 +11,7 @@ import { FieldDef, ProfileView, RecordValue, UpdateResult, Value, kindName, kind
 import { RecordsInput } from '@/components/matchmaking/RecordsInput';
 import { PreferencesPanel } from '@/components/matchmaking/PreferencesPanel';
 import { MatchesPanel } from '@/components/matchmaking/MatchesPanel';
+import { TelegramPanel } from '@/components/matchmaking/TelegramPanel';
 
 const SOURCE_LABEL: Record<string, string> = {
   user: 'entered by the candidate',
@@ -194,6 +195,8 @@ function ProfileEditor() {
         <PreferencesPanel profileId={id} fields={fields} />
 
         <MatchesPanel profileId={id} />
+
+        <TelegramPanel profileId={id} />
 
         <div className="flex items-center justify-between pt-2">
           <Button variant="outline" onClick={toggleActive}>

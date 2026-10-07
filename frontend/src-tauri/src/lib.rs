@@ -42,6 +42,7 @@ pub mod console_utils;
 pub mod database;
 pub mod notifications;
 pub mod mm;
+pub mod telegram;
 pub mod ollama;
 pub mod onboarding;
 pub mod openai;
@@ -465,6 +466,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .manage(telegram::worker::TelegramRuntime::default())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -804,6 +806,24 @@ pub fn run() {
             mm::match_commands::mm_add_match_note,
             mm::match_commands::mm_set_match_hidden,
             mm::match_commands::mm_rescore_match,
+            telegram::commands::tg_get_status,
+            telegram::commands::tg_save_token,
+            telegram::commands::tg_clear_token,
+            telegram::commands::tg_start,
+            telegram::commands::tg_stop,
+            telegram::commands::tg_set_sharing,
+            telegram::commands::tg_get_link,
+            telegram::commands::tg_create_invite,
+            telegram::commands::tg_unlink,
+            telegram::commands::tg_messages,
+            telegram::commands::tg_mark_read,
+            telegram::commands::tg_send_message,
+            telegram::commands::tg_request_info,
+            telegram::commands::tg_remind_profile,
+            telegram::commands::tg_preview_introduction,
+            telegram::commands::tg_outbox,
+            telegram::commands::tg_inbox,
+            telegram::commands::tg_resolve_request,
             database::commands::select_legacy_database_path,
             database::commands::detect_legacy_database,
             database::commands::check_default_legacy_database,

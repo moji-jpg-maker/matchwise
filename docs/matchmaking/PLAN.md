@@ -27,7 +27,7 @@ Same feature set as before, ordered so something works end to end early.
 - **M2 Rules** -- data-driven rule engine, hard constraints, versioned rule sets, admin UI, evaluation traces. *(first slice written: see `M2_STATUS.md`)*
 - **M3 Scoring & match view** -- multi-dimension scores, strengths/concerns/unknowns, explanations. *(first slice written: see `M3_STATUS.md`)*
 - **M4 Workflow** -- match lifecycle, matchmaker approve/reject/override, notes, audit log. *(first slice written: see `M4_STATUS.md`)*
-- **M5 Telegram** -- adapter, account linking, notifications.
+- **M5 Telegram** -- adapter, account linking, notifications. *(first slice written: see `M5_STATUS.md`)*
 - **M6 AI** -- LLM profile extraction (never overwrites human data), pair analysis grounded in rule results.
 - **M7 Psychology, outcomes, ranking v1** -- evidence registry + questionnaires, outcome capture, versioned scoring configs.
 
