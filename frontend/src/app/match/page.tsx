@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { ScoreCardView } from '@/components/matchmaking/ScoreCardView';
 import { RuleResultList } from '@/components/matchmaking/RuleResultList';
 import { MatchWorkflowPanel } from '@/components/matchmaking/MatchWorkflowPanel';
+import { MatchAiPanel } from '@/components/matchmaking/MatchAiPanel';
 import { STATUS_CHIP, STATUS_LABEL } from '@/lib/workflow';
 import { DimensionDef, MatchDetail, MatchView, ProfileView, RuleSetSummary } from '@/types/matchmaking';
 
@@ -131,6 +132,7 @@ function MatchPage() {
             ) : (
               <div className="text-gray-500">No score stored for this match.</div>
             )}
+            <MatchAiPanel matchId={detail.id} nameA={detail.name_a || 'Person A'} nameB={detail.name_b || 'Person B'} />
             <MatchWorkflowPanel detail={detail} dims={dims} onChange={setDetail} />
           </>
         )}

@@ -441,3 +441,101 @@ export interface TelegramInbox {
   unread: { profile_id: string; name: string | null; unread: number }[];
   requests: { id: number; profile_id: string; name: string | null; kind: string; created_at: string }[];
 }
+
+// ---- AI (mirror src-tauri/src/ai)
+export interface AiConfig {
+  provider: 'none' | 'ollama' | 'openai_compatible' | 'anthropic';
+  model: string;
+  base_url: string;
+  local_include_sensitive: boolean;
+}
+
+export interface AiSettings {
+  config: AiConfig;
+  is_cloud: boolean;
+  has_key: boolean;
+  key_source: string | null;
+  consent: { version: number; at: string; include_sensitive: boolean } | null;
+  consent_text: string;
+  consent_version: number;
+  default_urls: [string, string][];
+  ready: boolean;
+  not_ready_reason: string | null;
+  mode: { is_cloud: boolean; include_sensitive: boolean } | null;
+}
+
+export interface AiSuggestion {
+  id: number;
+  profile_id: string;
+  kind: 'field' | 'preference';
+  field: string;
+  payload: unknown;
+  evidence: string;
+  confidence: number;
+  conflict: boolean;
+  status: string;
+  model: string;
+  created_at: string;
+}
+
+export interface AiExtraction {
+  run_id: number;
+  model: string;
+  is_cloud: boolean;
+  created_at: string;
+  suggestions: AiSuggestion[];
+  contradictions: { description: string; evidence: string[] }[];
+  missing: string[];
+  questions: string[];
+  dropped: string[];
+}
+
+export interface AiPromptPreview {
+  system: string;
+  user: string;
+  is_cloud: boolean;
+  include_sensitive: boolean;
+}
+
+export interface AiFact {
+  id: string;
+  source: string;
+  text: string;
+}
+
+export interface AiClaim {
+  text: string;
+  refs: string[];
+}
+
+export interface AiPairView {
+  run_id: number;
+  model: string;
+  is_cloud: boolean;
+  created_at: string;
+  stale: boolean;
+  facts: AiFact[];
+  analysis: {
+    why_it_may_work: AiClaim[];
+    potential_challenges: AiClaim[];
+    important_differences: AiClaim[];
+    questions_to_discuss: AiClaim[];
+    missing_information: AiClaim[];
+    overall_assessment: AiClaim | null;
+    dropped: string[];
+  };
+}
+
+export interface AiLogRow {
+  at: string;
+  kind: string;
+  provider: string;
+  model: string;
+  is_cloud: boolean;
+  include_sensitive: boolean;
+  input_chars: number;
+  output_chars: number;
+  ok: boolean;
+  error: string | null;
+  prompt: string | null;
+}

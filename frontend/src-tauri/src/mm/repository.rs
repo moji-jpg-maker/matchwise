@@ -169,6 +169,8 @@ impl MmRepository {
     }
 
     pub async fn delete_profile(pool: &SqlitePool, id: &str) -> Result<u64, sqlx::Error> {
+        // The AI call log is not linked by a foreign key (it records what left the computer): clear it explicitly.
+        let _ = sqlx::query("DELETE FROM mm_ai_log WHERE profile_a = ? OR profile_b = ?").bind(id).bind(id).execute(pool).await;
         let r = sqlx::query("DELETE FROM mm_profiles WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(ORG)

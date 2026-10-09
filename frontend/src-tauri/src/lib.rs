@@ -41,6 +41,7 @@ pub mod config;
 pub mod console_utils;
 pub mod database;
 pub mod notifications;
+pub mod ai;
 pub mod mm;
 pub mod telegram;
 pub mod ollama;
@@ -824,6 +825,20 @@ pub fn run() {
             telegram::commands::tg_outbox,
             telegram::commands::tg_inbox,
             telegram::commands::tg_resolve_request,
+            ai::commands::ai_get_settings,
+            ai::commands::ai_save_settings,
+            ai::commands::ai_save_key,
+            ai::commands::ai_clear_key,
+            ai::commands::ai_set_cloud_consent,
+            ai::commands::ai_test_connection,
+            ai::commands::ai_preview_extraction,
+            ai::commands::ai_extract_profile,
+            ai::commands::ai_pending_suggestions,
+            ai::commands::ai_decide_suggestion,
+            ai::commands::ai_preview_match,
+            ai::commands::ai_analyse_match,
+            ai::commands::ai_get_match_analysis,
+            ai::commands::ai_log,
             database::commands::select_legacy_database_path,
             database::commands::detect_legacy_database,
             database::commands::check_default_legacy_database,

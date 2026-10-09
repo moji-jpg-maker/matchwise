@@ -41,6 +41,10 @@ cd frontend && pnpm install && pnpm run tauri:dev
 Matchwise can talk to candidates through a bot you create yourself (BotFather). See the Telegram page in the app and `docs/matchmaking/M5_STATUS.md`. On WSL or a machine without a credential store,
 provide the token as `MATCHWISE_TELEGRAM_TOKEN`. The bot answers only while the app is running.
 
+## AI assistant
+Optional and off by default. Recommended: a model on this computer (Ollama); see the AI page in the app and `docs/matchmaking/M6_STATUS.md`. For a cloud provider on WSL or a machine without a
+credential store, provide the key as `MATCHWISE_AI_API_KEY`.
+
 ## Origin and license
 Matchwise started as a fork of [Meetily](https://github.com/Zackriya-Solutions/meetily) by Zackriya Solutions, released under the
 MIT License. The original copyright notice is preserved in [`LICENSE.md`](LICENSE.md). Matchwise is not affiliated with or endorsed by Zackriya Solutions.

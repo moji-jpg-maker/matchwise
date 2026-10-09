@@ -12,6 +12,7 @@ import { RecordsInput } from '@/components/matchmaking/RecordsInput';
 import { PreferencesPanel } from '@/components/matchmaking/PreferencesPanel';
 import { MatchesPanel } from '@/components/matchmaking/MatchesPanel';
 import { TelegramPanel } from '@/components/matchmaking/TelegramPanel';
+import { AiPanel } from '@/components/matchmaking/AiPanel';
 
 const SOURCE_LABEL: Record<string, string> = {
   user: 'entered by the candidate',
@@ -191,6 +192,8 @@ function ProfileEditor() {
             );
           })}
         </div>
+
+        <AiPanel profileId={id} fields={fields} onApplied={() => void load()} />
 
         <PreferencesPanel profileId={id} fields={fields} />
 

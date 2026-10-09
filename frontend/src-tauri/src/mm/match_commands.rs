@@ -144,13 +144,13 @@ fn check_weights(w: &BTreeMap<String, f64>) -> Result<(), String> {
 }
 
 /// Score a pair with per-match weight adjustments applied on top of the rule set.
-async fn scorecard_json(
+pub(crate) async fn compute_scorecard(
     pool: &SqlitePool,
     set: &RuleSet,
     a_id: &str,
     b_id: &str,
     weights: &BTreeMap<String, f64>,
-) -> Result<Json, String> {
+) -> Result<matchmaking_core::ScoreCard, String> {
     let a = MmRepository::get_profile(pool, a_id).await.map_err(err)?.ok_or("First profile not found")?;
     let b = MmRepository::get_profile(pool, b_id).await.map_err(err)?.ok_or("Second profile not found")?;
     let a_prefs = MmRepository::get_preferences(pool, a_id).await.map_err(err)?;
@@ -159,8 +159,17 @@ async fn scorecard_json(
     for (k, v) in weights {
         set.group_weights.insert(k.clone(), *v);
     }
-    let card = score_pair(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)?;
-    serde_json::to_value(card).map_err(err)
+    score_pair(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)
+}
+
+async fn scorecard_json(
+    pool: &SqlitePool,
+    set: &RuleSet,
+    a_id: &str,
+    b_id: &str,
+    weights: &BTreeMap<String, f64>,
+) -> Result<Json, String> {
+    serde_json::to_value(compute_scorecard(pool, set, a_id, b_id, weights).await?).map_err(err)
 }
 
 async fn require_match(pool: &SqlitePool, id: &str) -> Result<MatchRow, String> {

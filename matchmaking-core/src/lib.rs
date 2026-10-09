@@ -3,6 +3,7 @@
 //! Nothing here depends on Tauri, SQLite, Telegram, or any LLM provider, so the
 //! same engine can be reused by the desktop app, a Telegram adapter, or a future server.
 
+pub mod ai;
 pub mod defaults;
 pub mod matching;
 pub mod expr;
@@ -36,3 +37,7 @@ pub use lifecycle::{
     TransitionContext, TransitionPlan, TransitionRequest,
 };
 pub use sharing::{build_introduction_card, display_value, first_name, IntroCard, DEFAULT_INTRODUCTION_FIELDS, NEVER_SHARED};
+pub use ai::{
+    build_pair_facts, extract_json_object, extraction_prompt, pair_prompt, parse_extraction, parse_pair_analysis, profile_text_for_ai, redact_text, AiFact,
+    Claim, Contradiction, Extraction, FieldSuggestion, PairAnalysis, PreferenceSuggestion,
+};
