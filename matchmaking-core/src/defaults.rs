@@ -54,6 +54,11 @@ pub fn default_registry() -> FieldRegistry {
         f("about", "About / free-text profile", Text, false, false),
         f("telegram_username", "Telegram username", Text, true, false),
         f("phone", "Primary phone", Text, true, false),
+        f("big5_extraversion", "Extraversion (Mini-IPIP, 4-20)", Number, true, false),
+        f("big5_agreeableness", "Agreeableness (Mini-IPIP, 4-20)", Number, true, false),
+        f("big5_conscientiousness", "Conscientiousness (Mini-IPIP, 4-20)", Number, true, false),
+        f("big5_neuroticism", "Neuroticism (Mini-IPIP, 4-20)", Number, true, false),
+        f("big5_openness", "Intellect / imagination (Mini-IPIP, 4-20)", Number, true, false),
     ] {
         r.register(d);
     }
@@ -155,5 +160,32 @@ pub fn default_ruleset() -> RuleSet {
     let mut education = Rule::new("education_match", "Same education level", RuleKind::Soft, 1.0, eq(fld(Side::A, "education"), fld(Side::B, "education")));
     education.group = Some("financial_practical".into());
 
-    RuleSet::new("Default program", 1, vec![kids, age_gap, city, religion, observance, smoking, education, window])
+    // Personality rules ship switched off. Research finds that how similar two people's trait scores are predicts
+    // satisfaction very little (see the Mini-IPIP evidence record), so the matchmaker decides whether to use them.
+    let mut similar_c = Rule::new(
+        "personality_similar_conscientiousness_example",
+        "Example (weak evidence): similar conscientiousness (within 4 points)",
+        RuleKind::Soft,
+        1.0,
+        Expr::Between {
+            value: fld(Side::B, "big5_conscientiousness"),
+            lo: Operand::Offset { base: Box::new(fld(Side::A, "big5_conscientiousness")), by: -4.0 },
+            hi: Operand::Offset { base: Box::new(fld(Side::A, "big5_conscientiousness")), by: 4.0 },
+        },
+    );
+    similar_c.group = Some("personality".into());
+    similar_c.enabled = false;
+
+    let mut calm = Rule::new(
+        "personality_partner_calm_example",
+        "Example (small effect): partner is not high in neuroticism (12 or below)",
+        RuleKind::Soft,
+        1.0,
+        Expr::Cmp { left: fld(Side::B, "big5_neuroticism"), cmp: CmpOp::Le, right: lit(Value::Num(12.0)) },
+    );
+    calm.group = Some("personality".into());
+    calm.scope = RuleScope::Directional;
+    calm.enabled = false;
+
+    RuleSet::new("Default program", 1, vec![kids, age_gap, city, religion, observance, smoking, education, window, similar_c, calm])
 }

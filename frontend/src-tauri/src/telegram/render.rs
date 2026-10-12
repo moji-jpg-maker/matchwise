@@ -13,6 +13,7 @@ pub fn help_text() -> String {
      /edit - complete or change your profile\n\
      /preferences - what you are looking for\n\
      /matches - your introductions\n\
+     /questionnaires - questions your matchmaker would like you to answer\n\
      /status - where things stand\n\
      /settings - notifications and privacy\n\n\
      You can also just write a message here and your matchmaker will read it.\n\

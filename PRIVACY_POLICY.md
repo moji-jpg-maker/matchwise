@@ -14,4 +14,5 @@ This draft describes how the code currently behaves. It is not legal advice; hav
   can stop messages (/stop), unlink (/unlink) or ask for deletion (/forget), and the bot never shows stored sensitive details, scores or contact information. An introduction shows the other person's
   first name and only the facts you chose to share. The bot token is kept in the operating system's credential store.
 - **Sensitive data.** Profiles can include religion, health, family, and financial information. Collect it only with consent and a clear purpose.
+- **Questionnaires.** Scores from personality or other questionnaires are stored as sensitive fields, are never shown to the candidate in the bot, and are not shared in introductions. They describe self-reported tendencies and are not clinical assessments. A response and the scores it wrote can be deleted.
 - **Deletion.** Data deletion, consent management, and audit logging are planned features.

@@ -43,6 +43,7 @@ pub mod database;
 pub mod notifications;
 pub mod ai;
 pub mod mm;
+pub mod questionnaires;
 pub mod telegram;
 pub mod ollama;
 pub mod onboarding;
@@ -839,6 +840,14 @@ pub fn run() {
             ai::commands::ai_analyse_match,
             ai::commands::ai_get_match_analysis,
             ai::commands::ai_log,
+            questionnaires::commands::q_list_instruments,
+            questionnaires::commands::q_save_instrument,
+            questionnaires::commands::q_archive_instrument,
+            questionnaires::commands::q_profile_responses,
+            questionnaires::commands::q_assign,
+            questionnaires::commands::q_get_response,
+            questionnaires::commands::q_answer,
+            questionnaires::commands::q_delete_response,
             database::commands::select_legacy_database_path,
             database::commands::detect_legacy_database,
             database::commands::check_default_legacy_database,

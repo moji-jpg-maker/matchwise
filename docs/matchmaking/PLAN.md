@@ -29,7 +29,7 @@ Same feature set as before, ordered so something works end to end early.
 - **M4 Workflow** -- match lifecycle, matchmaker approve/reject/override, notes, audit log. *(first slice written: see `M4_STATUS.md`)*
 - **M5 Telegram** -- adapter, account linking, notifications. *(first slice written: see `M5_STATUS.md`)*
 - **M6 AI** -- LLM profile extraction (never overwrites human data), pair analysis grounded in rule results. *(first slice written: see `M6_STATUS.md`)*
-- **M7 Psychology, outcomes, ranking v1** -- evidence registry + questionnaires, outcome capture, versioned scoring configs.
+- **M7 Psychology, outcomes, ranking v1** -- evidence registry + questionnaires, outcome capture, versioned scoring configs. *(M7a, questionnaires and the evidence registry, written: see `M7A_STATUS.md`; M7b, outcome export, versioned scoring configurations and ranking v1, next)*
 
 ## Feature areas (unchanged unless marked)
 1. **Profiles**: schema-driven fields, children as sub-records, questionnaires, partner preferences, contact, photos.

@@ -539,3 +539,55 @@ export interface AiLogRow {
   error: string | null;
   prompt: string | null;
 }
+
+// ---- questionnaires and the evidence registry (mirror matchmaking-core/src/questionnaire.rs)
+export type EvidenceLevel = 'validated_instrument' | 'adapted_instrument' | 'matchmaker_defined';
+
+export interface Instrument {
+  key: string;
+  name: string;
+  version: number;
+  kind: 'standard' | 'custom';
+  dimension: string;
+  description: string;
+  evidence: {
+    level: EvidenceLevel;
+    sources: { citation: string; note: string }[];
+    limitations: string;
+    interpretation: string;
+  };
+  scale: { min: number; max: number; labels: string[] };
+  items: { id: string; text: string; subscale: string; reverse: boolean }[];
+  subscales: { key: string; label: string; field: string; method: 'sum' | 'mean' }[];
+}
+
+export interface InstrumentView {
+  instrument: Instrument;
+  archived: boolean;
+  created_at: string;
+  evidence_label: string;
+  is_latest: boolean;
+}
+
+export interface QuestionnaireResponse {
+  id: number;
+  instrument_key: string;
+  instrument_name: string;
+  instrument_version: number;
+  dimension: string;
+  evidence_label: string;
+  limitations: string;
+  interpretation: string;
+  status: 'assigned' | 'in_progress' | 'complete';
+  answered: number;
+  total: number;
+  assigned_at: string;
+  completed_at: string | null;
+  scores: { subscale: string; label: string; field: string; value: number }[];
+}
+
+export interface QuestionnaireDetail {
+  response: QuestionnaireResponse;
+  instrument: Instrument;
+  answers: Record<string, number>;
+}

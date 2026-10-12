@@ -12,6 +12,7 @@ use super::render;
 use super::repo::{self, Link, LinkError, MAX_FAILED_CODES};
 use super::types::{button, CallbackQuery, InlineButton, Keyboard, Message, Reply, Update};
 use crate::mm::match_commands::set_response_inner;
+use crate::questionnaires::{repo as qrepo, service as qservice};
 use crate::mm::match_repo::{MatchRepo, MatchRow};
 use crate::mm::repository::{MmRepository, StoredProfile};
 use matchmaking_core::{
@@ -165,6 +166,7 @@ async fn command(pool: &SqlitePool, link: &Link, cmd: &str, arg: &str) -> R {
         "edit" => start_edit(pool, link).await,
         "preferences" => show_preferences(pool, link).await,
         "matches" => show_matches(pool, link).await,
+        "questionnaires" => show_questionnaires(pool, link).await,
         "match" => open_match_by_number(pool, link, arg).await,
         "status" => show_status(pool, link).await,
         "settings" => show_settings(link),
@@ -291,6 +293,86 @@ async fn show_status(pool: &SqlitePool, link: &Link) -> R {
     }
     text.push_str(&format!("Notifications: {}", if link.notifications_enabled { "on" } else { "off" }));
     Ok(vec![Reply::text(link.chat_id, text)])
+}
+
+// ------------------------------------------------------------------ questionnaires
+
+async fn show_questionnaires(pool: &SqlitePool, link: &Link) -> R {
+    let open = qrepo::open_responses(pool, &link.profile_id).await.map_err(err)?;
+    if open.is_empty() {
+        return Ok(vec![Reply::text(link.chat_id, "You have no questionnaires waiting. Your matchmaker will tell you if there is one.")]);
+    }
+    let mut text = String::from("<b>Questionnaires</b>\nThere are no right or wrong answers. You can stop at any time and continue later with /questionnaires.\n");
+    let mut buttons = vec![];
+    for r in &open {
+        let inst = qservice::instrument_for(pool, r).await?;
+        text.push_str(&format!("• {} ({} of {} answered)\n", render::esc(&inst.name), r.answers.len(), inst.items.len()));
+        buttons.push(button(if r.answers.is_empty() { format!("Start: {}", inst.name) } else { format!("Continue: {}", inst.name) }, format!("q:start:{}", r.id)));
+    }
+    Ok(vec![Reply::with_keyboard(link.chat_id, text, buttons.into_iter().map(|b| vec![b]).collect())])
+}
+
+/// The next unanswered question as a message with one button per scale point.
+async fn ask_question(pool: &SqlitePool, chat_id: i64, r: &qrepo::ResponseRow) -> R {
+    let inst = qservice::instrument_for(pool, r).await?;
+    let Some((idx, item)) = matchmaking_core::next_item(&inst, &r.answers) else {
+        return Ok(vec![Reply::text(chat_id, "You have answered every question. Thank you!")]);
+    };
+    let mut text = format!("<b>{}</b>\nQuestion {} of {}\n\n{}\n\n", render::esc(&inst.name), idx + 1, inst.items.len(), render::esc(&item.text));
+    for (n, label) in inst.scale.labels.iter().enumerate() {
+        text.push_str(&format!("{} = {}\n", inst.scale.min + n as i32, render::esc(label)));
+    }
+    let buttons: Vec<InlineButton> = (inst.scale.min..=inst.scale.max).map(|v| button(v.to_string(), format!("q:a:{}:{}:{}", r.id, idx, v))).collect();
+    Ok(vec![Reply::with_keyboard(chat_id, text, vec![buttons])])
+}
+
+async fn questionnaire_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, message_id: Option<i64>) -> R {
+    let chat_id = link.chat_id;
+    let mut parts = rest.split(':');
+    let (kind, id) = (parts.next().unwrap_or(""), parts.next().and_then(|v| v.parse::<i64>().ok()));
+    let Some(id) = id else { return Ok(vec![toast(cb_id, "This button is no longer valid.")]) };
+    // Never trust the button: the response must exist, belong to this person and still be open.
+    let Some(r) = qrepo::get_response(pool, id).await.map_err(err)?.filter(|r| r.profile_id == link.profile_id && r.status != "complete") else {
+        return Ok(vec![toast(cb_id, "This questionnaire is no longer open.")]);
+    };
+    let clear = message_id.map(|mid| Reply::EditMarkup { chat_id, message_id: mid, keyboard: None });
+    match kind {
+        "start" => {
+            let mut out = vec![done(cb_id)];
+            out.extend(ask_question(pool, chat_id, &r).await?);
+            Ok(out)
+        }
+        "a" => {
+            let (Some(idx), Some(val)) = (parts.next().and_then(|v| v.parse::<usize>().ok()), parts.next().and_then(|v| v.parse::<i32>().ok())) else {
+                return Ok(vec![toast(cb_id, "This button is no longer valid.")]);
+            };
+            let inst = qservice::instrument_for(pool, &r).await?;
+            // The tapped question must be the one currently waiting: a second tap or an old message changes nothing.
+            let current = matchmaking_core::next_item(&inst, &r.answers);
+            let Some((cur_idx, item)) = current.filter(|(i, _)| *i == idx) else {
+                let mut out = vec![toast(cb_id, "That question has already been answered.")];
+                out.extend(clear);
+                return Ok(out);
+            };
+            let item_id = item.id.clone();
+            let _ = cur_idx;
+            let outcome = match qservice::record_answer(pool, id, &item_id, val).await {
+                Ok(o) => o,
+                Err(e) => return Ok(vec![toast(cb_id, &e)]),
+            };
+            let mut out = vec![done(cb_id)];
+            out.extend(clear);
+            if outcome.completed {
+                // Scores are not shown here: they are for the matchmaker, who can put them in context.
+                out.push(Reply::text(chat_id, "Thank you, you have finished this questionnaire. Your matchmaker will go through the results with you."));
+            } else {
+                let fresh = qrepo::get_response(pool, id).await.map_err(err)?.ok_or("Response not found")?;
+                out.extend(ask_question(pool, chat_id, &fresh).await?);
+            }
+            Ok(out)
+        }
+        _ => Ok(vec![toast(cb_id, "This button is no longer valid.")]),
+    }
 }
 
 // ------------------------------------------------------------------ editing the profile
@@ -692,6 +774,7 @@ async fn handle_callback(pool: &SqlitePool, cb: CallbackQuery) -> R {
             }
             Ok(out)
         }
+        "q" => questionnaire_callback(pool, &link, &cb.id, rest, message_id).await,
         "edit" => Ok(with_message_id(edit_callback(pool, &link, &cb.id, rest, out).await?, chat_id, message_id)),
         "pref" => Ok(with_message_id(pref_callback(pool, &link, &cb.id, rest, out).await?, chat_id, message_id)),
         _ => Ok(vec![toast(&cb.id, "This button is no longer valid.")]),

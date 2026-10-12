@@ -4,8 +4,8 @@ use sqlx::{Row, SqlitePool};
 
 pub const ORG: &str = "default";
 
-/// Version of the default field set. v1 = first M1 release (no `children`), v2 = adds `children`, curated order.
-const FIELD_SEED_VERSION: i64 = 2;
+/// Version of the default field set. v1 = first M1 release (no `children`), v2 = adds `children`, curated order, v3 = adds the Big Five score fields written by the Mini-IPIP questionnaire.
+const FIELD_SEED_VERSION: i64 = 3;
 
 pub struct MmRepository;
 
