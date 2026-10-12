@@ -2,16 +2,10 @@
 pub mod commands;
 pub mod export_commands;
 pub mod export_repo;
-pub mod exposure_commands;
-pub mod exposure_repo;
 pub mod match_commands;
 pub mod match_repo;
 pub mod repository;
 pub mod rules_commands;
-pub mod scoring_config_commands;
-pub mod scoring_config_repo;
 
 #[cfg(test)]
 mod export_tests;
-#[cfg(test)]
-mod exposure_tests;

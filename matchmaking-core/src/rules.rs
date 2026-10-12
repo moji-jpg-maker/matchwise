@@ -90,11 +90,14 @@ pub struct RuleSet {
     /// Minimum combined soft score (0..=100) for a pair to be recommended.
     #[serde(default)]
     pub min_score: Option<f64>,
+    /// Neutral score (0..=100, default 50) that thin evidence is pulled towards in the ranking score.
+    #[serde(default)]
+    pub prior_score: Option<f64>,
 }
 
 impl RuleSet {
     pub fn new(name: &str, version: u32, rules: Vec<Rule>) -> Self {
-        RuleSet { name: name.into(), version, rules, group_weights: BTreeMap::new(), min_score: None }
+        RuleSet { name: name.into(), version, rules, group_weights: BTreeMap::new(), min_score: None, prior_score: None }
     }
 
     fn effective_weight(&self, r: &Rule) -> f64 {

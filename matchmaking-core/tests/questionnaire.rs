@@ -163,6 +163,6 @@ fn instruments_round_trip_as_json_and_starter_personality_rules_are_off() {
     assert!(personality.iter().all(|r| !r.enabled && r.description.contains("Example")));
     assert!(validate_ruleset(&set, &default_registry()).is_empty());
     let a = Profile::new("a");
-    let card = score_pair(&set, &ScoringConfig::default(), &a, &Profile::new("b"), &[], &[]).unwrap();
+    let card = score_pair(&set, &a, &Profile::new("b"), &[], &[]).unwrap();
     assert_eq!(card.dimensions.iter().find(|d| d.key == "personality").unwrap().status, DimStatus::NotAssessed);
 }

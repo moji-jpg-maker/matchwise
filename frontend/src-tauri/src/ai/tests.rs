@@ -278,7 +278,7 @@ async fn tracked_pair(pool: &SqlitePool) -> String {
     make_profile(pool, "pa", &[("full_name", txt("Sara Karimi")), ("age", Value::Num(29.0)), ("city", txt("Shiraz")), ("smoking", txt("never")), ("health_notes", txt("takes medication X"))]).await;
     make_profile(pool, "pb", &[("full_name", txt("Ali Rezaei")), ("age", Value::Num(33.0)), ("city", txt("Shiraz")), ("smoking", txt("never"))]).await;
     let set_id = MmRepository::create_rule_set(pool, "rs", "", &matchmaking_core::default_ruleset(), None).await.unwrap();
-    MatchRepo::create(pool, "pa", "pb", None, &set_id, 1, None, None, MatchStatus::Recommended, &json!({"eligible": true})).await.unwrap()
+    MatchRepo::create(pool, "pa", "pb", None, &set_id, 1, MatchStatus::Recommended, &json!({"eligible": true})).await.unwrap()
 }
 
 fn pair_reply() -> &'static str {

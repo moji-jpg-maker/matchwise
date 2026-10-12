@@ -229,8 +229,6 @@ pub struct RuleSetRow {
     pub description: String,
     pub current_version: u32,
     pub archived: bool,
-    /// The scoring config the rule set reads its scorecards with. `None` until the backfill has run.
-    pub scoring_config_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -262,7 +260,6 @@ impl MmRepository {
             description: r.get("description"),
             current_version: r.get::<i64, _>("current_version") as u32,
             archived: r.get::<i64, _>("archived") != 0,
-            scoring_config_id: r.get("scoring_config_id"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
         }
@@ -287,7 +284,7 @@ impl MmRepository {
     }
 
     pub async fn list_rule_sets(pool: &SqlitePool, include_archived: bool) -> Result<Vec<(RuleSetRow, usize)>, sqlx::Error> {
-        let sql = "SELECT s.id, s.name, s.description, s.current_version, s.archived, s.scoring_config_id, s.created_at, s.updated_at, v.definition
+        let sql = "SELECT s.id, s.name, s.description, s.current_version, s.archived, s.created_at, s.updated_at, v.definition
                    FROM mm_rule_sets s JOIN mm_rule_set_versions v ON v.rule_set_id = s.id AND v.version = s.current_version
                    WHERE s.org_id = ? AND (? OR s.archived = 0) ORDER BY s.name";
         let rows = sqlx::query(sql).bind(ORG).bind(include_archived).fetch_all(pool).await?;
@@ -305,7 +302,7 @@ impl MmRepository {
         id: &str,
         version: Option<u32>,
     ) -> Result<Option<(RuleSetRow, RuleSet, Vec<VersionRow>)>, sqlx::Error> {
-        let Some(row) = sqlx::query("SELECT id, name, description, current_version, archived, scoring_config_id, created_at, updated_at FROM mm_rule_sets WHERE id = ? AND org_id = ?")
+        let Some(row) = sqlx::query("SELECT id, name, description, current_version, archived, created_at, updated_at FROM mm_rule_sets WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(ORG)
             .fetch_optional(pool)

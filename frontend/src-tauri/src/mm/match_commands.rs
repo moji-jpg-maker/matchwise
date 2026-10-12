@@ -1,10 +1,9 @@
 use super::match_repo::{MatchRepo, MatchRow};
 use super::repository::MmRepository;
-use super::scoring_config_repo::ScoringConfigRepo;
 use crate::state::AppState;
 use matchmaking_core::{
     apply_responses, can_record_outcome, can_record_responses, score_pair, validate_text, validate_transition, Interest, MatchStatus,
-    Outcome, RuleSet, ScoringConfig, TransitionContext, TransitionRequest,
+    Outcome, RuleSet, TransitionContext, TransitionRequest,
 };
 use serde::Serialize;
 use serde_json::Value as Json;
@@ -55,13 +54,6 @@ pub struct MatchDetail {
     pub rule_set_id: String,
     pub rule_set_name: Option<String>,
     pub rule_set_version: u32,
-    /// Which scoring config judged the latest snapshot, and which version of it. `None` when the snapshot predates
-    /// scoring configs: those numbers were never stored, so the view shows nothing rather than a guess.
-    pub scoring_config_id: Option<String>,
-    pub scoring_config_name: Option<String>,
-    pub scoring_config_version: Option<u32>,
-    /// The numbers the latest snapshot was judged by, for the match view. Blank for pre-config snapshots.
-    pub scoring_config: Option<ScoringConfig>,
     pub status: MatchStatus,
     /// Moves the state machine allows from here (the UI offers exactly these).
     pub allowed_next: Vec<MatchStatus>,
@@ -98,18 +90,6 @@ async fn detail(pool: &SqlitePool, id: &str) -> Result<MatchDetail, String> {
     let m = MatchRepo::get(pool, id).await.map_err(err)?.ok_or("Match not found")?;
     let snap = MatchRepo::latest_snapshot(pool, id).await.map_err(err)?;
     let rule_set_name = MmRepository::get_rule_set_name(pool, &m.rule_set_id).await.map_err(err)?;
-    // The config that judged the newest snapshot, resolved from the snapshot's own record rather than from the rule
-    // set: a stored scorecard names the version it was judged by, and that is what the view must report.
-    let config_id = snap.as_ref().and_then(|s| s.scoring_config_id.clone());
-    let config_version = snap.as_ref().and_then(|s| s.scoring_config_version);
-    let scoring_config = match (&config_id, config_version) {
-        (Some(cid), Some(cv)) => ScoringConfigRepo::get(pool, cid, Some(cv)).await.map_err(err)?.map(|(meta, def, _)| (meta.name, def)),
-        _ => None,
-    };
-    let (scoring_config_name, scoring_config_def) = match scoring_config {
-        Some((name, def)) => (Some(name), Some(def)),
-        None => (None, None),
-    };
     let notes = MatchRepo::notes(pool, id).await.map_err(err)?;
     let events = MatchRepo::events(pool, id).await.map_err(err)?;
     let (reachable_a, reachable_b) = crate::telegram::notify::reachable_sides(pool, &m).await?;
@@ -132,10 +112,6 @@ async fn detail(pool: &SqlitePool, id: &str) -> Result<MatchDetail, String> {
             .map(|e| EventView { at: e.at, actor: e.actor, kind: e.kind, from_status: e.from_status, to_status: e.to_status, detail: e.detail })
             .collect(),
         rule_set_name,
-        scoring_config_id: config_id,
-        scoring_config_name,
-        scoring_config_version: config_version,
-        scoring_config: scoring_config_def,
         id: m.id,
         profile_a: m.profile_a,
         profile_b: m.profile_b,
@@ -171,7 +147,6 @@ fn check_weights(w: &BTreeMap<String, f64>) -> Result<(), String> {
 pub(crate) async fn compute_scorecard(
     pool: &SqlitePool,
     set: &RuleSet,
-    config: &ScoringConfig,
     a_id: &str,
     b_id: &str,
     weights: &BTreeMap<String, f64>,
@@ -184,18 +159,17 @@ pub(crate) async fn compute_scorecard(
     for (k, v) in weights {
         set.group_weights.insert(k.clone(), *v);
     }
-    score_pair(&set, config, &a.profile, &b.profile, &a_prefs, &b_prefs)
+    score_pair(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)
 }
 
 async fn scorecard_json(
     pool: &SqlitePool,
     set: &RuleSet,
-    config: &ScoringConfig,
     a_id: &str,
     b_id: &str,
     weights: &BTreeMap<String, f64>,
 ) -> Result<Json, String> {
-    serde_json::to_value(compute_scorecard(pool, set, config, a_id, b_id, weights).await?).map_err(err)
+    serde_json::to_value(compute_scorecard(pool, set, a_id, b_id, weights).await?).map_err(err)
 }
 
 async fn require_match(pool: &SqlitePool, id: &str) -> Result<MatchRow, String> {
@@ -233,24 +207,10 @@ pub async fn mm_create_match(
         }
     }
     let (_, set, _) = MmRepository::get_rule_set(pool, &rule_set_id, None).await.map_err(err)?.ok_or("Rule set not found")?;
-    let config = ScoringConfigRepo::effective_for_rule_set(pool, &rule_set_id).await.map_err(err)?;
     let (a, b) = super::match_repo::pair_key(&profile_a, &profile_b);
-    let card = scorecard_json(pool, &set, &config.definition, &a, &b, &BTreeMap::new()).await?;
+    let card = scorecard_json(pool, &set, &a, &b, &BTreeMap::new()).await?;
     let status = if eligible_of(&Some(card.clone())) { MatchStatus::Recommended } else { MatchStatus::Identified };
-    let id = MatchRepo::create(
-        pool,
-        &a,
-        &b,
-        source_profile.as_deref(),
-        &rule_set_id,
-        set.version,
-        config.id.as_deref(),
-        config.version,
-        status,
-        &card,
-    )
-    .await
-    .map_err(err)?;
+    let id = MatchRepo::create(pool, &a, &b, source_profile.as_deref(), &rule_set_id, set.version, status, &card).await.map_err(err)?;
     MmRepository::audit(pool, "create_match", "match", &id, Some(status.as_str())).await;
     detail(pool, &id).await
 }
@@ -455,7 +415,6 @@ pub async fn mm_rescore_match(
     }
     let version = if use_latest_rule_set.unwrap_or(false) { None } else { Some(m.rule_set_version) };
     let (meta, set, _) = MmRepository::get_rule_set(pool, &m.rule_set_id, version).await.map_err(err)?.ok_or("Rule set version not found")?;
-    let config = ScoringConfigRepo::effective_for_rule_set(pool, &m.rule_set_id).await.map_err(err)?;
     let new_weights = match &weights {
         Some(w) => {
             check_weights(w)?;
@@ -463,22 +422,10 @@ pub async fn mm_rescore_match(
         }
         None => m.weight_overrides.clone(),
     };
-    let card = scorecard_json(pool, &set, &config.definition, &m.profile_a, &m.profile_b, &new_weights).await?;
+    let card = scorecard_json(pool, &set, &m.profile_a, &m.profile_b, &new_weights).await?;
     let trigger = if weights.is_some() { "weights_adjusted" } else { "rescore" };
     let version_used = if use_latest_rule_set.unwrap_or(false) { meta.current_version } else { m.rule_set_version };
-    MatchRepo::add_snapshot(
-        pool,
-        &id,
-        &m.rule_set_id,
-        version_used,
-        config.id.as_deref(),
-        config.version,
-        trigger,
-        &card,
-        weights.as_ref(),
-    )
-    .await
-    .map_err(err)?;
+    MatchRepo::add_snapshot(pool, &id, &m.rule_set_id, version_used, trigger, &card, weights.as_ref()).await.map_err(err)?;
     MmRepository::audit(pool, "match_rescore", "match", &id, Some(trigger)).await;
     detail(pool, &id).await
 }

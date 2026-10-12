@@ -14,7 +14,6 @@ pub mod preferences;
 pub mod questionnaire;
 pub mod rule_validation;
 pub mod scoring;
-pub mod scoring_config;
 pub mod profile;
 pub mod search;
 pub mod sharing;
@@ -35,7 +34,6 @@ pub use scoring::{
     dimension_catalog, resolve_dimension, score_pair, DimStatus, DimensionDef, DimensionScore, Finding, FindingSource, HardConstraints,
     HardStatus, MissingField, ScoreCard,
 };
-pub use scoring_config::{validate_scoring_config, ScoringConfig};
 pub use lifecycle::{
     apply_responses, can_record_outcome, can_record_responses, validate_text, validate_transition, Interest, MatchStatus, Outcome,
     TransitionContext, TransitionPlan, TransitionRequest,

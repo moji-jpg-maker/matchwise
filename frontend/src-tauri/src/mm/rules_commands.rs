@@ -1,6 +1,5 @@
 use super::commands::{summary, ProfileSummary};
 use super::repository::{MmRepository, RuleSetRow};
-use super::scoring_config_repo::ScoringConfigRepo;
 use crate::state::AppState;
 use matchmaking_core::{
     dimension_catalog, evaluate_match, score_pair, validate_ruleset, Direction, DimensionDef, Finding, HardStatus, MatchEvaluation,
@@ -20,8 +19,6 @@ pub struct RuleSetSummary {
     pub description: String,
     pub current_version: u32,
     pub archived: bool,
-    /// The scoring config this rule set reads its scorecards with, if it has been given one.
-    pub scoring_config_id: Option<String>,
     pub rule_count: usize,
     pub updated_at: String,
 }
@@ -40,7 +37,6 @@ pub struct RuleSetView {
     pub description: String,
     pub archived: bool,
     pub current_version: u32,
-    pub scoring_config_id: Option<String>,
     /// The version whose definition is shown (may be older than current).
     pub version: u32,
     pub definition: RuleSet,
@@ -54,7 +50,6 @@ fn view(meta: RuleSetRow, def: RuleSet, versions: Vec<super::repository::Version
         description: meta.description,
         archived: meta.archived,
         current_version: meta.current_version,
-        scoring_config_id: meta.scoring_config_id,
         version: def.version,
         definition: def,
         versions: versions.into_iter().map(|v| VersionInfo { version: v.version, created_at: v.created_at, note: v.note }).collect(),
@@ -65,8 +60,6 @@ fn view(meta: RuleSetRow, def: RuleSet, versions: Vec<super::repository::Version
 pub async fn mm_list_rule_sets(state: State<'_, AppState>, include_archived: Option<bool>) -> Result<Vec<RuleSetSummary>, String> {
     let pool = state.db_manager.pool();
     MmRepository::ensure_default_rule_set(pool).await.map_err(err)?;
-    // Every rule set needs a config to read its scorecards with; this also ports the prior a rule set used to hold.
-    ScoringConfigRepo::ensure_scoring_configs(pool).await.map_err(err)?;
     let rows = MmRepository::list_rule_sets(pool, include_archived.unwrap_or(false)).await.map_err(err)?;
     Ok(rows
         .into_iter()
@@ -76,7 +69,6 @@ pub async fn mm_list_rule_sets(state: State<'_, AppState>, include_archived: Opt
             description: r.description,
             current_version: r.current_version,
             archived: r.archived,
-            scoring_config_id: r.scoring_config_id,
             rule_count: n,
             updated_at: r.updated_at,
         })
@@ -108,7 +100,6 @@ pub async fn mm_save_rule_set(
     name: String,
     description: Option<String>,
     definition: RuleSet,
-    scoring_config_id: Option<String>,
     note: Option<String>,
 ) -> Result<RuleSetView, String> {
     let pool = state.db_manager.pool();
@@ -140,15 +131,6 @@ pub async fn mm_save_rule_set(
         }
         None => (MmRepository::create_rule_set(pool, &name, &description, &definition, note.as_deref()).await.map_err(err)?, 1),
     };
-    // The config is a property of the rule set, not of a version: switching it re-reads existing results under the
-    // new numbers rather than rewriting history, which is why it is stored on the rule set itself.
-    if let Some(config_id) = &scoring_config_id {
-        if ScoringConfigRepo::name(pool, config_id).await.map_err(err)?.is_none() {
-            return Err("The chosen scoring config no longer exists".into());
-        }
-        ScoringConfigRepo::set_rule_set_config(pool, &saved_id, Some(config_id)).await.map_err(err)?;
-        MmRepository::audit(pool, "rule_set_scoring_config", "rule_set", &saved_id, Some(config_id)).await;
-    }
     MmRepository::audit(pool, "save_rule_set", "rule_set", &saved_id, Some(&format!("version {version}"))).await;
     let (meta, def, versions) = MmRepository::get_rule_set(pool, &saved_id, None).await.map_err(err)?.ok_or("Rule set vanished")?;
     Ok(view(meta, def, versions))
@@ -208,9 +190,8 @@ pub async fn mm_score_pair(
     let b = MmRepository::get_profile(pool, &profile_b).await.map_err(err)?.ok_or("Second profile not found")?;
     let a_prefs = MmRepository::get_preferences(pool, &profile_a).await.map_err(err)?;
     let b_prefs = MmRepository::get_preferences(pool, &profile_b).await.map_err(err)?;
-    let config = ScoringConfigRepo::config_for_rule_set(pool, &rule_set_id).await.map_err(err)?;
     Ok(MatchView {
-        scorecard: score_pair(&set, &config, &a.profile, &b.profile, &a_prefs, &b_prefs)?,
+        scorecard: score_pair(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)?,
         evaluation: evaluate_match(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)?,
     })
 }
@@ -266,31 +247,19 @@ pub async fn mm_find_matches(
     limit: Option<usize>,
     include_ineligible: Option<bool>,
 ) -> Result<Vec<MatchCandidate>, String> {
-    find_matches(state.db_manager.pool(), &profile_id, &rule_set_id, limit, include_ineligible.unwrap_or(false)).await
-}
-
-/// The body of `mm_find_matches`, split out so it can be exercised without a Tauri `State`. Nothing about the result
-/// changes: candidates are scored, filtered, ordered and cut here, and the exposure log records exactly that list.
-pub async fn find_matches(
-    pool: &sqlx::SqlitePool,
-    profile_id: &str,
-    rule_set_id: &str,
-    limit: Option<usize>,
-    include_ineligible: bool,
-) -> Result<Vec<MatchCandidate>, String> {
+    let pool = state.db_manager.pool();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let (_, set, _) = MmRepository::get_rule_set(pool, &rule_set_id, None).await.map_err(err)?.ok_or("Rule set not found")?;
-    let config = ScoringConfigRepo::effective_for_rule_set(pool, &rule_set_id).await.map_err(err)?;
     let me = MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or("Profile not found")?;
     let all = MmRepository::list_profiles(pool, false).await.map_err(err)?;
     let prefs = MmRepository::all_preferences(pool).await.map_err(err)?;
     let none = vec![];
-    let my_prefs = prefs.get(profile_id).unwrap_or(&none);
+    let my_prefs = prefs.get(&profile_id).unwrap_or(&none);
 
     let mut out = vec![];
     for cand in all.iter().filter(|c| c.profile.id != profile_id) {
         let cand_prefs = prefs.get(&cand.profile.id).unwrap_or(&none);
-        let card = score_pair(&set, &config.definition, &me.profile, &cand.profile, my_prefs, cand_prefs)?;
+        let card = score_pair(&set, &me.profile, &cand.profile, my_prefs, cand_prefs)?;
         let mut blocking: Vec<String> = card.hard_constraints.violations.iter().map(describe).collect();
         if card.meets_threshold == Some(false) {
             blocking.push(format!("Score below the minimum of {}", set.min_score.unwrap_or(0.0)));
@@ -308,7 +277,7 @@ pub async fn find_matches(
             unknown_count: card.unknowns.len(),
         });
     }
-    if !include_ineligible {
+    if !include_ineligible.unwrap_or(false) {
         out.retain(|c| c.eligible);
     }
     out.sort_by(|x, y| {
@@ -319,33 +288,5 @@ pub async fn find_matches(
             .then(x.unknown_count.cmp(&y.unknown_count))
     });
     out.truncate(limit.unwrap_or(50).min(500));
-    // Log what was actually shown: one row per returned candidate, in the order returned. Candidates filtered out or
-    // cut by the limit are not logged -- they were never on screen, and a browsing history that claims otherwise
-    // would misrepresent the choices the matchmaker was given.
-    let search_id = uuid::Uuid::new_v4().to_string();
-    let exposures: Vec<super::exposure_repo::ExposureRow> = out
-        .iter()
-        .enumerate()
-        .map(|(rank, c)| super::exposure_repo::ExposureRow {
-            candidate_id: c.summary.id.clone(),
-            rank: rank as i64,
-            shown: true,
-            score: c.score,
-            confidence: c.confidence,
-            eligible: Some(c.eligible),
-        })
-        .collect();
-    super::exposure_repo::ExposureRepo::record(
-        pool,
-        &search_id,
-        profile_id,
-        rule_set_id,
-        set.version,
-        config.id.as_deref(),
-        config.version,
-        &exposures,
-    )
-    .await
-    .map_err(err)?;
     Ok(out)
 }

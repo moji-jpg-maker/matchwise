@@ -27,10 +27,6 @@ pub struct OutcomeRow {
     pub was_overridden: bool,
     pub rule_set_id: String,
     pub rule_set_version: u32,
-    /// Which scoring config judged the snapshot, and which version of it. Blank for decisions recorded before
-    /// scoring configs existed -- those numbers were never stored, so they are not reconstructed.
-    pub scoring_config_id: Option<String>,
-    pub scoring_config_version: Option<u32>,
     /// `created`, `rescore` or `weights_adjusted` -- how the snapshot below came to be.
     pub snapshot_trigger: Option<String>,
     pub scorecard_at: Option<String>,
@@ -50,8 +46,7 @@ pub struct OutcomeRow {
 const SQL: &str = "
     SELECT m.id, m.profile_a, m.profile_b, m.status, m.a_response, m.b_response, m.outcome,
            m.rule_set_id, m.rule_set_version, m.override_reason, m.created_at, m.updated_at,
-           s.scorecard AS card, s.trigger AS card_trigger, s.created_at AS card_at,
-           s.scoring_config_id AS card_config_id, s.scoring_config_version AS card_config_version
+           s.scorecard AS card, s.trigger AS card_trigger, s.created_at AS card_at
     FROM mm_matches m
     LEFT JOIN mm_match_snapshots s
         ON s.id = (SELECT id FROM mm_match_snapshots WHERE match_id = m.id ORDER BY id DESC LIMIT 1)
@@ -114,8 +109,6 @@ impl ExportRepo {
                     was_overridden: override_reason.map(|s| !s.trim().is_empty()).unwrap_or(false),
                     rule_set_id: r.get("rule_set_id"),
                     rule_set_version: r.get::<i64, _>("rule_set_version") as u32,
-                    scoring_config_id: r.get("card_config_id"),
-                    scoring_config_version: r.get::<Option<i64>, _>("card_config_version").map(|v| v as u32),
                     snapshot_trigger: r.get("card_trigger"),
                     scorecard_at: r.get("card_at"),
                     overall: f64_of(card.as_ref(), "overall"),
@@ -154,3 +147,4 @@ impl ExportRepo {
         Ok(keys)
     }
 }
+
