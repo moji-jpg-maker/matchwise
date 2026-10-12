@@ -19,7 +19,9 @@ fn soft(id: &str, group: &str, weight: f64, field: &str) -> Rule {
     r
 }
 fn dim<'a>(c: &'a ScoreCard, key: &str) -> &'a DimensionScore { c.dimensions.iter().find(|d| d.key == key).unwrap() }
-fn score(set: &RuleSet, a: &Profile, b: &Profile) -> ScoreCard { score_pair(set, a, b, &[], &[]).unwrap() }
+fn cfg() -> ScoringConfig { ScoringConfig::default() }
+fn score(set: &RuleSet, a: &Profile, b: &Profile) -> ScoreCard { score_pair(set, &cfg(), a, b, &[], &[]).unwrap() }
+fn score_with(config: &ScoringConfig, set: &RuleSet, a: &Profile, b: &Profile) -> ScoreCard { score_pair(set, config, a, b, &[], &[]).unwrap() }
 
 #[test]
 fn dimensions_scores_and_statuses() {
@@ -111,9 +113,8 @@ fn thin_evidence_is_pulled_towards_the_prior_so_documented_candidates_rank_highe
     assert!(r.ranking_score > t.ranking_score, "the better-documented candidate ranks first");
 
     // the neutral baseline is configurable
-    let mut set2 = set.clone();
-    set2.prior_score = Some(0.0);
-    assert_eq!(score(&set2, &me, &thin).ranking_score, Some(25.0));
+    let zero_prior = ScoringConfig { prior_score: 0.0, ..cfg() };
+    assert_eq!(score_with(&zero_prior, &set, &me, &thin).ranking_score, Some(25.0));
 }
 
 #[test]
@@ -138,7 +139,7 @@ fn deal_breakers_and_missing_fields_are_actionable() {
     };
     let set = RuleSet::new("t", 1, vec![]);
     let a = p("a", &[("age", num(30.0))]);
-    let unknown = score_pair(&set, &a, &p("b", &[]), &[no_smokers.clone()], &[]).unwrap();
+    let unknown = score_pair(&set, &cfg(), &a, &p("b", &[]), &[no_smokers.clone()], &[]).unwrap();
     assert!(unknown.eligible);
     assert_eq!(unknown.hard_constraints.status, HardStatus::NeedsInfo);
     assert_eq!(unknown.hard_constraints.undecided.len(), 1);
@@ -146,7 +147,7 @@ fn deal_breakers_and_missing_fields_are_actionable() {
     assert_eq!(unknown.unknowns[0].source, FindingSource::PreferenceA);
     assert_eq!(dim(&unknown, "preferences").status, DimStatus::Unknown);
 
-    let smoker = score_pair(&set, &a, &p("b", &[("smoking", txt("regularly"))]), &[no_smokers.clone()], &[]).unwrap();
+    let smoker = score_pair(&set, &cfg(), &a, &p("b", &[("smoking", txt("regularly"))]), &[no_smokers.clone()], &[]).unwrap();
     assert!(!smoker.eligible);
     assert_eq!(smoker.hard_constraints.status, HardStatus::Fail);
     assert_eq!(smoker.hard_constraints.violations[0].description, "no smokers");
@@ -158,7 +159,7 @@ fn deal_breakers_and_missing_fields_are_actionable() {
         condition: Condition { field: "age".into(), op: ConditionOp::Ge, value: Some(num(25.0)), value2: None, value_rel: None, value2_rel: None },
         strength: Strength::Required, importance: 3, note: None,
     };
-    let c = score_pair(&set, &p("a", &[]), &p("b", &[]), &[], &[wants_age]).unwrap();
+    let c = score_pair(&set, &cfg(), &p("a", &[]), &p("b", &[]), &[], &[wants_age]).unwrap();
     assert_eq!(c.hard_constraints.undecided[0].source, FindingSource::PreferenceB);
     assert_eq!(c.unknowns[0].missing, vec![MissingField { who: "a".into(), field: "age".into() }]);
 }
@@ -213,6 +214,110 @@ fn threshold_uses_the_confidence_adjusted_score() {
     assert_eq!(c.overall, Some(100.0));
     assert_eq!(c.meets_threshold, Some(false));
     assert!(!c.eligible);
+}
+
+#[test]
+fn dimension_statuses_follow_the_config_thresholds_at_the_boundaries() {
+    // one soft rule at weight 1 per dimension would give 100 or 0; to land on an exact score, use four rules in one
+    // dimension and vary how many of the four match.
+    let set = RuleSet::new("t", 1, vec![
+        soft("c1", "geography", 1.0, "city"),
+        soft("c2", "geography", 1.0, "district"),
+        soft("c3", "geography", 1.0, "street"),
+        soft("c4", "geography", 1.0, "country"),
+    ]);
+    let config = ScoringConfig { strong_threshold: 75.0, mixed_threshold: 50.0, prior_score: 50.0 };
+    let me = p("me", &[("city", txt("X")), ("district", txt("X")), ("street", txt("X")), ("country", txt("X"))]);
+    // Each field is either known-and-same (counts in the score) or known-and-different (a miss). Unknown fields are
+    // excluded from the score entirely, so a candidate that has said nothing cannot drift a score downwards.
+    let b = p("b", &[("city", txt("X")), ("district", txt("X")), ("street", txt("X")), ("country", txt("ZZZ"))]);
+    let card = score_with(&config, &set, &me, &b);
+    assert_eq!(dim(&card, "geography").score, Some(75.0), "3 of 4 same");
+    assert_eq!(dim(&card, "geography").status, DimStatus::Strong, "exactly 75 is strong");
+
+    let just_below = RuleSet::new("t", 1, vec![{
+        let mut r = soft("c1", "geography", 1.0, "city");
+        // Two rules scaled 74.9 / 25.1 put a one-of-two match exactly on 74.9.
+        r.weight = 74.9;
+        r
+    }, {
+        let mut r = soft("c2", "geography", 1.0, "district");
+        r.weight = 25.1;
+        r
+    }]);
+    let b = p("b", &[("city", txt("X")), ("district", txt("ZZZ"))]);
+    let card = score_with(&config, &just_below, &me, &b);
+    assert!((dim(&card, "geography").score.unwrap() - 74.9).abs() < 1e-9);
+    assert_eq!(dim(&card, "geography").status, DimStatus::Mixed, "74.9 is below the 75 strong cutoff but at or above mixed");
+
+    let mixed_edge = RuleSet::new("t", 1, vec![{
+        let mut r = soft("c1", "geography", 1.0, "city");
+        r.weight = 50.0;
+        r
+    }, {
+        let mut r = soft("c2", "geography", 1.0, "district");
+        r.weight = 50.0;
+        r
+    }]);
+    let half = p("b", &[("city", txt("X")), ("district", txt("ZZZ"))]);
+    let card = score_with(&config, &mixed_edge, &me, &half);
+    assert_eq!(dim(&card, "geography").score, Some(50.0));
+    assert_eq!(dim(&card, "geography").status, DimStatus::Mixed, "exactly 50 is mixed, not a concern");
+
+    let below_mixed = RuleSet::new("t", 1, vec![{
+        let mut r = soft("c1", "geography", 1.0, "city");
+        r.weight = 49.9;
+        r
+    }, {
+        let mut r = soft("c2", "geography", 1.0, "district");
+        r.weight = 50.1;
+        r
+    }]);
+    let card = score_with(&config, &below_mixed, &me, &p("b", &[("city", txt("X")), ("district", txt("ZZZ"))]));
+    assert!((dim(&card, "geography").score.unwrap() - 49.9).abs() < 1e-9);
+    assert_eq!(dim(&card, "geography").status, DimStatus::Concern, "49.9 is below the 50 mixed cutoff");
+}
+
+#[test]
+fn thresholds_from_the_config_change_which_statuses_appear() {
+    // 60 on geography: strong under the default 75? No. Under a config that calls 60 strong? Yes.
+    let set = RuleSet::new("t", 1, vec![{
+        let mut r = soft("c1", "geography", 1.0, "city");
+        r.weight = 60.0;
+        r
+    }, {
+        let mut r = soft("c2", "geography", 1.0, "district");
+        r.weight = 40.0;
+        r
+    }]);
+    // Both people must have said something about both fields, or the missing side leaves the dimension unscored.
+    let a = p("a", &[("city", txt("X")), ("district", txt("Y"))]);
+    let b = p("b", &[("city", txt("X")), ("district", txt("Z"))]);
+    let card = score_with(&cfg(), &set, &a, &b);
+    assert_eq!(dim(&card, "geography").score, Some(60.0));
+    assert_eq!(dim(&card, "geography").status, DimStatus::Mixed, "60 is mixed under the default 75/50");
+    let lenient = ScoringConfig { strong_threshold: 60.0, mixed_threshold: 40.0, prior_score: 50.0 };
+    assert_eq!(dim(&score_with(&lenient, &set, &a, &b), "geography").status, DimStatus::Strong, "60 is strong under a 60 cutoff");
+    let strict = ScoringConfig { strong_threshold: 90.0, mixed_threshold: 70.0, prior_score: 50.0 };
+    assert_eq!(dim(&score_with(&strict, &set, &a, &b), "geography").status, DimStatus::Concern, "60 is a concern under a 70 mixed cutoff");
+}
+
+#[test]
+fn the_prior_from_the_config_is_used_in_the_ranking_score() {
+    let set = RuleSet::new("t", 1, vec![soft("city", "geography", 1.0, "city"), soft("edu", "financial_practical", 1.0, "education")]);
+    let me = p("me", &[("city", txt("X")), ("education", txt("m"))]);
+    let thin = p("thin", &[("city", txt("X"))]);
+    // 100 on city, unknown education: confidence 0.5, so ranking = 0.5*100 + 0.5*prior
+    let base = score_with(&cfg(), &set, &me, &thin);
+    assert_eq!(base.confidence, Some(0.5));
+    assert_eq!(base.ranking_score, Some(75.0));
+    for prior in [0.0, 20.0, 50.0, 100.0] {
+        let config = ScoringConfig { prior_score: prior, ..cfg() };
+        let card = score_with(&config, &set, &me, &thin);
+        assert_eq!(card.ranking_score, Some(0.5 * 100.0 + 0.5 * prior), "prior {prior}");
+        // the overall is unaffected by the prior
+        assert_eq!(card.overall, base.overall);
+    }
 }
 
 #[test]

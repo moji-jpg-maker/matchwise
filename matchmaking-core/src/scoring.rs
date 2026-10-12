@@ -11,14 +11,18 @@
 //! Scores:
 //! * `overall`: coverage-weighted mean of the dimension scores (dimension weight = rule-set `group_weights`, default 1).
 //! * `confidence`: how much of the picture is backed by data (0..=1).
-//! * `ranking_score`: `confidence * overall + (1 - confidence) * prior` (prior defaults to 50). A perfect score
-//!   resting on little information is pulled towards neutral, so better-documented candidates rank higher.
-//!   The rule-set threshold (`min_score`) applies to this score.
+//! * `ranking_score`: `confidence * overall + (1 - confidence) * prior` (prior from the scoring config, default 50).
+//!   A perfect score resting on little information is pulled towards neutral, so better-documented candidates rank
+//!   higher. The rule-set threshold (`min_score`) applies to this score.
+//!
+//! The strong/mixed cutoffs and the prior come from a [`ScoringConfig`] rather than from literals, so a scorecard can
+//! always be reproduced from the config version that produced it.
 
 use crate::expr::{Expr, Operand, Side, Tri};
 use crate::preferences::{evaluate_preferences, preferences_to_ruleset, Preference};
 use crate::profile::Profile;
 use crate::rules::{evaluate_ruleset_mutual, Direction, Rule, RuleKind, RuleResult, RuleSet};
+use crate::scoring_config::ScoringConfig;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -66,11 +70,11 @@ pub fn resolve_dimension(group: Option<&str>) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DimStatus {
-    /// Score 75 or more (and no violated must-have).
+    /// Score at or above the config's strong threshold (and no violated must-have).
     Strong,
-    /// Score 50 to 74.
+    /// Score at or above the config's mixed threshold, but below strong.
     Mixed,
-    /// Score below 50, or a violated must-have.
+    /// Score below the mixed threshold, or a violated must-have.
     Concern,
     /// No soft score; every applicable must-have holds.
     Clear,
@@ -268,7 +272,7 @@ impl Acc {
         if total > 0.0 { Some(known / total) } else { None }
     }
 
-    fn status(&self) -> DimStatus {
+    fn status(&self, config: &ScoringConfig) -> DimStatus {
         if !self.configured {
             return DimStatus::NotAssessed;
         }
@@ -279,8 +283,8 @@ impl Acc {
             return DimStatus::Concern;
         }
         match self.score() {
-            Some(s) if s >= 75.0 => DimStatus::Strong,
-            Some(s) if s >= 50.0 => DimStatus::Mixed,
+            Some(s) if s >= config.strong_threshold => DimStatus::Strong,
+            Some(s) if s >= config.mixed_threshold => DimStatus::Mixed,
             Some(_) => DimStatus::Concern,
             None if self.undecided > 0 || self.unknown_w > 0.0 => DimStatus::Unknown,
             None => DimStatus::Clear,
@@ -317,6 +321,7 @@ fn finding(
 
 pub fn score_pair(
     set: &RuleSet,
+    config: &ScoringConfig,
     a: &Profile,
     b: &Profile,
     a_prefs: &[Preference],
@@ -383,7 +388,7 @@ pub fn score_pair(
             weight: weights.get(&key).copied().unwrap_or(1.0),
             score: a.score(),
             coverage: a.coverage(),
-            status: a.status(),
+            status: a.status(config),
             checks: a.checks,
             key,
             label,
@@ -401,7 +406,7 @@ pub fn score_pair(
         .collect();
     let wsum: f64 = judged.iter().map(|d| d.weight).sum();
     let confidence = if wsum > 0.0 { Some(judged.iter().map(|d| d.weight * d.coverage.unwrap_or(0.0)).sum::<f64>() / wsum) } else { None };
-    let prior = set.prior_score.unwrap_or(50.0);
+    let prior = config.prior_score;
     let ranking_score = overall.map(|o| {
         let c = confidence.unwrap_or(0.0);
         c * o + (1.0 - c) * prior

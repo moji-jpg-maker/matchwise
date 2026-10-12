@@ -60,6 +60,8 @@ fn to_core_row(r: &OutcomeRow) -> ExportRow {
         was_overridden: r.was_overridden,
         rule_set_id: r.rule_set_id.clone(),
         rule_set_version: r.rule_set_version,
+        scoring_config_id: r.scoring_config_id.clone(),
+        scoring_config_version: r.scoring_config_version,
         snapshot_trigger: r.snapshot_trigger.clone(),
         scorecard_at: r.scorecard_at.clone(),
         overall: r.overall,
@@ -172,4 +174,3 @@ pub async fn export_audited(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
         .await?;
     Ok(row.get::<i64, _>("n"))
 }
-

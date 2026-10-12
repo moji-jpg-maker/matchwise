@@ -222,7 +222,9 @@ async fn pair_input(pool: &SqlitePool, match_id: &str, include_sensitive: bool) 
     let b = MmRepository::get_profile(pool, &m.profile_b).await.map_err(err)?.ok_or("Profile not found")?;
     let a_prefs = MmRepository::get_preferences(pool, &m.profile_a).await.map_err(err)?;
     let b_prefs = MmRepository::get_preferences(pool, &m.profile_b).await.map_err(err)?;
-    let card = compute_scorecard(pool, &set, &m.profile_a, &m.profile_b, &m.weight_overrides).await?;
+    // The advisory pair analysis reads a scorecard, so it reads it under the same numbers the match was judged by.
+    let config = crate::mm::scoring_config_repo::ScoringConfigRepo::config_for_rule_set(pool, &m.rule_set_id).await.map_err(err)?;
+    let card = compute_scorecard(pool, &set, &config, &m.profile_a, &m.profile_b, &m.weight_overrides).await?;
     let facts = build_pair_facts(&a.profile, &b.profile, &a_prefs, &b_prefs, &card, &reg, include_sensitive);
     let (system, user) = pair_prompt(&facts);
     Ok(PairInput { facts, system, user, rule_set_version: m.rule_set_version, a: m.profile_a, b: m.profile_b })

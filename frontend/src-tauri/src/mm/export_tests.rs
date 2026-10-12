@@ -43,7 +43,7 @@ fn card(overall: f64, ranking: f64, eligible: bool, dims: &[(&str, f64)]) -> ser
 async fn tracked_pair(pool: &SqlitePool, a: &str, b: &str, c: serde_json::Value) -> String {
     MmRepository::ensure_default_rule_set(pool).await.unwrap();
     let (set, _) = MmRepository::list_rule_sets(pool, false).await.unwrap().into_iter().next().unwrap();
-    MatchRepo::create(pool, a, b, None, &set.id, set.current_version, MatchStatus::Recommended, &c).await.unwrap()
+    MatchRepo::create(pool, a, b, None, &set.id, set.current_version, None, None, MatchStatus::Recommended, &c).await.unwrap()
 }
 
 #[tokio::test]

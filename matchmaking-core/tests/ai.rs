@@ -161,7 +161,7 @@ fn prompt_injection_stays_inside_the_data_block() {
 // ------------------------------------------------------------------ pair analysis
 
 fn card_for(a: &Profile, b: &Profile) -> ScoreCard {
-    score_pair(&default_ruleset(), a, b, &[], &[]).unwrap()
+    score_pair(&default_ruleset(), &ScoringConfig::default(), a, b, &[], &[]).unwrap()
 }
 
 fn pair() -> (Profile, Profile) {
