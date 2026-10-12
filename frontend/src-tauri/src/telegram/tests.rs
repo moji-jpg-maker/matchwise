@@ -303,7 +303,7 @@ async fn preferences_can_be_added_listed_and_removed() {
 async fn new_match(pool: &SqlitePool, a: &str, b: &str) -> String {
     let card = json!({"eligible": true, "ranking_score": 70.0});
     let set_id = MmRepository::create_rule_set(pool, &format!("rs-{a}-{b}"), "", &matchmaking_core::default_ruleset(), None).await.unwrap();
-    MatchRepo::create(pool, a, b, None, &set_id, 1, MatchStatus::Approved, &card).await.unwrap()
+    MatchRepo::create(pool, a, b, None, &set_id, 1, None, None, MatchStatus::Approved, &card).await.unwrap()
 }
 
 /// What the matchmaker's "Propose introduction" does, minus the Tauri wrapper.
