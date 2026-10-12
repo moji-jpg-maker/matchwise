@@ -591,3 +591,26 @@ export interface QuestionnaireDetail {
   instrument: Instrument;
   answers: Record<string, number>;
 }
+
+/** The decision dataset export (M7b). Mirrors `mm::export_commands::ExportDoc`. */
+export interface ExportDoc {
+  generated_at: string;
+  columns: string[];
+  row_count: number;
+  with_outcome: number;
+  csv: string;
+}
+
+/** What the decision data contains so far. Mirrors `mm::export_commands::DatasetSummary`. */
+export interface DatasetSummary {
+  matches: number;
+  finished: number;
+  with_outcome: number;
+  outcome_counts: Record<string, number>;
+  open_by_status: Record<string, number>;
+  with_snapshot: number;
+  overridden: number;
+  rule_set_versions: string[];
+  earliest_created_at: string | null;
+  latest_updated_at: string | null;
+}

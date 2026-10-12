@@ -808,6 +808,8 @@ pub fn run() {
             mm::match_commands::mm_add_match_note,
             mm::match_commands::mm_set_match_hidden,
             mm::match_commands::mm_rescore_match,
+            mm::export_commands::mm_export_outcomes,
+            mm::export_commands::mm_outcome_dataset_summary,
             telegram::commands::tg_get_status,
             telegram::commands::tg_save_token,
             telegram::commands::tg_clear_token,

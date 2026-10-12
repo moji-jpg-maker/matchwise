@@ -7,6 +7,7 @@ pub mod ai;
 pub mod defaults;
 pub mod matching;
 pub mod expr;
+pub mod export;
 pub mod lifecycle;
 pub mod field;
 pub mod preferences;
@@ -42,6 +43,7 @@ pub use ai::{
     build_pair_facts, extract_json_object, extraction_prompt, pair_prompt, parse_extraction, parse_pair_analysis, profile_text_for_ai, redact_text, AiFact,
     Claim, Contradiction, Extraction, FieldSuggestion, PairAnalysis, PreferenceSuggestion,
 };
+pub use export::{header as export_header, to_csv as rows_to_csv, ExportRow};
 pub use questionnaire::{
     apply_scores, builtin_mini_ipip, missing_fields, next_item, score as score_answers, validate_answer, validate_instrument, Evidence, EvidenceLevel,
     EvidenceSource, Instrument, Item, Method, Scale, Scores, Subscale,
