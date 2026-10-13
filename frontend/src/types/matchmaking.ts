@@ -703,3 +703,62 @@ export interface RankingReadiness {
   /** How many of those shown pairs later produced a recorded outcome. */
   pairs_with_outcome: number;
 }
+
+// ---- ranking v1: two orderings checked against the outcomes
+
+/** How one ordering agreed with the recorded outcomes. Mirrors `matchmaking_core::OrderingResult`. */
+export interface OrderingResult {
+  /** Pairs that could be compared: both rows scored, and their outcomes differed. */
+  comparable_pairs: number;
+  concordant: number;
+  discordant: number;
+  /** Pairs whose outcomes agreed, so neither ordering could have got them in or out of order. */
+  tied: number;
+  /** `concordant / (concordant + discordant)`, or `null` when nothing was comparable — never 0. */
+  concordance: number | null;
+  /** Rows this ordering could place at all (a whole score, no snapshot, or a card that produced no number). */
+  usable_rows: number;
+  progressed: number;
+  not_progressed: number;
+  /** R-precision: of the top `progressed` rows by this score, how many actually progressed. */
+  top_k: number;
+  top_k_rate: number | null;
+}
+
+/** Matches left out of the comparison, and why. Nothing here is filled in with a zero. */
+export interface ExclusionCounts {
+  /** Still moving: no outcome recorded yet, so there is no label. */
+  no_outcome: number;
+  /** The outcome is `unknown`: recorded, but it says nothing about which way the pair went. */
+  unknown_outcome: number;
+  /** No stored snapshot, so there are no numbers to put in an order. */
+  no_snapshot: number;
+  /** A snapshot exists but produced no score, so the pair cannot be placed. */
+  no_score: number;
+}
+
+/**
+ * The two orderings compared against recorded outcomes: the confidence-adjusted `ranking_score`, which orders
+ * searches today, against the raw coverage-weighted `overall` it is derived from.
+ *
+ * Read-only: it reports which ordering agreed better with what happened, and re-orders nothing. Mirrors
+ * `mm::ranking_commands::RankingComparison`.
+ */
+export interface RankingComparison {
+  /** How the progressed / not-progressed label is decided, in one sentence written by the backend. */
+  classification: string;
+  /** Which ordering is in force for searches today (`ranking_score`). */
+  enforced: string;
+  ready: boolean;
+  minimum_finished: number;
+  /** One sentence saying whether this is a finding or a below-the-gate inspection. */
+  gate_note: string;
+  /** Matches on record, and how many of them the comparison could use. */
+  matches_total: number;
+  matches_compared: number;
+  excluded: ExclusionCounts;
+  progressed: number;
+  not_progressed: number;
+  baseline: OrderingResult;
+  candidate: OrderingResult;
+}

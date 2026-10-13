@@ -817,6 +817,7 @@ pub fn run() {
             mm::export_commands::mm_outcome_dataset_summary,
             mm::exposure_commands::mm_exposure_summary,
             mm::exposure_commands::mm_ranking_readiness,
+            mm::ranking_commands::mm_ranking_comparison,
             telegram::commands::tg_get_status,
             telegram::commands::tg_save_token,
             telegram::commands::tg_clear_token,

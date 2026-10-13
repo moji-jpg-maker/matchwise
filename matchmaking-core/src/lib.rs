@@ -16,6 +16,7 @@ pub mod rule_validation;
 pub mod scoring;
 pub mod scoring_config;
 pub mod profile;
+pub mod ranking;
 pub mod search;
 pub mod sharing;
 
@@ -46,6 +47,7 @@ pub use ai::{
     Claim, Contradiction, Extraction, FieldSuggestion, PairAnalysis, PreferenceSuggestion,
 };
 pub use export::{header as export_header, to_csv as rows_to_csv, ExportRow, RANKING_MINIMUM};
+pub use ranking::{classify as classify_outcome, compare, ComparisonRow, OrderingResult, Progress, RankingComparison};
 pub use questionnaire::{
     apply_scores, builtin_mini_ipip, missing_fields, next_item, score as score_answers, validate_answer, validate_instrument, Evidence, EvidenceLevel,
     EvidenceSource, Instrument, Item, Method, Scale, Scores, Subscale,

@@ -6,12 +6,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { RankingReadiness, ScoringConfigSummary } from '@/types/matchmaking';
+import { OrderingResult, RankingComparison, RankingReadiness, ScoringConfigSummary } from '@/types/matchmaking';
 
 export default function ScoringConfigsPage() {
   const router = useRouter();
   const [configs, setConfigs] = useState<ScoringConfigSummary[]>([]);
   const [readiness, setReadiness] = useState<RankingReadiness | null>(null);
+  const [comparison, setComparison] = useState<RankingComparison | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -27,9 +28,12 @@ export default function ScoringConfigsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // The gate is read-only and independent of the list, so a failure here must not hide the configs.
+  // The gate and the comparison are read-only and independent of the list, so a failure in either must not hide the
+  // configs -- and the comparison is fetched alongside the gate rather than inside it, because the gate is a
+  // threshold and this is a result.
   useEffect(() => {
     invoke<RankingReadiness>('mm_ranking_readiness').then(setReadiness).catch(() => setReadiness(null));
+    invoke<RankingComparison>('mm_ranking_comparison').then(setComparison).catch(() => setComparison(null));
   }, []);
 
   const toggleArchive = async (c: ScoringConfigSummary) => {
@@ -94,8 +98,9 @@ export default function ScoringConfigsPage() {
           <div>
             <h2 className="font-medium">Ranking gate</h2>
             <p className="text-sm text-gray-500">
-              This reports only. Nothing here produces an ordering, fits a model or re-orders a search — the ranking
-              stays fully deterministic until the gate is reached and a learned ranking can be compared against it.
+              This reports only. Nothing here fits a model or re-orders a search: searches are ordered by the
+              confidence-adjusted score below, and that stays true whatever this comparison finds. What it does show
+              is how that ordering has agreed with what actually happened, next to the raw score it is derived from.
             </p>
           </div>
           {!readiness ? (
@@ -127,10 +132,59 @@ export default function ScoringConfigsPage() {
                   </div>
                 </div>
               )}
+
+              {comparison && <Comparison c={comparison} />}
             </>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The two orderings against the recorded outcomes. Deliberately shows the counts beside every rate: a concordance of
+ * 1.0 from three comparisons and one from three hundred are the same number and not the same evidence, and the gate
+ * sentence above says whether this is yet enough to read as a finding.
+ */
+function Comparison({ c }: { c: RankingComparison }) {
+  const rate = (r: number | null) => (r === null ? '—' : `${(r * 100).toFixed(0)}%`);
+  const rows: { label: string; r: OrderingResult; inForce: boolean }[] = [
+    { label: `Confidence-adjusted (${c.enforced})`, r: c.baseline, inForce: true },
+    { label: 'Raw score (overall)', r: c.candidate, inForce: false },
+  ];
+  return (
+    <div className="pt-3 border-t space-y-3">
+      <div className="text-sm font-medium">Do the scores agree with the outcomes?</div>
+      <p className={`text-sm ${c.ready ? 'text-gray-500' : 'text-amber-700'}`}>{c.gate_note}</p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {rows.map(({ label, r, inForce }) => (
+          <div key={label} className="rounded border p-3 space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">{label}</span>
+              {inForce && <span className="text-xs px-2 py-0.5 rounded bg-gray-100">in force</span>}
+            </div>
+            <div className="text-2xl font-semibold">{rate(r.concordance)}</div>
+            <div className="text-xs text-gray-500">
+              of {r.comparable_pairs} comparable {r.comparable_pairs === 1 ? 'pair' : 'pairs'} — {r.concordant} agreed,{' '}
+              {r.discordant} did not; {r.tied} could not be judged.
+            </div>
+            <div className="text-xs text-gray-500">
+              Best {r.progressed} by this score: {r.top_k} of them ({rate(r.top_k_rate)}) went on to progress.
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs text-gray-500">{c.classification}</p>
+      <p className="text-xs text-gray-500">
+        {c.matches_compared} of {c.matches_total} matches could be compared. Left out:{' '}
+        {c.excluded.no_outcome} still in progress, {c.excluded.unknown_outcome} with an unknown outcome,{' '}
+        {c.excluded.no_snapshot} with no stored scorecard, {c.excluded.no_score} with no score in theirs. A match with
+        no outcome is not counted as one that went badly, so the comparison covers less history than the finished
+        count above.
+      </p>
     </div>
   );
 }

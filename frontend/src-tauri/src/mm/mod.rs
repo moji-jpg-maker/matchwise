@@ -6,6 +6,8 @@ pub mod exposure_commands;
 pub mod exposure_repo;
 pub mod match_commands;
 pub mod match_repo;
+pub mod ranking_commands;
+pub mod ranking_repo;
 pub mod repository;
 pub mod rules_commands;
 pub mod scoring_config_commands;
@@ -15,3 +17,5 @@ pub mod scoring_config_repo;
 mod export_tests;
 #[cfg(test)]
 mod exposure_tests;
+#[cfg(test)]
+mod ranking_tests;
