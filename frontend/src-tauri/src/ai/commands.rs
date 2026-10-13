@@ -15,8 +15,8 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-/// Gate, key and backend for one request.
-async fn prepare(pool: &SqlitePool) -> Result<(AiConfig, Mode, HttpBackend), String> {
+/// Gate, key and backend for one request. Shared with the bulk-intake commands, which read the gate once per run.
+pub(crate) async fn prepare(pool: &SqlitePool) -> Result<(AiConfig, Mode, HttpBackend), String> {
     let config = settings::load_config(pool).await?;
     let consent = settings::load_consent(pool).await?;
     let key = settings::load_key().ok().flatten().map(|(k, _)| k);

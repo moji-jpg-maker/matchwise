@@ -762,3 +762,45 @@ export interface RankingComparison {
   baseline: OrderingResult;
   candidate: OrderingResult;
 }
+
+// ---- bulk intake (M8). Mirrors `ai::intake_commands`. Raw note text is never carried back in these payloads:
+// the report holds counts, labels and reasons only, and the stored note is read on its own route.
+
+/** What happened to one entry of a bulk intake run. */
+export interface IntakeEntryReport {
+  /** 1-based position in the corpus. */
+  index: number;
+  label: string;
+  /** The profile created for this entry, when one was. */
+  profile_id: string | null;
+  /** `created` (kept, not parsed) or `parsed` (kept and read) or `dropped` (nothing was created). */
+  outcome: 'created' | 'parsed' | 'dropped';
+  /** Suggestions this entry produced. Zero when the gate was closed or the entry could not be read. */
+  suggestions: number;
+  /** A short reason, shown to the matchmaker, when nothing was created or parsed. */
+  reason: string | null;
+}
+
+/** The whole run: what was created, what was parsed, and what was not. */
+export interface IntakeBatchReport {
+  batch_id: string;
+  /** The target the matchmaker is working on, if one was given. Never one of the corpus entries. */
+  target_profile_id: string | null;
+  /** False when the AI gate was closed: profiles and raw text were kept, nothing was parsed. */
+  parsed: boolean;
+  /** Why nothing was parsed, when `parsed` is false. */
+  note: string | null;
+  entries: IntakeEntryReport[];
+  created: number;
+  dropped: number;
+  suggestions: number;
+}
+
+/** What a batch accept did, and what it left alone. */
+export interface IntakeAcceptReport {
+  accepted: number;
+  /** Left pending or refused — e.g. a person already owns a different value in that field. */
+  skipped: number;
+  /** The field names that were accepted, for the audit trail's own wording. */
+  fields: string[];
+}

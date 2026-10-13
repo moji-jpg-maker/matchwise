@@ -369,6 +369,544 @@ async fn deleting_a_profile_removes_what_was_recorded_about_it() {
     assert_eq!(n, 0);
 }
 
+// ------------------------------------------------------------------ bulk intake
+
+use super::intake_commands;
+use crate::mm::intake_repo::IntakeRepo;
+
+/// The raw corpus a matchmaker pastes: two separators, three blocks. Each block carries, in its own words, the
+/// very evidence the `GOOD` answer cites — a suggestion is only kept when its evidence is in the text it read.
+const CORPUS: &str =
+    "Sara: I have never smoked and I work as a nurse. I want a partner who does not smoke.\n\
+---\n\
+Reza: I have never smoked and I work as a nurse. I want a partner who does not smoke.\n\
+---\n\
+Mina: I have never smoked and I work as a nurse. I want a partner who does not smoke.";
+
+#[tokio::test]
+async fn a_closed_gate_still_creates_profiles_and_keeps_the_raw_text_with_no_model_call() {
+    let pool = test_pool().await;
+    let report = intake_commands::run_batch_with(
+        &pool,
+        None,
+        Some(CORPUS.into()),
+        None,
+        "b1".into(),
+        None,
+        Some("AI is turned off.".into()),
+    )
+    .await
+    .unwrap();
+
+    assert!(!report.parsed && report.note.as_deref() == Some("AI is turned off."));
+    assert_eq!(
+        (report.created, report.dropped, report.suggestions),
+        (3, 0, 0)
+    );
+    assert!(report
+        .entries
+        .iter()
+        .all(|e| e.outcome == "created" && e.profile_id.is_some() && e.suggestions == 0));
+
+    // every entry became a real profile, with its raw text stored beside it and no field taken from it
+    let notes = IntakeRepo::notes_for_batch(&pool, "b1").await.unwrap();
+    assert_eq!(notes.len(), 3);
+    assert_eq!(
+        notes[0].note_text,
+        "Sara: I have never smoked and I work as a nurse. I want a partner who does not smoke."
+    );
+    for note in &notes {
+        let stored = MmRepository::get_profile(&pool, &note.profile_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            stored.profile.fields.is_empty(),
+            "an intake profile starts empty: the entry is the source, not the answer"
+        );
+    }
+
+    // no model was contacted and nothing was parsed
+    let calls: i64 = sqlx::query_scalar("SELECT count(*) FROM mm_ai_log")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM mm_ai_runs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let sugs: i64 = sqlx::query_scalar("SELECT count(*) FROM mm_ai_suggestions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        (calls, runs, sugs),
+        (0, 0, 0),
+        "a closed gate never reaches a model"
+    );
+}
+
+#[tokio::test]
+async fn a_scripted_model_gives_suggestions_for_each_entry_and_the_note_is_what_it_reads() {
+    let pool = test_pool().await;
+    // a person already owns `sex` on one entry: a suggestion for it is a conflict, and a plain accept must refuse it
+    let m = Mock::with(vec![GOOD, GOOD, GOOD]);
+    let report = intake_commands::run_batch_with(
+        &pool,
+        None,
+        Some(CORPUS.into()),
+        None,
+        "b1".into(),
+        Some(&session(&m, false, true)),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(report.parsed);
+    assert_eq!((report.created, report.dropped), (3, 0));
+    assert_eq!(report.suggestions, 9, "three suggestions per entry");
+    assert!(report
+        .entries
+        .iter()
+        .all(|e| e.outcome == "parsed" && e.suggestions == 3));
+    assert_eq!(m.calls(), 3, "one model request per entry, sequential");
+    assert_eq!(
+        m.max_active.load(Ordering::SeqCst),
+        1,
+        "one request at a time"
+    );
+
+    // the model read the stored raw text (scrubbed), not a field of the empty profile
+    let sent = m.last_user();
+    assert!(
+        sent.contains("Intake notes:"),
+        "the raw entry travelled the intake-note path: {sent}"
+    );
+    assert!(
+        sent.contains("I work as a nurse") && sent.contains("does not smoke"),
+        "the entry's own words: {sent}"
+    );
+
+    // each entry's suggestions hang off its own profile
+    for note in IntakeRepo::notes_for_batch(&pool, "b1").await.unwrap() {
+        let pending = repo::pending_suggestions(&pool, &note.profile_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending.len(),
+            3,
+            "{} got {} suggestions",
+            note.label,
+            pending.len()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_person_owned_value_is_refused_by_both_a_single_accept_and_the_batch_accept() {
+    let pool = test_pool().await;
+    let m = Mock::with(vec![GOOD, GOOD]);
+    intake_commands::run_batch_with(
+        &pool,
+        None,
+        Some(
+            "Sara: I have never smoked and I work as a nurse. I want a partner who does not smoke."
+                .into(),
+        ),
+        None,
+        "b1".into(),
+        Some(&session(&m, false, true)),
+        None,
+    )
+    .await
+    .unwrap();
+    let profile_id = IntakeRepo::notes_for_batch(&pool, "b1").await.unwrap()[0]
+        .profile_id
+        .clone();
+
+    // the matchmaker then enters a different occupation by hand
+    let mut p = MmRepository::get_profile(&pool, &profile_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(p
+        .profile
+        .set("occupation", txt("Teacher"), Provenance::User));
+    MmRepository::update_profile_data(&pool, &p.profile)
+        .await
+        .unwrap();
+
+    // the single decision path refuses a plain accept where a person owns a different value ...
+    let pending = repo::pending_suggestions(&pool, &profile_id).await.unwrap();
+    let occupation = pending.iter().find(|s| s.field == "occupation").unwrap();
+    assert!(
+        service::decide_suggestion(&pool, occupation.id, Decision::Accept)
+            .await
+            .unwrap_err()
+            .contains("already entered")
+    );
+
+    // ... and the batch accept is the same path, so it skips exactly that one and takes the rest
+    let accepted = intake_commands::run_accept_all(&pool, "b1".into())
+        .await
+        .unwrap();
+    assert_eq!(accepted.skipped, 1);
+    assert_eq!(
+        accepted.accepted, 2,
+        "smoking and the smoking preference are taken"
+    );
+    assert!(accepted.fields.contains(&"smoking".to_string()));
+    assert!(!accepted.fields.contains(&"occupation".to_string()));
+
+    let after = MmRepository::get_profile(&pool, &profile_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after.profile.get("occupation"),
+        Some(&txt("Teacher")),
+        "the person's own value stood"
+    );
+    assert_eq!(after.profile.get("smoking"), Some(&txt("never")));
+
+    // running it again accepts nothing new: the refused suggestion stays pending for a deliberate per-item
+    // override, and the two that were taken are no longer pending
+    let again = intake_commands::run_accept_all(&pool, "b1".into())
+        .await
+        .unwrap();
+    assert_eq!((again.accepted, again.skipped), (0, 1));
+}
+
+#[tokio::test]
+async fn an_unusable_entry_is_reported_against_itself_and_the_others_go_through() {
+    let pool = test_pool().await;
+    // the middle entry is empty once trimmed; the third is oversized and is kept truncated rather than lost
+    let entries = vec![
+        "Sara has never smoked.".to_string(),
+        "   ".to_string(),
+        format!("Reza has never smoked. {}", "x".repeat(25_000)),
+    ];
+    let m = Mock::with(vec![GOOD, GOOD]);
+    let report = intake_commands::run_batch_with(
+        &pool,
+        None,
+        None,
+        Some(entries),
+        "b1".into(),
+        Some(&session(&m, false, true)),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.created, 2);
+    assert_eq!(report.dropped, 1);
+    let dropped = report.entries.iter().find(|e| e.index == 2).unwrap();
+    assert_eq!(dropped.outcome, "dropped");
+    assert!(dropped.reason.as_deref().unwrap().contains("empty"));
+    assert!(
+        report
+            .entries
+            .iter()
+            .filter(|e| e.outcome == "parsed")
+            .count()
+            == 2
+    );
+    assert_eq!(m.calls(), 2, "the blank entry never reached the model");
+
+    // the oversized entry was capped, not thrown away
+    let notes = IntakeRepo::notes_for_batch(&pool, "b1").await.unwrap();
+    assert_eq!(notes.len(), 2);
+    assert!(notes[1].note_text.chars().count() <= matchmaking_core::intake::MAX_ENTRY_CHARS);
+}
+
+#[tokio::test]
+async fn the_audit_trail_names_actions_and_fields_but_never_the_note_or_its_lookup() {
+    let pool = test_pool().await;
+    let m = Mock::with(vec![GOOD]);
+    let report = intake_commands::run_batch_with(&pool, None, Some("Sara Karimi: I have never smoked and I work as a nurse. I want a partner who does not smoke. Phone +98 912 345 6789.".into()), None, "b1".into(), Some(&session(&m, false, true)), None).await.unwrap();
+    intake_commands::run_accept_all(&pool, "b1".into())
+        .await
+        .unwrap();
+
+    let details: Vec<Option<String>> = sqlx::query_scalar("SELECT detail FROM mm_audit_log")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let dump = format!("{details:?}");
+    for leaked in ["Karimi", "+98", "mm_intake_notes", "Intake notes"] {
+        assert!(
+            !dump.contains(leaked),
+            "the audit log held '{leaked}': {dump}"
+        );
+    }
+    // what it does hold: the action and, for an accept, the field name alone
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT action, detail FROM mm_audit_log")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(rows.iter().any(|(a, _)| a == "intake_batch"));
+    assert!(rows
+        .iter()
+        .any(|(a, d)| a == "ai_suggestion_accepted" && d.as_deref() == Some("smoking")));
+    assert!(report.entries[0].profile_id.is_some());
+
+    // the note goes away with its profile
+    let profile_id = report.entries[0].profile_id.clone().unwrap();
+    assert!(IntakeRepo::note_for_profile(&pool, &profile_id)
+        .await
+        .unwrap()
+        .is_some());
+    MmRepository::delete_profile(&pool, &profile_id)
+        .await
+        .unwrap();
+    assert!(IntakeRepo::note_for_profile(&pool, &profile_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn a_batch_can_be_reported_from_what_was_stored_without_running_anything_again() {
+    let pool = test_pool().await;
+    intake_commands::run_batch_with(
+        &pool,
+        None,
+        Some(CORPUS.into()),
+        None,
+        "b1".into(),
+        None,
+        Some("off".into()),
+    )
+    .await
+    .unwrap();
+    let report = intake_commands::run_report(&pool, "b1".into())
+        .await
+        .unwrap();
+    assert_eq!(report.created, 3);
+    assert_eq!(report.entries.len(), 3);
+    assert!(report
+        .entries
+        .iter()
+        .all(|e| e.outcome == "created" && e.profile_id.is_some()));
+    // a batch nobody has heard of is an empty report, not an error
+    assert_eq!(
+        intake_commands::run_report(&pool, "nope".into())
+            .await
+            .unwrap()
+            .created,
+        0
+    );
+}
+
+/// The raw entry is read by the existing per-profile path with no UI change: "Read profile" passes no extra text
+/// of its own, so the stored note is what the model is shown — and it still travels the redacted `extra` path.
+#[tokio::test]
+async fn the_per_profile_extraction_reads_the_stored_intake_note() {
+    let pool = test_pool().await;
+    let m = Mock::with(vec![GOOD, GOOD]);
+    let entry = "I have never smoked and I work as a nurse. I want a partner who does not smoke. Call +98 912 345 6789.";
+    intake_commands::run_batch_with(
+        &pool,
+        None,
+        Some(entry.into()),
+        None,
+        "b1".into(),
+        Some(&session(&m, false, true)),
+        None,
+    )
+    .await
+    .unwrap();
+    let profile_id = IntakeRepo::notes_for_batch(&pool, "b1").await.unwrap()[0]
+        .profile_id
+        .clone();
+
+    // the "Read profile" call passes no extra text and still finds the entry to read
+    let view = service::extract_profile(&pool, &session(&m, false, true), &profile_id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        view.suggestions
+            .iter()
+            .filter(|s| s.kind == "field")
+            .count(),
+        2
+    );
+    let sent = m.last_user();
+    assert!(
+        sent.contains("Intake notes:") && sent.contains("I work as a nurse"),
+        "{sent}"
+    );
+
+    // the same note, on the cloud path, is redacted by the existing rule — the intake text did not open a new one
+    let (_, preview) = service::preview_extraction(
+        &pool,
+        &profile_id,
+        None,
+        Mode {
+            is_cloud: true,
+            include_sensitive: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(preview.contains("Intake notes:") && preview.contains("I work as a nurse"));
+    assert!(
+        !preview.contains("+98 912 345 6789"),
+        "the cloud prompt scrubs the phone number in the entry: {preview}"
+    );
+}
+
+// ------------------------------------------------------------------ golden intake runs
+
+/// Whole runs over the files in `tests/golden/intake/`, with a scripted model in place of a real one and only
+/// synthetic people in the fixtures. These are the end-to-end shapes the plan calls out: a closed gate, a parsed
+/// run, and a corpus that mixes a good entry with a blank one and an entry that carries identifiers.
+mod golden {
+    use super::*;
+
+    const SINGLE: &str = include_str!("../../tests/golden/intake/single.txt");
+    const MULTI: &str = include_str!("../../tests/golden/intake/multi.txt");
+    const ENTRIES_JSON: &str = include_str!("../../tests/golden/intake/entries.json");
+
+    #[tokio::test]
+    async fn gate_closed_run_keeps_every_entry_and_contacts_no_model() {
+        let pool = test_pool().await;
+        let report = intake_commands::run_batch_with(
+            &pool,
+            None,
+            Some(MULTI.into()),
+            None,
+            "g-closed".into(),
+            None,
+            Some("AI is turned off.".into()),
+        )
+        .await
+        .unwrap();
+        assert!(!report.parsed);
+        assert_eq!(report.created, 3);
+        assert_eq!(
+            IntakeRepo::notes_for_batch(&pool, "g-closed")
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+        let calls: i64 = sqlx::query_scalar("SELECT count(*) FROM mm_ai_log")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(calls, 0);
+    }
+
+    #[tokio::test]
+    async fn gate_open_run_parses_the_single_entry() {
+        let pool = test_pool().await;
+        let m = Mock::with(vec![GOOD]);
+        let report = intake_commands::run_batch_with(
+            &pool,
+            None,
+            Some(SINGLE.into()),
+            None,
+            "g-open".into(),
+            Some(&session(&m, false, true)),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!((report.created, report.dropped), (1, 0));
+        assert_eq!(report.suggestions, 3, "two fields and one preference");
+        assert_eq!(m.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_json_corpus_that_mixes_good_and_blank_entries_keeps_going() {
+        let pool = test_pool().await;
+        // the file arrives already split, so the command reads it as strings rather than splitting a paste again
+        let entries = matchmaking_core::intake::parse_json_corpus(ENTRIES_JSON).unwrap();
+        assert_eq!(entries.len(), 3);
+        let m = Mock::with(vec![GOOD, GOOD]);
+        let report = intake_commands::run_batch_with(
+            &pool,
+            None,
+            None,
+            Some(entries),
+            "g-json".into(),
+            Some(&session(&m, false, true)),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.created, 2);
+        assert_eq!(
+            report.dropped, 1,
+            "the blank string is dropped, not made into a profile"
+        );
+        assert_eq!(m.calls(), 2);
+
+        // accept is the ordinary decision path, and it records the field names it took
+        let accepted = intake_commands::run_accept_all(&pool, "g-json".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted.accepted, 5,
+            "the two fields of each entry plus the preference the second one states"
+        );
+        assert_eq!(accepted.skipped, 0);
+        assert!(accepted
+            .fields
+            .iter()
+            .all(|f| f == "smoking" || f == "occupation"));
+    }
+
+    /// The target is a person of their own, written in its own box: it becomes a profile with its own note, is
+    /// never one of the corpus entries, and its id is what the ranked button opens.
+    #[tokio::test]
+    async fn the_target_gets_its_own_profile_apart_from_the_corpus() {
+        let pool = test_pool().await;
+        let m = Mock::with(vec![GOOD, GOOD]);
+        let report = intake_commands::run_batch_with(
+            &pool,
+            Some("# Sara\nI have never smoked and I work as a nurse. I want a partner who does not smoke.".into()),
+            Some(MULTI.into()),
+            None,
+            "g-target".into(),
+            Some(&session(&m, false, true)),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let target_id = report
+            .target_profile_id
+            .clone()
+            .expect("the target box produced a profile");
+        let notes = IntakeRepo::notes_for_batch(&pool, "g-target")
+            .await
+            .unwrap();
+        assert_eq!(notes.len(), 4, "the target plus the three corpus entries");
+        assert_eq!(
+            notes.len() - 1,
+            report.created,
+            "the target is not one of the corpus entries"
+        );
+        assert!(
+            notes
+                .iter()
+                .all(|n| n.profile_id != target_id || n.label == "Sara"),
+            "the target kept its own label"
+        );
+        // the target is a real profile, empty like the others, and the corpus never became it
+        let stored = MmRepository::get_profile(&pool, &target_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.profile.fields.is_empty());
+    }
+}
+
 // ------------------------------------------------------------------ HTTP backends against a stand-in server
 
 async fn stand_in(replies: Vec<(u16, String)>) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {

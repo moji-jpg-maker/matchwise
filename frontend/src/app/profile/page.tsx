@@ -30,6 +30,7 @@ function ProfileEditor() {
   const [draft, setDraft] = useState<Record<string, Value | null>>({});
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [intakeNote, setIntakeNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -41,6 +42,7 @@ function ProfileEditor() {
       setFields(f);
       setProfile(p);
       setDraft({});
+      invoke<string | null>('mm_intake_note', { id }).then(setIntakeNote).catch(() => setIntakeNote(null));
     } catch (e) {
       toast.error(`Could not load profile: ${e}`);
     }
@@ -173,6 +175,14 @@ function ProfileEditor() {
         {profile.issues.length > 0 && (
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
             {profile.issues.map((i) => <div key={i.field}>{i.field}: {i.message}</div>)}
+          </div>
+        )}
+
+        {intakeNote && (
+          <div className="bg-white rounded-lg border p-4 text-sm">
+            <div className="font-medium">Intake source text</div>
+            <p className="text-xs text-gray-500">The raw text this profile was created from. Read-only: it is the source, not a field, and the AI reads it as an intake note.</p>
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-gray-700 max-h-60 overflow-auto">{intakeNote}</pre>
           </div>
         )}
 

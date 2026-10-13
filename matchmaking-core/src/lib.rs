@@ -10,6 +10,7 @@ pub mod expr;
 pub mod export;
 pub mod lifecycle;
 pub mod field;
+pub mod intake;
 pub mod preferences;
 pub mod questionnaire;
 pub mod rule_validation;
@@ -22,6 +23,7 @@ pub mod sharing;
 
 pub use expr::{evaluate, Expr, Trace};
 pub use field::{FieldDef, FieldKind, FieldRegistry};
+pub use intake::{parse_entries, parse_json_corpus, split_corpus, DropReason, DroppedEntry, IntakeEntry, ParsedCorpus, MAX_ENTRY_CHARS};
 pub use defaults::{default_registry, default_ruleset};
 pub use profile::{Profile, Provenance, ValidationIssue, Value};
 pub use preferences::{

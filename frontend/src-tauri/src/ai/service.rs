@@ -4,6 +4,7 @@
 use super::backend::LlmBackend;
 use super::repo::{self, SuggestionRow};
 use super::settings::Mode;
+use crate::mm::intake_repo::IntakeRepo;
 use crate::mm::match_commands::compute_scorecard;
 use crate::mm::match_repo::MatchRepo;
 use crate::mm::repository::MmRepository;
@@ -76,6 +77,17 @@ async fn ask<T>(
 
 // ------------------------------------------------------------------ profile understanding
 
+/// The free text to read a profile with: what the caller typed now, or — when they typed nothing — the raw entry
+/// the profile was created from by a bulk intake run. Both travel the same way: as the `extra` argument, so the
+/// gate's `include_sensitive` rule decides locally-versus-cloud redaction in one place and the model-side code
+/// never learns where the text came from.
+async fn profile_extra<'a>(pool: &SqlitePool, profile_id: &str, extra: Option<&'a str>) -> Result<Option<String>, String> {
+    match extra {
+        Some(text) if !text.trim().is_empty() => Ok(Some(text.to_string())),
+        _ => IntakeRepo::note_for_profile(pool, profile_id).await.map_err(err),
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ExtractionView {
     pub run_id: i64,
@@ -94,6 +106,8 @@ pub struct ExtractionView {
 pub async fn preview_extraction(pool: &SqlitePool, profile_id: &str, extra: Option<&str>, mode: Mode) -> Result<(String, String), String> {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+    let extra = profile_extra(pool, profile_id, extra).await?;
+    let extra = extra.as_deref();
     let text = profile_text_for_ai(&p.profile, &reg, extra, mode.include_sensitive);
     if text.trim().is_empty() {
         return Err("There is no free text to read. Add notes about the person (for example from an intake interview) first.".into());
@@ -104,6 +118,8 @@ pub async fn preview_extraction(pool: &SqlitePool, profile_id: &str, extra: Opti
 pub async fn extract_profile(pool: &SqlitePool, s: &Session<'_>, profile_id: &str, extra: Option<&str>) -> Result<ExtractionView, String> {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+    let extra = profile_extra(pool, profile_id, extra).await?;
+    let extra = extra.as_deref();
     let text = profile_text_for_ai(&p.profile, &reg, extra, s.mode.include_sensitive);
     if text.trim().is_empty() {
         return Err("There is no free text to read. Add notes about the person (for example from an intake interview) first.".into());

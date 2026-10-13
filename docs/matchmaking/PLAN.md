@@ -32,8 +32,7 @@ Same feature set as before, ordered so something works end to end early.
 - **M7 Psychology, outcomes, ranking v1** -- evidence registry + questionnaires, outcome capture, versioned scoring configs. *(M7a, questionnaires and the evidence registry, written: see `M7A_STATUS.md`; M7b step 1, the outcome export, written: see `M7B_STATUS.md`; M7b step 2, versioned scoring configurations, exposure tracking and the one gate, written: see `M7B2_STATUS.md`; ranking v1, the comparison against the deterministic baseline, written: see `M7B3_STATUS.md`. The comparison reports an ordering and still changes nothing; a learned ranking that would consume it is not started.)*
 - **M8 Bulk profile intake** `[NEW]` -- take one target profile and X corpus profiles as raw text in a single
   operation, create the profile records, extract fields through the M6 path, and hand the corpus to the M3/M7 ranking
-  path. *(not started; the per-profile extraction and the ranking it feeds are written -- see `M6_STATUS.md` and
-  `M7B3_STATUS.md`. Spec below.)*
+  path. *(written: see `M8_STATUS.md`. Spec below.)*
 - **M9 Windows distribution** `[NEW]` -- a production Windows installer: sign and bundle the sidecar binaries per
   target, complete the Windows signing step that the inherited config already points at, and ship NSIS plus MSI
   verified on a clean machine. *(not started. Spec below.)*

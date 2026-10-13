@@ -2,6 +2,7 @@
 //! may be shown and how its answers are checked, and `settings.rs` for the local-versus-cloud gate.
 pub mod backend;
 pub mod commands;
+pub mod intake_commands;
 pub mod repo;
 pub mod service;
 pub mod settings;

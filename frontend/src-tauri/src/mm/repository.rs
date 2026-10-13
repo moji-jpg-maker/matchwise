@@ -100,7 +100,12 @@ impl MmRepository {
         Ok(n.unwrap_or(-1) + 1)
     }
 
-    pub async fn insert_profile(pool: &SqlitePool, profile: &Profile) -> Result<(), sqlx::Error> {
+    /// Insert a new profile. Takes any executor so it can join a caller's transaction (bulk intake writes the
+    /// profile and its source note together).
+    pub async fn insert_profile<'e, E>(executor: E, profile: &Profile) -> Result<(), sqlx::Error>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let now = Utc::now().to_rfc3339();
         let data = serde_json::to_string(&profile.fields).map_err(|e| bad(e.to_string()))?;
         sqlx::query("INSERT INTO mm_profiles (id, org_id, data, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
@@ -109,7 +114,7 @@ impl MmRepository {
             .bind(data)
             .bind(&now)
             .bind(&now)
-            .execute(pool)
+            .execute(executor)
             .await?;
         Ok(())
     }
@@ -171,6 +176,8 @@ impl MmRepository {
     pub async fn delete_profile(pool: &SqlitePool, id: &str) -> Result<u64, sqlx::Error> {
         // The AI call log is not linked by a foreign key (it records what left the computer): clear it explicitly.
         let _ = sqlx::query("DELETE FROM mm_ai_log WHERE profile_a = ? OR profile_b = ?").bind(id).bind(id).execute(pool).await;
+        // Deleting a profile deletes the raw text it was created from: the source goes with the person.
+        let _ = sqlx::query("DELETE FROM mm_intake_notes WHERE profile_id = ?").bind(id).execute(pool).await;
         let r = sqlx::query("DELETE FROM mm_profiles WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(ORG)
