@@ -43,6 +43,11 @@ config against code from what is still a claim.
   `Meetily v...` -> `Matchwise v...`. The macOS and Windows artifact uploads in `build.yml` both used
   `${{ inputs.asset-prefix }}-${{ inputs.target }}`, which is unique only because the two triples differ today; the
   platform segment was added so a future shared triple cannot collide.
+- **The `resources` merge trap was fixed, not just documented.** `tauri.conf.json`'s `resources` became a map
+  (`{"templates/*.json": "templates"}`) and the redundant `"templates": "templates"` key was dropped from
+  `tauri.windows.conf.json`. Before this, the base array was discarded outright on Windows and only the overlay's own
+  re-listing kept the templates shipping -- any future base-array addition would have vanished on Windows with no
+  error. Map form on both sides makes the merge compose. See "Things to know" for the mechanism.
 - **Docs.** `WORKFLOWS_OVERVIEW.md` matched the new inputs, naming and the honest signing status;
   `ACCELERATION_GUIDE.md` and `frontend/src-tauri/templates/README.md` lost the last upstream product-name references
   (the templates README now names the `Matchwise` directory the loader actually uses -- `dirs::data_dir()` +
@@ -72,11 +77,14 @@ config against code from what is still a claim.
 ## Things to know when extending
 - `signCommand` paths are relative to `frontend/src-tauri/`. A script reference that looks missing is usually a
   path-resolution mistake, not a missing file.
-- `tauri.windows.conf.json` is merged into `tauri.conf.json` with `json_patch::merge` (RFC 7386, in
-  `tauri-utils` `config/parse.rs`), and its `resources` is a **map** while the base config's is an **array**. An
-  object patch replaces a non-object target, so on Windows the base `"templates/*.json"` array entry is discarded
-  outright -- the map's `"templates": "templates"` is what actually ships the templates, and it happens to cover the
-  same files. Anything added to the base `resources` array will silently not ship on Windows.
+- **`resources` must stay a map, on every platform.** `tauri.conf.json` is merged with `json_patch::merge` (RFC 7386,
+  `tauri-utils` `config/parse.rs` -> `json-patch` `lib.rs`), and that function replaces a non-object target wholesale
+  when the patch value is an object. So a base `resources` **array** with a platform overlay that uses a **map** loses
+  the base entry on that platform: the array is discarded, not concatenated. This was the case until it was fixed --
+  the Windows overlay happened to re-list templates, masking it, and anything added to the base array would have
+  silently not shipped on Windows. Both files now use the map form
+  (`{"templates/*.json": "templates"}` in the base, adding `"binaries/onnxruntime": "."` on Windows), so the patch
+  recurses key-by-key and the entries compose. Keep new resources in map form.
 - The signing flags are booleans on `workflow_dispatch`; `release.yml` calls the reusable `build.yml` with inputs, so
   `sign-binaries` references would fail fast at the workflow level. Grep for the old name before adding a caller.
 - `frontend/src-tauri/binaries/` is gitignored on purpose -- binaries are fetched or compiled at build time. Do not
