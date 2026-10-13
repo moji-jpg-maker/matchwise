@@ -13,6 +13,10 @@ Planning docs: `docs/matchmaking/PLAN.md` (roadmap) and `docs/matchmaking/M0_AUD
 2. **Rust app core**: `frontend/src-tauri/` (Tauri commands/events, sqlx + SQLite, LLM orchestration)
 3. **`matchmaking-core/`**: pure-Rust domain engine (field registry, profiles with provenance, three-valued rule engine).
    It must not depend on Tauri, SQLite, Telegram, or any LLM provider. Build/test it with `cargo test -p matchmaking-core`.
+   The engine half of the intended flow is written: `mm_find_matches` scores one profile against every active profile
+   and returns a ranked list. The intake half is not -- there is no command or screen that turns a block of raw text
+   into a profile, and nothing fans a corpus out across many profiles (M8, `docs/matchmaking/PLAN.md`). Until it
+   exists, extraction is reachable only from an already-created profile's own notes field, one profile at a time.
 4. **`frontend/src-tauri/src/mm/`**: persistence (`repository.rs`, runtime sqlx queries) and `mm_*` Tauri commands wrapping the core; UI in `frontend/src/app/profiles`, `profile` and `components/matchmaking`. Partner preferences compile to rules (`matchmaking-core/src/preferences.rs`); do not add a second matching code path. Rule sets live in `mm_rule_sets`/`mm_rule_set_versions` (immutable versions) and are edited in `app/rule-set`; the TypeScript `Expr` types must stay serde-compatible with `matchmaking-core/src/expr.rs` (a contract test covers this). Scoring lives in `matchmaking-core/src/scoring.rs` (rule `group` = dimension); the UI types in `types/matchmaking.ts` must match its JSON. Match records use the state machine in `matchmaking-core/src/lifecycle.rs`: add transitions there, never in the UI. Free-text reasons and notes stay in `mm_match_events`/`mm_match_notes`; `mm_audit_log` must never contain them. Telegram code lives in `frontend/src-tauri/src/telegram/` behind the `TelegramApi` trait: the engine returns `Reply` values and never touches the network; anything shown to a candidate must go through `render.rs` (HTML-escaped) and may never contain sensitive stored values, scores, rules or contact details. Add bot behaviour with a conversation test in `telegram/tests.rs`. AI: `matchmaking-core/src/ai.rs` decides what a model may see and how its answers are validated; `src-tauri/src/ai/` calls models only through `LlmBackend` after `settings::check_gate`. A model output may only ever become a stored *suggestion* or a stored *analysis*; never apply it to a profile, score or status directly, never send identifiers or `NEVER_SHARED` fields, and add a test in `ai/tests.rs` for any new prompt. Questionnaires: instruments are immutable versions (`mm_instruments`), their evidence record is mandatory, scores are sensitive fields with `Provenance::Questionnaire`, and a custom instrument must never be labelled validated. Never reproduce a psychometric instrument whose wording and licence you cannot verify; say so in its evidence record.
 
 ### Matchwise conventions
@@ -20,6 +24,8 @@ Planning docs: `docs/matchmaking/PLAN.md` (roadmap) and `docs/matchmaking/M0_AUD
 - AI-inferred values must carry `Provenance::AiInferred` and must never overwrite user/matchmaker data.
 - Profile data is sensitive: no telemetry, no hard-coded endpoints, the database is SQLCipher-encrypted with a key held in the OS credential store (`database/encryption.rs`; `MATCHWISE_DB_KEY` override), cloud-LLM calls need explicit consent.
 - Inherited Meetily code is being removed in stages; do not build new features on `analytics/`, the updater, or license code.
+- Phases 2-5 (learned ranking, agentic assistant, web/mobile/API ecosystem) are deferred and out of scope. Do not
+  build toward them.
 
 ### Key Technology Stack
 - **Desktop App**: Tauri 2.x (Rust) + Next.js 14 + React 18

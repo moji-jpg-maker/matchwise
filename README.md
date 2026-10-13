@@ -8,6 +8,11 @@ assistive layer, and keeps the human matchmaker in control of every introduction
 > is still being converted from its upstream base. See [`docs/matchmaking/PLAN.md`](docs/matchmaking/PLAN.md) for the
 > roadmap and [`docs/matchmaking/M0_AUDIT.md`](docs/matchmaking/M0_AUDIT.md) for the cleanup status.
 
+The engine scores and ranks a profile against every other active profile, and AI extraction reads free-text notes
+into field suggestions a matchmaker approves one at a time. Two things the intended flow needs are not built yet and
+are planned: **bulk intake** (one target plus a corpus of raw-text profiles in a single operation, M8) and a
+**Windows installer** (M9). Both are specified in the plan; phases 2-5 are deferred.
+
 ## Principles
 - **Local-first and private.** No telemetry. Profile data is sensitive and stays on the device unless you explicitly send it somewhere (for example a cloud LLM or Telegram).
 - **Deterministic core, AI on top.** Hard constraints and rules are data-driven and explainable; AI suggestions never overwrite human-entered data.

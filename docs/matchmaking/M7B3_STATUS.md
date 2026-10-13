@@ -74,6 +74,9 @@ fits a model, or re-orders any search -- see the limits at the end.
 - `pnpm exec tsc --noEmit` in `frontend/` is clean.
 
 ## Not verified / limits
+- **The list has to come from profiles that already exist.** Intake is one profile at a time, typed or extracted from
+  that profile's own notes; nothing turns a corpus of raw-text profiles into records in one step. Ranking a pasted
+  corpus is therefore M8 in `PLAN.md`, and this comparison sits behind it.
 - **It reports an ordering; it does not produce one.** `mm_find_matches` is untouched and searches are still ordered
   by `ranking_score`. This is the comparison the plan asks for before any learned ranking, and ranking stays disabled
   regardless of what it finds.

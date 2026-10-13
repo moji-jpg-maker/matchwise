@@ -36,6 +36,9 @@ grounding, staleness, serialization of requests, deletion, audit contents) plus 
 mapping, key never in an error). The commands ran end to end against a stand-in local model. The Rust JSON matches the TypeScript types.
 
 ## Not verified / limits
+- **No bulk intake.** Extraction works on one profile's own free text plus notes pasted into that profile's panel.
+  There is no command or screen that takes a corpus of raw-text profiles, creates the records and runs this pipeline
+  across them. That is M8 in `PLAN.md`; this milestone supplies the parsing it will call, not the way in.
 - **No real language model has been used.** Prompt quality, and how well a particular model follows the JSON format and copies evidence exactly, are untested; the strict checks mean a model that
   paraphrases its quotes will have good suggestions discarded (visible in the "discarded" list), which is the safe direction. Try a model and tell me what it gets wrong.
 - Redaction is pattern based. It does not know the names of relatives, employers or places mentioned in free text. That is why cloud use is opt-in and previewable.

@@ -30,6 +30,70 @@ Same feature set as before, ordered so something works end to end early.
 - **M5 Telegram** -- adapter, account linking, notifications. *(first slice written: see `M5_STATUS.md`)*
 - **M6 AI** -- LLM profile extraction (never overwrites human data), pair analysis grounded in rule results. *(first slice written: see `M6_STATUS.md`)*
 - **M7 Psychology, outcomes, ranking v1** -- evidence registry + questionnaires, outcome capture, versioned scoring configs. *(M7a, questionnaires and the evidence registry, written: see `M7A_STATUS.md`; M7b step 1, the outcome export, written: see `M7B_STATUS.md`; M7b step 2, versioned scoring configurations, exposure tracking and the one gate, written: see `M7B2_STATUS.md`; ranking v1, the comparison against the deterministic baseline, written: see `M7B3_STATUS.md`. The comparison reports an ordering and still changes nothing; a learned ranking that would consume it is not started.)*
+- **M8 Bulk profile intake** `[NEW]` -- take one target profile and X corpus profiles as raw text in a single
+  operation, create the profile records, extract fields through the M6 path, and hand the corpus to the M3/M7 ranking
+  path. *(not started; the per-profile extraction and the ranking it feeds are written -- see `M6_STATUS.md` and
+  `M7B3_STATUS.md`. Spec below.)*
+- **M9 Windows distribution** `[NEW]` -- a production Windows installer: sign and bundle the sidecar binaries per
+  target, complete the Windows signing step that the inherited config already points at, and ship NSIS plus MSI
+  verified on a clean machine. *(not started. Spec below.)*
+
+## Gaps against the end-to-end flow
+
+The tool is meant to take one target profile plus a corpus of raw-text profiles and return a ranked list of matches.
+Against that flow:
+
+| Step | State | Where |
+|---|---|---|
+| Ingest 1 target + X corpus profiles as raw text | **missing** | M8 |
+| Parse and extract fields with AI, persist them | partial: one profile at a time, each suggestion accepted by hand | M6, `M6_STATUS.md` |
+| Compare the target against the corpus | written | `mm_find_matches`, `mm/rules_commands.rs`; M3 |
+| Ranked list sorted by score | written | `find_matches` ordering; M7b step 3, `M7B3_STATUS.md` |
+
+The engine half is done. What is missing is the way in: no command or screen takes a block of raw text and turns it
+into a profile, and nothing fans a corpus out across many profiles. The extraction that would do the parsing exists
+and is reachable only from an already-created profile's own notes field.
+
+## M8 in detail (not started)
+
+Scope: one operation that accepts a target profile and a corpus, so a matchmaker can paste or load what they already
+have instead of typing each person in.
+
+- **Input.** One target as raw text, plus X corpus entries as raw text (paste, or a text/CSV/JSON file per entry).
+  Each entry becomes a profile with the raw text kept as an intake note, so the source is never lost.
+- **Extraction.** Reuse `ai::service::extract_profile`'s pipeline per entry rather than a second parse path. Batch
+  runs still produce *suggestions*; the batch does not bypass the review the M6 rules require, and a batch accept is
+  an explicit choice the matchmaker makes, recorded in the audit log the same way a single accept is.
+- **Gating.** The AI gate, redaction and consent rules from M6 apply per entry. A batch with AI off still creates the
+  profiles and keeps the raw text; nothing is parsed.
+- **Comparing and ranking.** After intake, the target runs through the existing `mm_find_matches` against the corpus.
+  No new scoring or ranking code.
+- **Failure handling.** One bad entry (empty text, an unreadable model answer) must not lose the other entries; the
+  batch reports per-entry what was created, what was parsed and what was dropped, and why.
+- **Tests.** Core: any parsing or chunking helper added to `matchmaking-core` gets unit tests. App: a batch command
+  test against a real pool, plus golden-file tests on synthetic profiles only.
+
+Open questions for this milestone: whether a corpus entry is one raw-text block or a file, and whether a batch accept
+is offered at all or every suggestion stays individual.
+
+## M9 in detail (not started)
+
+Scope: an installer a stranger can run on a clean Windows machine.
+
+- **Toolchain.** Keep the inherited Tauri 2 bundler rather than adding a second packager; it already names the NSIS
+  and MSI targets (`frontend/src-tauri/tauri.conf.json`), and `tauri.windows.conf.json` carries the Windows resource
+  overrides. Per-user versus per-machine install, and the optional auto-launch, are Tauri/NSIS settings.
+- **Dependency bundling.** Ship the Windows builds of every `externalBin` sidecar; today `frontend/src-tauri/binaries/`
+  holds only the Linux `ffmpeg` and `llama-helper`. Decide what ships inside the installer (local model runtime, ONNX
+  runtime, ffmpeg) against what is downloaded on first run, and how the encrypted database and its key in the
+  credential store survive install, upgrade and uninstall.
+- **Signing.** `bundle.windows.signCommand` already calls `scripts/sign-windows.ps1`, which does not exist in
+  `frontend/scripts/`. The installer is unsigned until that step is written and a certificate is provided, which is
+  what a SmartScreen or Defender warning comes from. Decide the certificate (OV versus EV) and whether to submit the
+  build for reputation.
+- **QA.** A manual checklist run on a clean Windows VM: install, shortcut and Start-menu entry, first-run database
+  creation, the AI gate with no model present, intake, a ranked run, upgrade over an installed copy, uninstall
+  leaving no key behind. Records what a fresh machine asks the user for.
 
 ## Feature areas (unchanged unless marked)
 1. **Profiles**: schema-driven fields, children as sub-records, questionnaires, partner preferences, contact, photos.
@@ -57,5 +121,10 @@ Same feature set as before, ordered so something works end to end early.
 17. **[NEW] Internationalization**: RTL layout, locale-aware dates (including Jalali if needed), and non-English LLM prompts from the start, not Phase 5.
 18. **[NEW] Testing**: synthetic profiles and golden-file tests only; never commit real profiles.
 
-## Phases 2-5
-Unchanged in intent: better psychology/AI reasoning -> outcome-based learning -> agentic assistant with authorization policy -> web/mobile/API ecosystem.
+## Phases 2-5 (deferred, out of scope)
+The original phases 2-5 -- better psychology/AI reasoning, outcome-based learning, an agentic assistant with an
+authorization policy, and the web/mobile/API ecosystem -- are **out of scope for now** and are not planned for the
+near future. Phase 1 plus M8 (bulk intake) and M9 (Windows distribution) is the whole of the current commitment.
+The text below is kept for record only and describes nothing that is being built.
+
+Original intent: better psychology/AI reasoning -> outcome-based learning -> agentic assistant with authorization policy -> web/mobile/API ecosystem.
