@@ -1,6 +1,6 @@
 # Matchwise GPU build script (Windows PowerShell).
 # Wraps build-gpu.bat. Signing is opt-in and off by default, matching the
-# `sign-build` input in .github/workflows (which also defaults to false).
+# `sign-windows` input in .github/workflows (which also defaults to false).
 
 param(
     [switch]$Sign

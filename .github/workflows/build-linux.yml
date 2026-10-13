@@ -29,11 +29,6 @@ on:
           - rpm
           - all
         default: all
-      sign-build:
-        description: 'Sign the build'
-        required: true
-        type: boolean
-        default: false
       upload-artifacts:
         description: 'Upload build artifacts'
         required: true
@@ -299,7 +294,7 @@ jobs:
         if: ${{ github.event.inputs.upload-artifacts == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: meetily-linux-${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}-x64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
+          name: matchwise-linux-${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }}-x64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
           path: |
             target/x86_64-unknown-linux-gnu/${{ steps.build-profile.outputs.profile }}/bundle/deb/*.deb
             target/x86_64-unknown-linux-gnu/${{ steps.build-profile.outputs.profile }}/bundle/appimage/*.AppImage
@@ -317,7 +312,7 @@ jobs:
           echo "| **Target** | x86_64-unknown-linux-gnu |" >> $GITHUB_STEP_SUMMARY
           echo "| **Ubuntu Version** | ${{ github.event.inputs.ubuntu-version || 'ubuntu-22.04' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Bundle Types** | ${{ steps.build-profile.outputs.args }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Signed** | ${{ github.event.inputs.sign-build == 'true' && '✅ Yes' || '❌ No' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Signed** | ❌ No (Linux bundles are unsigned) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Build Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

@@ -11,7 +11,7 @@ This document provides a quick overview of all available CI/CD workflows in this
 
 **Key Features:**
 - Signing OFF by default (faster builds)
-- Optional signing via workflow dispatch input
+- Per-platform signing inputs: `sign-macos` (Apple), `sign-windows` (DigiCert KeyLocker)
 - All platforms in parallel
 - 14-day artifact retention
 
@@ -96,21 +96,21 @@ This document provides a quick overview of all available CI/CD workflows in this
 ---
 
 ### 5. **build-test.yml** - Multi-Platform Test Builds
-**Purpose:** Test builds across all platforms with signing
+**Purpose:** Test builds across all platforms
 
 **Key Features:**
-- Signing ON by default
+- **Unsigned** builds; `sign-macos` / `sign-windows` default to false, so the run needs no Apple or DigiCert secrets
 - All platforms in parallel
 - Uses reusable `build.yml` workflow
 - 30-day artifact retention
-- Artifacts prefixed with `meetily-test-`
+- Artifacts prefixed with `matchwise-test-`
 
 **Triggers:**
 - Manual dispatch only
 
 **Use When:**
 - Pre-release testing
-- Verifying signing infrastructure
+- Verifying that all platforms still bundle
 - Testing across all platforms simultaneously
 
 ---
@@ -128,10 +128,11 @@ This document provides a quick overview of all available CI/CD workflows in this
 ---
 
 ### 7. **release.yml** - Production Release
-**Purpose:** Create official releases with signed binaries
+**Purpose:** Create official releases
 
 **Key Features:**
-- Signing REQUIRED
+- macOS ships **ad-hoc signed** (`signingIdentity: "-"` in `tauri.conf.json`); a Developer ID certificate and notarization are not wired up yet
+- Windows ships **unsigned** until a DigiCert KeyLocker certificate exists; set `sign-windows: true` then
 - Creates GitHub Release (draft)
 - Version tags from `tauri.conf.json`
 - Uploads release assets
@@ -213,17 +214,16 @@ This document provides a quick overview of all available CI/CD workflows in this
 - Choose Ubuntu version
 - Choose bundle types
 
-### "I need signed builds for all platforms..."
+### "I need to check every platform still bundles..."
 - **Use `build-test.yml`** (manual dispatch)
-- All platforms
-- Signing enabled
-- Full verification
+- All platforms, unsigned
+- No signing secrets required
 
 ### "I'm ready to release..."
 - **Use `release.yml`** (manual dispatch)
 - Creates GitHub Release
-- All platforms, fully signed
-- Production-ready artifacts
+- macOS + Windows bundles (macOS ad-hoc signed, Windows unsigned)
+- Production-ready once a signing certificate is in place
 
 ---
 
@@ -252,29 +252,29 @@ Standalone (don't use build.yml):
 | `build-macos.yml` | macOS | Optional | Medium | 30 days | macOS dev |
 | `build-windows.yml` | Windows | Optional | Medium | 30 days | Windows dev |
 | `build-linux.yml` | Linux | Optional | Medium | 30 days | Linux dev |
-| `build-test.yml` | All | ON | Slow | 30 days | Pre-release |
-| `release.yml` | macOS + Windows | REQUIRED | Slow | Permanent | Release |
+| `build-test.yml` | All | OFF | Slow | 30 days | Pre-release smoke test |
+| `release.yml` | macOS + Windows | OFF (no cert yet) | Slow | Permanent | Release |
 
 ---
 
 ## Artifact Naming Convention
 
 ```
-meetily-{workflow}-{platform}-{target}-{version}
+matchwise-{workflow}-{platform}-{target}-{version}
 ```
 
 **Examples:**
-- `meetily-devtest-macOS-aarch64-apple-darwin-0.1.3`
-- `meetily-test-windows-x86_64-pc-windows-msvc-0.1.3`
-- `meetily-macos-aarch64-release-0.1.3`
+- `matchwise-devtest-macOS-aarch64-apple-darwin-0.1.3`
+- `matchwise-test-windows-x86_64-pc-windows-msvc-0.1.3`
+- `matchwise-macos-aarch64-release-0.1.3`
 
 ---
 
 ## Required Secrets
 
-All workflows require these secrets to be configured:
+Only the **signed** paths need secrets; unsigned builds (the default) need none.
 
-### macOS Signing
+### macOS Signing (`sign-macos: true`)
 - `APPLE_CERTIFICATE` - Developer ID certificate (base64)
 - `APPLE_CERTIFICATE_PASSWORD` - Certificate password
 - `APPLE_ID` - Apple ID email
@@ -282,7 +282,7 @@ All workflows require these secrets to be configured:
 - `APPLE_TEAM_ID` - Team ID
 - `KEYCHAIN_PASSWORD` - Temporary keychain password
 
-### Windows Signing (DigiCert)
+### Windows Signing (`sign-windows: true`)
 - `SM_HOST` - DigiCert host URL
 - `SM_API_KEY` - API key
 - `SM_CLIENT_CERT_FILE_B64` - Client cert (base64)
@@ -296,7 +296,7 @@ All workflows require these secrets to be configured:
 ## Performance Tips
 
 1. **Use devtest workflow** for routine development (fastest)
-2. **Enable signing** only when necessary (adds 10-15 minutes)
+2. **Enable signing** (`sign-macos` / `sign-windows`) only when necessary (adds 10-15 minutes)
 3. **Test specific platforms** when working on platform-specific code
 4. **Run full builds** (`build-test.yml`) before releases
 5. **Cache is enabled** - subsequent builds are faster

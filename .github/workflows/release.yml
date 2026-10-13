@@ -75,7 +75,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: `v${{ steps.get-version.outputs.version }}`,
-              name: `Meetily v${{ steps.get-version.outputs.version }}`,
+              name: `Matchwise v${{ steps.get-version.outputs.version }}`,
               draft: true,
               prerelease: false,
               generate_release_notes: true
@@ -105,8 +105,12 @@ jobs:
       platform: ${{ matrix.platform }}
       target: ${{ matrix.target }}
       build-args: ${{ matrix.args }}
-      sign-binaries: true
-      asset-prefix: "meetily"
+      # macOS signing is not code signing here: `signingIdentity: "-"` (ad-hoc) is
+      # configured in tauri.conf.json, so no Apple certificate is required yet.
+      # The AMBIENT_* secrets are still passed through by build.yml.
+      sign-macos: false
+      sign-windows: false
+      asset-prefix: "matchwise"
       upload-artifacts: false  # tauri-action uploads directly to release
       release-id: ${{ needs.create-release.outputs.release-id }}
     secrets: inherit

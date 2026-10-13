@@ -3,8 +3,13 @@ name: "Build and Test - DevTest"
 on:
   workflow_dispatch:
     inputs:
-      sign-build:
-        description: 'Sign the build'
+      sign-macos:
+        description: 'Sign the macOS build (Apple)'
+        required: false
+        type: boolean
+        default: false
+      sign-windows:
+        description: 'Sign the Windows build (DigiCert KeyLocker)'
         required: false
         type: boolean
         default: false
@@ -177,7 +182,7 @@ jobs:
 
       # macOS signing setup
       - name: Import Apple Developer Certificate
-        if: contains(matrix.platform, 'macos') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'macos') && github.event.inputs.sign-macos == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -193,7 +198,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
 
       - name: Verify Apple certificate
-        if: contains(matrix.platform, 'macos') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'macos') && github.event.inputs.sign-macos == 'true'
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
@@ -202,11 +207,11 @@ jobs:
 
       # Windows signing setup
       - name: Setup DigiCert KeyLocker
-        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-windows == 'true'
         uses: digicert/ssm-code-signing@v1.1.1
 
       - name: Setup DigiCert Environment
-        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-windows == 'true'
         shell: pwsh
         run: |
           # Set environment variables
@@ -249,7 +254,7 @@ jobs:
           "SM_CLIENT_CERT_FILE=D:\Certificate_pkcs12.p12" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Verify DigiCert Setup
-        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-windows == 'true'
         shell: pwsh
         run: |
           smctl --version
@@ -257,7 +262,7 @@ jobs:
           smctl healthcheck
 
       - name: Sync Certificate to Windows Certificate Store
-        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-windows == 'true'
         shell: pwsh
         run: |
           Write-Host "============================================================"
@@ -404,7 +409,7 @@ jobs:
 
       # Build step (with code signing)
       - name: Build Tauri app (with code signing)
-        if: github.event.inputs.sign-build == 'true'
+        if: github.event.inputs.sign-macos == 'true' || github.event.inputs.sign-windows == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -422,7 +427,7 @@ jobs:
 
       # Build step (without code signing)
       - name: Build Tauri app (unsigned)
-        if: github.event.inputs.sign-build != 'true'
+        if: github.event.inputs.sign-macos != 'true' && github.event.inputs.sign-windows != 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -457,7 +462,7 @@ jobs:
           find target -name "*.dmg" -o -name "*.app" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.rpm" 2>/dev/null || echo "Finding artifacts..."
 
       - name: Verify code signing (macOS App)
-        if: contains(matrix.platform, 'macos') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'macos') && github.event.inputs.sign-macos == 'true'
         run: |
           APP_PATH=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app" | head -1)
           if [ -n "$APP_PATH" ]; then
@@ -475,7 +480,7 @@ jobs:
           fi
 
       - name: Verify code signing (Windows)
-        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-build == 'true'
+        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-windows == 'true'
         shell: pwsh
         run: |
           $msiPath = Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1 -ExpandProperty FullName
@@ -489,7 +494,7 @@ jobs:
         if: github.event.inputs.upload-artifacts == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: meetily-devtest-${{ matrix.platform-name }}-${{ matrix.target }}-${{ steps.get-version.outputs.version }}
+          name: matchwise-devtest-${{ matrix.platform-name }}-${{ matrix.target }}-${{ steps.get-version.outputs.version }}
           path: |
             target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             target/aarch64-apple-darwin/release/bundle/macos/*.app
@@ -513,5 +518,5 @@ jobs:
           echo "- **Version:** ${{ steps.get-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Platform:** ${{ matrix.platform-name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target:** ${{ matrix.target }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Signed:** ${{ github.event.inputs.sign-build == 'true' && 'Yes' || 'No (default)' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Signed:** macOS=${{ github.event.inputs.sign-macos == 'true' && 'Yes' || 'No' }}, Windows=${{ github.event.inputs.sign-windows == 'true' && 'Yes' || 'No' }} (both default to No)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

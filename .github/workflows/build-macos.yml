@@ -11,8 +11,8 @@ on:
           - debug
           - release
         default: release
-      sign-build:
-        description: 'Sign the build'
+      sign-macos:
+        description: 'Sign the build (Apple)'
         required: true
         type: boolean
         default: false
@@ -107,7 +107,7 @@ jobs:
           pnpm install --frozen-lockfile
 
       - name: Import Apple Developer Certificate
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-macos == 'true' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -123,7 +123,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
 
       - name: Verify certificate
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-macos == 'true' }}
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
@@ -154,7 +154,7 @@ jobs:
           key: ${{ runner.os }}-ffmpeg-${{ hashFiles('frontend/src-tauri/build.rs', 'frontend/src-tauri/build/ffmpeg.rs') }}
 
       - name: Build Tauri app (with code signing)
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-macos == 'true' }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -171,7 +171,7 @@ jobs:
           args: --target aarch64-apple-darwin ${{ steps.build-profile.outputs.args }}
 
       - name: Build Tauri app (unsigned)
-        if: ${{ github.event.inputs.sign-build != 'true' }}
+        if: ${{ github.event.inputs.sign-macos != 'true' }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,7 +185,7 @@ jobs:
           find target/aarch64-apple-darwin/${{ steps.build-profile.outputs.profile }}/bundle -type f
 
       - name: Verify code signing (App Bundle)
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-macos == 'true' }}
         run: |
           APP_PATH=$(find target/aarch64-apple-darwin/${{ steps.build-profile.outputs.profile }}/bundle/macos -name "*.app" | head -1)
           if [ -n "$APP_PATH" ]; then
@@ -204,7 +204,7 @@ jobs:
           fi
 
       - name: Verify code signing (DMG)
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-macos == 'true' }}
         run: |
           DMG_PATH=$(find target/aarch64-apple-darwin/${{ steps.build-profile.outputs.profile }}/bundle/dmg -name "*.dmg" | head -1)
           if [ -n "$DMG_PATH" ]; then
@@ -226,7 +226,7 @@ jobs:
         if: ${{ github.event.inputs.upload-artifacts == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: meetily-macos-aarch64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
+          name: matchwise-macos-aarch64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
           path: |
             target/aarch64-apple-darwin/${{ steps.build-profile.outputs.profile }}/bundle/dmg/*.dmg
             target/aarch64-apple-darwin/${{ steps.build-profile.outputs.profile }}/bundle/macos/*.app
@@ -243,7 +243,7 @@ jobs:
           echo "| **Version** | ${{ steps.get-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Build Profile** | ${{ steps.build-profile.outputs.profile }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Target** | aarch64-apple-darwin (Apple Silicon) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Signed** | ${{ github.event.inputs.sign-build == 'true' && '✅ Yes' || '❌ No' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Signed** | ${{ github.event.inputs.sign-macos == 'true' && '✅ Yes' || '❌ No' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Build Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

@@ -19,7 +19,7 @@ on:
       asset-prefix:
         required: false
         type: string
-        default: "meetily"
+        default: "matchwise"
       asset-name-pattern:
         required: false
         type: string
@@ -28,7 +28,15 @@ on:
         required: false
         type: boolean
         default: false
-      sign-binaries:
+      # Apple signing needs only the APPLE_* secrets; Windows signing needs only
+      # the DigiCert SM_* secrets. One flag cannot mean both: turning it on for
+      # Apple used to run the DigiCert steps, which hard-fail (KeyLocker download,
+      # then smctl) when the DigiCert secrets are absent.
+      sign-macos:
+        required: false
+        type: boolean
+        default: false
+      sign-windows:
         required: false
         type: boolean
         default: false
@@ -271,7 +279,7 @@ jobs:
           Get-ChildItem $runtimeDir -ErrorAction SilentlyContinue
 
       - name: Setup DigiCert Environment
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-windows
         shell: pwsh
         run: |
           # Set environment variables
@@ -314,11 +322,11 @@ jobs:
           "SM_CLIENT_CERT_FILE=D:\Certificate_pkcs12.p12" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup DigiCert KeyLocker
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-windows
         uses: digicert/ssm-code-signing@v1.1.1
 
       - name: Sync Certificate to Windows Certificate Store
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-windows
         shell: pwsh
         run: |
           Write-Host "============================================================"
@@ -398,7 +406,7 @@ jobs:
           Write-Host ""
 
       - name: Verify DigiCert Setup
-        if: contains(inputs.platform, 'windows') && inputs.sign-binaries
+        if: contains(inputs.platform, 'windows') && inputs.sign-windows
         shell: pwsh
         run: |
           Write-Host "=== DigiCert Setup Verification ==="
@@ -470,7 +478,7 @@ jobs:
         run: rustup target add ${{ inputs.target }}
 
       - name: Import Apple Developer Certificate
-        if: contains(inputs.platform, 'macos') && inputs.sign-binaries
+        if: contains(inputs.platform, 'macos') && inputs.sign-macos
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -486,7 +494,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
 
       - name: Verify certificate
-        if: contains(inputs.platform, 'macos') && inputs.sign-binaries
+        if: contains(inputs.platform, 'macos') && inputs.sign-macos
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
@@ -610,13 +618,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ inputs.sign-binaries && secrets.APPLE_ID || '' }}
-          APPLE_ID_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_ID_PASSWORD || '' }}
-          APPLE_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ inputs.sign-binaries && secrets.APPLE_TEAM_ID || '' }}
-          APPLE_CERTIFICATE: ${{ inputs.sign-binaries && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ inputs.sign-binaries && env.CERT_ID || '' }}
+          APPLE_ID: ${{ inputs.sign-macos && secrets.APPLE_ID || '' }}
+          APPLE_ID_PASSWORD: ${{ inputs.sign-macos && secrets.APPLE_ID_PASSWORD || '' }}
+          APPLE_PASSWORD: ${{ inputs.sign-macos && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ inputs.sign-macos && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_CERTIFICATE: ${{ inputs.sign-macos && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.sign-macos && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.sign-macos && env.CERT_ID || '' }}
         with:
           projectPath: frontend
           tagName: ${{ inputs.release-id && format('v{0}', steps.get-version.outputs.version) || '' }}
@@ -628,7 +636,7 @@ jobs:
         if: inputs.upload-artifacts && contains(inputs.platform, 'macos')
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.asset-prefix }}-${{ inputs.target }}
+          name: ${{ inputs.asset-prefix }}-macos-${{ inputs.target }}
           path: |
             target/${{ inputs.target }}/${{ steps.build-profile.outputs.profile }}/bundle/dmg/*.dmg
             target/${{ inputs.target }}/${{ steps.build-profile.outputs.profile }}/bundle/macos/*.app
@@ -702,7 +710,7 @@ jobs:
         if: inputs.upload-artifacts && contains(inputs.platform, 'windows')
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.asset-prefix }}-${{ inputs.target }}
+          name: ${{ inputs.asset-prefix }}-windows-${{ inputs.target }}
           path: |
             target/${{ steps.build-profile.outputs.profile }}/bundle/msi/*.msi
             target/${{ steps.build-profile.outputs.profile }}/bundle/msi/*.msi.sig

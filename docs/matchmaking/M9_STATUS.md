@@ -1,0 +1,83 @@
+# M9 status: Windows distribution
+
+An installer a stranger can run on a clean Windows machine. This is the first milestone where the work cannot be
+finished from Linux: nothing here has been run on Windows, the `.ps1` scripts cannot be executed in this sandbox
+(no `pwsh`/`powershell`), and the installer has never been built. What follows separates what was verified by reading
+config against code from what is still a claim.
+
+## What was found (verified by reading, not by running)
+- **The signing script exists.** `bundle.windows.signCommand` in `frontend/src-tauri/tauri.conf.json` is
+  `powershell ... -File scripts/sign-windows.ps1 -FilePath %1`, and the path is relative to `frontend/src-tauri/`.
+  The file is there: `frontend/src-tauri/scripts/sign-windows.ps1`. It exits 0 when `DIGICERT_KEYPAIR_ALIAS` is unset,
+  so an unsigned build is clean; with the alias set it runs `smctl sign` and then asserts `Get-AuthenticodeSignature`
+  reports `Valid`. The earlier PLAN text ("does not exist in `frontend/scripts/`") was a path mistake and is corrected.
+- **The sidecars are already produced on Windows.** `build.yml`, `build-windows.yml` and `build-devtest.yml` build
+  `llama-helper` on Windows and copy it to `binaries/llama-helper-x86_64-pc-windows-msvc.exe`. `build/ffmpeg.rs`
+  downloads the per-target FFmpeg (the `windows` branch of `get_ffmpeg_url_for_target`) and `build/onnxruntime.rs`
+  stages `binaries/onnxruntime`, which `tauri.windows.conf.json` bundles at the root via
+  `"binaries/onnxruntime": "."`. So the Windows analogue of the Linux `binaries/` contents is downloaded/compiled by
+  the build, not committed. `frontend/src-tauri/binaries/` is gitignored; nothing there is tracked.
+- **The OpenSSL prerequisite is wired in and still unproven.** `.github/actions/windows-openssl-deps/action.yml`
+  installs Strawberry Perl + NASM with `choco`, puts them on `PATH`, and throws if either is missing -- fail-fast
+  rather than a confusing failure inside `openssl-src`. `build.yml` calls it for `runner.os == 'Windows'`. No Windows
+  runner has executed it from here, so M0's "untested" caveat stands.
+- **The model weights are not bundled.** `summary/summary_engine/model_manager.rs` resolves a per-user models dir under
+  `app_data_dir` and downloads the GGUF there. So the installer does not carry a model; first use needs a download.
+
+## What was changed
+- **Signing flags are per platform.** One `sign-binaries` input guarded both the Apple steps and the DigiCert steps in
+  `build.yml`, so turning signing on for one platform also ran the other platform's certificate setup, which hard-fails
+  (the KeyLocker action download, then `smctl`) when those secrets are absent. Split into `sign-macos` and
+  `sign-windows` in `build.yml`; the DigiCert steps now gate on `sign-windows` and the Apple env on `sign-macos`.
+  `sign-binaries` is gone.
+- **Standalone workflows take the same two flags.** `build-windows.yml` (`sign-build` -> `sign-windows`),
+  `build-macos.yml` (`sign-build` -> `sign-macos`), and `build-devtest.yml` (split, with the signed/unsigned build steps
+  keyed on either flag). `build-linux.yml` had a `sign-build` input whose only use was printing a summary line -- no
+  Linux signing step anywhere -- so the dead input was dropped and the summary now says Linux bundles are unsigned.
+- **Callers no longer request signing.** `release.yml` and `build-test.yml` passed `sign-binaries: true`, which would
+  now have to be split and would demand DigiCert secrets; both pass `sign-macos: false` / `sign-windows: false` and
+  build unsigned. This is the honest description of the current state: no certificate exists yet, and the macOS side is
+  ad-hoc signed by `tauri.conf.json`'s `signingIdentity: "-"`, so it never used the Apple secrets in the first place.
+- **Rebranded the pipeline.** `asset-prefix` default `meetily` -> `matchwise`; artifact names
+  `meetily-{windows,macos,linux,devtest}-*` -> `matchwise-*`; `release.yml`'s draft release title
+  `Meetily v...` -> `Matchwise v...`. The macOS and Windows artifact uploads in `build.yml` both used
+  `${{ inputs.asset-prefix }}-${{ inputs.target }}`, which is unique only because the two triples differ today; the
+  platform segment was added so a future shared triple cannot collide.
+- **Docs.** `WORKFLOWS_OVERVIEW.md` matched the new inputs, naming and the honest signing status;
+  `ACCELERATION_GUIDE.md` and `frontend/src-tauri/templates/README.md` lost the last upstream product-name references
+  (the templates README now names the `Matchwise` directory the loader actually uses -- `dirs::data_dir()` +
+  `"Matchwise"`, not the bundle identifier).
+
+## Still open (needs a Windows machine, or a certificate, or both)
+- **No Windows CI run.** The Strawberry Perl + NASM step, the Vulkan SDK steps, the sidecar copy, and the Tauri
+  bundle itself have not been exercised. A `workflow_dispatch` of `build-windows.yml` from `main` is the check.
+- **No certificate, so no signed installer.** `sign-windows.ps1` is correct as far as reading goes but has never run:
+  no `.ps1` can be executed or linted in this sandbox. The OV-versus-EV choice and whether to submit the build for
+  SmartScreen reputation are still decisions, not work.
+- **The QA checklist below has not been run at all.** It is a checklist, not a result.
+
+## M9 QA checklist (to run on a clean Windows VM)
+- [ ] Install from the NSIS `.exe`; confirm the SmartScreen/Defender prompt and what it says about the publisher.
+- [ ] Install from the MSI; confirm the per-user/per-machine choice and that it lands where expected.
+- [ ] Shortcut and Start-menu entry appear and launch the app.
+- [ ] First run creates the encrypted database (no plaintext file in `%APPDATA%`); the key is in Windows Credential
+      Manager, not in a file.
+- [ ] AI gate with no model present: the app asks rather than fails, and says a download is needed.
+- [ ] Bulk intake (M8) accepts pasted and loaded entries.
+- [ ] A ranked run (M3) returns matches.
+- [ ] Install an older build, then upgrade over it: data survives, no second database, key still resolves.
+- [ ] Uninstall: app files gone, and **no key left behind** in Credential Manager.
+- [ ] Record what a genuinely fresh machine asks the user for before the first screen appears.
+
+## Things to know when extending
+- `signCommand` paths are relative to `frontend/src-tauri/`. A script reference that looks missing is usually a
+  path-resolution mistake, not a missing file.
+- `tauri.windows.conf.json` is merged into `tauri.conf.json` with `json_patch::merge` (RFC 7386, in
+  `tauri-utils` `config/parse.rs`), and its `resources` is a **map** while the base config's is an **array**. An
+  object patch replaces a non-object target, so on Windows the base `"templates/*.json"` array entry is discarded
+  outright -- the map's `"templates": "templates"` is what actually ships the templates, and it happens to cover the
+  same files. Anything added to the base `resources` array will silently not ship on Windows.
+- The signing flags are booleans on `workflow_dispatch`; `release.yml` calls the reusable `build.yml` with inputs, so
+  `sign-binaries` references would fail fast at the workflow level. Grep for the old name before adding a caller.
+- `frontend/src-tauri/binaries/` is gitignored on purpose -- binaries are fetched or compiled at build time. Do not
+  "fix" a Windows build by committing an `.exe` there.

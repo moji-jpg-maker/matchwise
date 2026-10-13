@@ -28,8 +28,10 @@ jobs:
       platform: ${{ matrix.platform }}
       target: ${{ matrix.target }}
       build-args: ${{ matrix.args }}
-      sign-binaries: true
-      asset-prefix: "meetily-test"
+      # Unsigned smoke test: no DigiCert or Apple secrets required.
+      sign-macos: false
+      sign-windows: false
+      asset-prefix: "matchwise-test"
       upload-artifacts: true
       is-debug-build: ${{ contains(matrix.args, '--debug') }}
     secrets: inherit

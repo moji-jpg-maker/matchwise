@@ -66,7 +66,8 @@ Done:
 - **Updater removed.** Deleted the `tauri-plugin-updater` dependency and registration, the `updater:default` permission, the `plugins.updater` config and
   `createUpdaterArtifacts`; frontend update dialog/notification/provider/service/hook removed and `@tauri-apps/plugin-updater` dropped from `package.json`.
   **Follow-up:** the dead `TAURI_SIGNING_PRIVATE_KEY` env plumbing was removed from all five tauri-action call sites, and the three release
-  workflows now default `sign-build: false` so an unsigned build is the default. `release.yml` no longer looks for `latest.json`, and the orphaned
+  workflows now default signing off so an unsigned build is the default (see M9: the single `sign-build` flag became per-platform `sign-macos` / `sign-windows`).
+  `release.yml` no longer looks for `latest.json`, and the orphaned
   `scripts/generate-update-manifest-github.js` / `scripts/test-update-locally.js` are deleted. `frontend/build.ps1` no longer demands the removed updater key:
   signing is now opt-in via `-Sign`, off by default, and checks `DIGICERT_KEYPAIR_ALIAS` (what `tauri.conf.json`'s signCommand actually reads). `.env.example`
   (repo root) was rewritten to list the real variables (`MATCHWISE_DB_KEY`, `MATCHWISE_TELEGRAM_TOKEN`, `MATCHWISE_AI_API_KEY`, the DigiCert set). No `TAURI_SIGNING_*` reference survives anywhere in the repo.

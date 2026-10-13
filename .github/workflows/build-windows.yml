@@ -11,8 +11,8 @@ on:
           - debug
           - release
         default: release
-      sign-build:
-        description: 'Sign the build'
+      sign-windows:
+        description: 'Sign the build with DigiCert KeyLocker'
         required: true
         type: boolean
         default: false
@@ -72,7 +72,7 @@ jobs:
           fi
 
       - name: Setup DigiCert Environment
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-windows == 'true' }}
         shell: pwsh
         run: |
           # Set environment variables
@@ -115,11 +115,11 @@ jobs:
           "SM_CLIENT_CERT_FILE=D:\Certificate_pkcs12.p12" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup DigiCert KeyLocker
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-windows == 'true' }}
         uses: digicert/ssm-code-signing@v1.1.1
 
       - name: Sync Certificate to Windows Certificate Store
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-windows == 'true' }}
         shell: pwsh
         run: |
           Write-Host "============================================================"
@@ -199,7 +199,7 @@ jobs:
           Write-Host ""
 
       - name: Verify DigiCert Setup
-        if: ${{ github.event.inputs.sign-build == 'true' }}
+        if: ${{ github.event.inputs.sign-windows == 'true' }}
         shell: pwsh
         run: |
           Write-Host "=== DigiCert Setup Verification ==="
@@ -244,7 +244,7 @@ jobs:
           # the signing should still work. We'll test in the pre-build signing test.
 
       - name: Pre-Build Signing Test
-        if: ${{ github.event.inputs.sign-build == 'true' && github.event.inputs.test-signing == 'true' }}
+        if: ${{ github.event.inputs.sign-windows == 'true' && github.event.inputs.test-signing == 'true' }}
         shell: pwsh
         run: |
           Write-Host "============================================================"
@@ -717,7 +717,7 @@ jobs:
         if: ${{ github.event.inputs.upload-artifacts == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: meetily-windows-x64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
+          name: matchwise-windows-x64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
           path: |
             target/x86_64-pc-windows-msvc/${{ steps.build-profile.outputs.profile }}/bundle/msi/*.msi
             target/x86_64-pc-windows-msvc/${{ steps.build-profile.outputs.profile }}/bundle/msi/*.msi.sig
@@ -735,7 +735,7 @@ jobs:
           echo "| **Version** | ${{ steps.get-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Build Profile** | ${{ steps.build-profile.outputs.profile }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Target** | x86_64-pc-windows-msvc |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Signed** | ${{ (github.event.inputs.sign-build == 'true') && '✅ Yes' || '❌ No' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Signed** | ${{ (github.event.inputs.sign-windows == 'true') && '✅ Yes' || '❌ No' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Build Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

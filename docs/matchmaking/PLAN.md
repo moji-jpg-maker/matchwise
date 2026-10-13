@@ -35,7 +35,8 @@ Same feature set as before, ordered so something works end to end early.
   path. *(written: see `M8_STATUS.md`. Spec below.)*
 - **M9 Windows distribution** `[NEW]` -- a production Windows installer: sign and bundle the sidecar binaries per
   target, complete the Windows signing step that the inherited config already points at, and ship NSIS plus MSI
-  verified on a clean machine. *(not started. Spec below.)*
+  verified on a clean machine. *(config and workflows written: see `M9_STATUS.md`. Nothing has run on a Windows
+  runner yet, so the installer itself is still unbuilt. Spec below.)*
 
 ## Gaps against the end-to-end flow
 
@@ -53,7 +54,7 @@ The engine half is done. What is missing is the way in: no command or screen tak
 into a profile, and nothing fans a corpus out across many profiles. The extraction that would do the parsing exists
 and is reachable only from an already-created profile's own notes field.
 
-## M8 in detail (not started)
+## M8 in detail (written)
 
 Scope: one operation that accepts a target profile and a corpus, so a matchmaker can paste or load what they already
 have instead of typing each person in.
@@ -75,21 +76,27 @@ have instead of typing each person in.
 Open questions for this milestone: whether a corpus entry is one raw-text block or a file, and whether a batch accept
 is offered at all or every suggestion stays individual.
 
-## M9 in detail (not started)
+## M9 in detail (config written, unbuilt)
 
 Scope: an installer a stranger can run on a clean Windows machine.
 
 - **Toolchain.** Keep the inherited Tauri 2 bundler rather than adding a second packager; it already names the NSIS
   and MSI targets (`frontend/src-tauri/tauri.conf.json`), and `tauri.windows.conf.json` carries the Windows resource
   overrides. Per-user versus per-machine install, and the optional auto-launch, are Tauri/NSIS settings.
-- **Dependency bundling.** Ship the Windows builds of every `externalBin` sidecar; today `frontend/src-tauri/binaries/`
-  holds only the Linux `ffmpeg` and `llama-helper`. Decide what ships inside the installer (local model runtime, ONNX
-  runtime, ffmpeg) against what is downloaded on first run, and how the encrypted database and its key in the
-  credential store survive install, upgrade and uninstall.
-- **Signing.** `bundle.windows.signCommand` already calls `scripts/sign-windows.ps1`, which does not exist in
-  `frontend/scripts/`. The installer is unsigned until that step is written and a certificate is provided, which is
-  what a SmartScreen or Defender warning comes from. Decide the certificate (OV versus EV) and whether to submit the
-  build for reputation.
+- **Dependency bundling.** Ship the Windows builds of every `externalBin` sidecar. A Windows checkout has nothing in
+  `frontend/src-tauri/binaries/` (gitignored; only Linux artifacts sit there on a Linux box), but the Windows job is
+  already fed: `build.yml`/`build-windows.yml`/`build-devtest.yml` build `llama-helper` and copy it to
+  `binaries/llama-helper-x86_64-pc-windows-msvc.exe`, `build/ffmpeg.rs` downloads the Windows FFmpeg at build time,
+  and `build/onnxruntime.rs` stages `binaries/onnxruntime` (which `tauri.windows.conf.json` maps into the bundle).
+  The open decision is what ships inside the installer (local model runtime, ONNX runtime, ffmpeg) against what is
+  downloaded on first run -- model weights are downloaded today, not bundled -- and how the encrypted database and its
+  key in the credential store survive install, upgrade and uninstall.
+- **Signing.** `bundle.windows.signCommand` calls `scripts/sign-windows.ps1`, which **does exist**, at
+  `frontend/src-tauri/scripts/sign-windows.ps1` (the path in `signCommand` is relative to `frontend/src-tauri/`, not
+  `frontend/` -- the earlier "does not exist" reading was wrong). It skips with exit 0 when `DIGICERT_KEYPAIR_ALIAS`
+  is unset, otherwise runs `smctl sign` and re-verifies with `Get-AuthenticodeSignature`. What is still missing is the
+  certificate itself, so the installer ships unsigned and that is what a SmartScreen or Defender warning comes from.
+  Decide the certificate (OV versus EV) and whether to submit the build for reputation.
 - **QA.** A manual checklist run on a clean Windows VM: install, shortcut and Start-menu entry, first-run database
   creation, the AI gate with no model present, intake, a ranked run, upgrade over an installed copy, uninstall
   leaving no key behind. Records what a fresh machine asks the user for.
