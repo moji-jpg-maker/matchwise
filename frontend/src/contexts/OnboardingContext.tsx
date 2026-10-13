@@ -154,64 +154,24 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     initializeDatabaseInBackground();
   }, []);
 
-  // Initialize database silently in background (moved from SetupOverviewStep)
+  // Initialize the database on first launch. Matchwise never imports data from a previous
+  // Meetily installation: the schema has diverged, and adopting an old plaintext file would
+  // defeat the encryption-at-rest guarantee, so a first launch always starts a fresh database.
   const initializeDatabaseInBackground = async () => {
     try {
-      console.log('[OnboardingContext] Starting background database initialization');
       const isFirstLaunch = await invoke<boolean>('check_first_launch');
 
       if (!isFirstLaunch) {
-        console.log('[OnboardingContext] Database exists, skipping initialization');
         setDatabaseExists(true);
         return;
       }
 
-      // First launch - attempt auto-detection and import
-      await performAutoDetection();
+      await invoke('initialize_fresh_database');
+      setDatabaseExists(true);
     } catch (error) {
       console.error('[OnboardingContext] Database initialization failed:', error);
       // Don't throw - database init failure shouldn't block onboarding
     }
-  };
-
-  const performAutoDetection = async () => {
-    // Check Homebrew (macOS only)
-    if (typeof navigator !== 'undefined' && navigator.platform?.toLowerCase().includes('mac')) {
-      const homebrewDbPath = '/usr/local/var/meetily/meeting_minutes.db';
-      try {
-        const homebrewCheck = await invoke<{ exists: boolean; size: number } | null>(
-          'check_homebrew_database',
-          { path: homebrewDbPath }
-        );
-
-        if (homebrewCheck?.exists) {
-          console.log('[OnboardingContext] Found Homebrew database, importing');
-          await invoke('import_and_initialize_database', { legacyDbPath: homebrewDbPath });
-          setDatabaseExists(true);
-          return;
-        }
-      } catch (e) {
-        console.log('[OnboardingContext] Homebrew check failed, continuing:', e);
-      }
-    }
-
-    // Check default legacy database location
-    try {
-      const legacyPath = await invoke<string | null>('check_default_legacy_database');
-      if (legacyPath) {
-        console.log('[OnboardingContext] Found legacy database, importing');
-        await invoke('import_and_initialize_database', { legacyDbPath: legacyPath });
-        setDatabaseExists(true);
-        return;
-      }
-    } catch (e) {
-      console.log('[OnboardingContext] Legacy check failed, continuing:', e);
-    }
-
-    // No legacy database found - initialize fresh
-    console.log('[OnboardingContext] No legacy database found, initializing fresh');
-    await invoke('initialize_fresh_database');
-    setDatabaseExists(true);
   };
 
   const isCompletingRef = useRef(false);

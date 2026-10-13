@@ -4,6 +4,7 @@
 function Load-EnvFile {
     param(
         [string]$EnvFilePath = ".env",
+        [switch]$NoOverride,
         [switch]$Verbose = $false
     )
 
@@ -40,6 +41,16 @@ function Load-EnvFile {
                 # Remove surrounding quotes if present
                 if ($value -match '^"(.*)"$' -or $value -match "^'(.*)'$") {
                     $value = $matches[1]
+                }
+
+                # A value already present in the real environment wins, so an
+                # exported variable is never shadowed by the .env file.
+                $existing = [Environment]::GetEnvironmentVariable($key, 'Process')
+                if ($NoOverride -and -not [string]::IsNullOrEmpty($existing)) {
+                    if ($Verbose) {
+                        Write-Host "   - Kept existing: $key" -ForegroundColor DarkGray
+                    }
+                    return
                 }
 
                 # Set environment variable

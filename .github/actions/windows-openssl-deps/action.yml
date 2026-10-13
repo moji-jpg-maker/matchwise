@@ -1,0 +1,26 @@
+name: Windows OpenSSL build deps
+description: >-
+  Install Strawberry Perl and NASM and put them on PATH. The vendored OpenSSL
+  that SQLCipher is built against (libsqlite3-sys, bundled-sqlcipher-vendored-openssl)
+  needs both at build time, and windows-latest runners ship neither.
+
+runs:
+  using: composite
+  steps:
+    - name: Install and verify Perl and NASM
+      shell: pwsh
+      run: |
+        choco install -y --no-progress strawberryperl nasm
+
+        $perlBin = 'C:\Strawberry\perl\bin'
+        $nasmBin = 'C:\Program Files\NASM'
+        foreach ($p in @($perlBin, "$perlBin\..\c\bin", $nasmBin)) {
+          if (Test-Path $p) { $p | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+        }
+
+        # Fail here rather than 10 minutes later inside openssl-src.
+        if (-not (Test-Path "$perlBin\perl.exe")) { throw "Strawberry Perl missing at $perlBin\perl.exe" }
+        if (-not (Test-Path "$nasmBin\nasm.exe")) { throw "NASM missing at $nasmBin\nasm.exe" }
+
+        & "$perlBin\perl.exe" -v
+        & "$nasmBin\nasm.exe" -v

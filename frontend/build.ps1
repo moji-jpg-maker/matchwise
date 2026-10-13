@@ -1,76 +1,57 @@
-# Matchwise Build Script with Code Signing
-# Loads signing credentials from .env file or environment variables
-# Then calls build-gpu.bat to execute the build
+# Matchwise GPU build script (Windows PowerShell).
+# Wraps build-gpu.bat. Signing is opt-in and off by default, matching the
+# `sign-build` input in .github/workflows (which also defaults to false).
+
+param(
+    [switch]$Sign
+)
 
 Write-Host ""
 Write-Host "========================================"
-Write-Host "   Matchwise GPU Build (Signed)"
+Write-Host "   Matchwise GPU Build"
 Write-Host "========================================"
 Write-Host ""
 
-# Try to load .env file if not already in environment (CI/CD)
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-    if (Test-Path ".env") {
-        Write-Host "📄 Loading environment variables from .env..."
-        . "$PSScriptRoot\scripts\load-env.ps1"
-        Load-EnvFile -EnvFilePath ".env" -Verbose
-        Write-Host ""
+# Local configuration (database key, Telegram token, signing credentials), if a
+# .env is present. It lives at the repo root, not in frontend/. A variable that
+# is already set in the environment wins; a missing file is not an error.
+$repoRoot = Resolve-Path "$PSScriptRoot\.."
+if (Test-Path "$repoRoot\.env") {
+    . "$PSScriptRoot\scripts\load-env.ps1"
+    Load-EnvFile -EnvFilePath "$repoRoot\.env" -NoOverride -Verbose
+    Write-Host ""
+}
+
+# The Windows signCommand (src-tauri/tauri.conf.json) calls
+# src-tauri/scripts/sign-windows.ps1, which skips silently when this is unset.
+if ($Sign) {
+    if ($env:DIGICERT_KEYPAIR_ALIAS) {
+        Write-Host "Signing enabled - alias: $($env:DIGICERT_KEYPAIR_ALIAS)" -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: -Sign was passed but DIGICERT_KEYPAIR_ALIAS is not set." -ForegroundColor Yellow
+        Write-Host "         The build will be unsigned. Set it in .env or the environment," -ForegroundColor Yellow
+        Write-Host "         and make sure smctl is installed and signed in." -ForegroundColor Yellow
     }
-}
-
-# Verify signing credentials are available
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-    Write-Host "❌ Error: No signing credentials found" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Please provide signing credentials:" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Method 1: Create .env file" -ForegroundColor Cyan
-    Write-Host "  1. Copy .env.example to .env" -ForegroundColor White
-    Write-Host "     cp .env.example .env" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  2. Extract your signing key:" -ForegroundColor White
-    Write-Host "     Get-Content .tauri\meetily.key -Raw" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  3. Add to .env file:" -ForegroundColor White
-    Write-Host "     TAURI_SIGNING_PRIVATE_KEY=<your-key-content>" -ForegroundColor Gray
-    Write-Host "     TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<your-password>" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "Method 2: Set environment variables directly (CI/CD)" -ForegroundColor Cyan
-    Write-Host "     `$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content .tauri\meetily.key -Raw" -ForegroundColor Gray
-    Write-Host "     `$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 'your-password'" -ForegroundColor Gray
-    Write-Host ""
-    exit 1
-}
-
-# Confirm credentials loaded
-Write-Host "✅ Signing key loaded successfully" -ForegroundColor Green
-if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
-    Write-Host "✅ Signing key password loaded" -ForegroundColor Green
+} else {
+    Write-Host "Building unsigned (pass -Sign to sign; requires DigiCert KeyLocker)." -ForegroundColor Cyan
 }
 Write-Host ""
 
-# Call the main build-gpu.bat script
-Write-Host "🚀 Starting build process..."
+Write-Host "Starting build process..."
 Write-Host ""
 
-& ".\build-gpu.bat" $args
-
+& "$PSScriptRoot\build-gpu.bat" @args
 $buildExitCode = $LASTEXITCODE
-
-# Clear the environment variables for security
-$env:TAURI_SIGNING_PRIVATE_KEY = $null
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $null
 
 if ($buildExitCode -eq 0) {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
-    Write-Host "✅ Signed build completed successfully!" -ForegroundColor Green
+    Write-Host "Build completed successfully!" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Updater artifacts have been signed and are ready for release."
 } else {
     Write-Host ""
-    Write-Host "❌ Build failed with exit code: $buildExitCode" -ForegroundColor Red
+    Write-Host "Build failed with exit code: $buildExitCode" -ForegroundColor Red
 }
 
 exit $buildExitCode

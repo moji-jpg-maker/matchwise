@@ -7,6 +7,13 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { loadEnvFile } = require('./load-env');
+
+// Put the repo-root .env into the environment before Tauri starts. The Rust
+// side reads MATCHWISE_DB_KEY / MATCHWISE_TELEGRAM_TOKEN / MATCHWISE_AI_API_KEY
+// with std::env::var and has no dotenv crate, so this is the only thing that
+// makes a local .env take effect for `tauri:dev` and `tauri:build`.
+loadEnvFile();
 
 // Get the command (dev or build)
 const command = process.argv[2];

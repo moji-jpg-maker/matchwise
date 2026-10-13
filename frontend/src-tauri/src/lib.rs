@@ -862,11 +862,6 @@ pub fn run() {
             questionnaires::commands::q_get_response,
             questionnaires::commands::q_answer,
             questionnaires::commands::q_delete_response,
-            database::commands::select_legacy_database_path,
-            database::commands::detect_legacy_database,
-            database::commands::check_default_legacy_database,
-            database::commands::check_homebrew_database,
-            database::commands::import_and_initialize_database,
             database::commands::initialize_fresh_database,
             // Database and Models path commands
             database::commands::get_database_directory,

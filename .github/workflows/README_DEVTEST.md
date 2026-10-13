@@ -59,10 +59,6 @@ When signing is enabled:
 - Signs both MSI and NSIS installers
 - Verifies signatures with PowerShell
 
-### Linux
-- Uses **Tauri updater signing** (Ed25519)
-- Signs update manifests for auto-updater
-
 ## Build Artifacts
 
 Artifacts are automatically uploaded and retained for **14 days**:
@@ -129,7 +125,6 @@ Each platform uses optimal hardware acceleration:
 1. Check that all required secrets are configured:
    - `APPLE_CERTIFICATE`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
    - `SM_HOST`, `SM_API_KEY`, `SM_CODE_SIGNING_CERT_SHA1_HASH`
-   - `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 2. Review workflow logs for specific error messages
 3. Try running without signing first to isolate the issue
 

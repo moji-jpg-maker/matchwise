@@ -11,22 +11,11 @@ pub struct DatabaseManager {
 }
 
 impl DatabaseManager {
-    pub async fn new(tauri_db_path: &str, backend_db_path: &str) -> Result<Self> {
+    pub async fn new(tauri_db_path: &str) -> Result<Self> {
         if let Some(parent_dir) = Path::new(tauri_db_path).parent() {
             if !parent_dir.exists() {
                 fs::create_dir_all(parent_dir).map_err(|e| sqlx::Error::Io(e))?;
             }
-        }
-
-        // A legacy plaintext database (imported from an older install) is copied into place first and
-        // converted to an encrypted database below.
-        if !Path::new(tauri_db_path).exists() && Path::new(backend_db_path).exists() {
-            log::info!(
-                "Copying database from {} to {}",
-                backend_db_path,
-                tauri_db_path
-            );
-            fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
         }
 
         // Single entry point: creates, converts, or opens the encrypted database, and refuses (without
@@ -38,10 +27,6 @@ impl DatabaseManager {
         Ok(DatabaseManager { pool })
     }
 
-    // NOTE: So for the first time users they needs to start the application
-    // after they can just delete the existing .sqlite file and then copy the existing .db file to
-    // the current app dir, So the system detects legacy db and copy it and starts with that data
-    // (Newly created .sqlite with the copied content from .db)
     pub async fn new_from_app_handle(app_handle: &tauri::AppHandle) -> Result<Self> {
         // Resolve the app's data directory
         let app_data_dir = app_handle
@@ -52,14 +37,9 @@ impl DatabaseManager {
             fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
         }
 
-        // Define database paths
+        // Define database path
         let tauri_db_path = app_data_dir
             .join("meeting_minutes.sqlite")
-            .to_string_lossy()
-            .to_string();
-        // Legacy backend DB path (for auto-migration if exists)
-        let backend_db_path = app_data_dir
-            .join("meeting_minutes.db")
             .to_string_lossy()
             .to_string();
 
@@ -68,10 +48,9 @@ impl DatabaseManager {
         let shm_path = app_data_dir.join("meeting_minutes.sqlite-shm");
 
         log::info!("Tauri DB path: {}", tauri_db_path);
-        log::info!("Legacy backend DB path: {}", backend_db_path);
 
         // Try to open database with defensive WAL handling
-        match Self::new(&tauri_db_path, &backend_db_path).await {
+        match Self::new(&tauri_db_path).await {
             Ok(db_manager) => {
                 log::info!("Database opened successfully");
                 Ok(db_manager)
@@ -99,7 +78,7 @@ impl DatabaseManager {
 
                     // Retry connection without WAL files
                     log::info!("Retrying database connection after WAL cleanup...");
-                    match Self::new(&tauri_db_path, &backend_db_path).await {
+                    match Self::new(&tauri_db_path).await {
                         Ok(db_manager) => {
                             log::info!("Database opened successfully after WAL recovery");
                             Ok(db_manager)
@@ -128,34 +107,6 @@ impl DatabaseManager {
         let tauri_db_path = app_data_dir.join("meeting_minutes.sqlite");
 
         Ok(!tauri_db_path.exists())
-    }
-
-    /// Import a legacy database from the specified path and initialize
-    pub async fn import_legacy_database(
-        app_handle: &tauri::AppHandle,
-        legacy_db_path: &str,
-    ) -> Result<Self> {
-        let app_data_dir = app_handle
-            .path()
-            .app_data_dir()
-            .expect("failed to get app data dir");
-
-        if !app_data_dir.exists() {
-            fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
-        }
-
-        // Copy legacy database to app data directory as meeting_minutes.db
-        let target_legacy_path = app_data_dir.join("meeting_minutes.db");
-        log::info!(
-            "Copying legacy database from {} to {}",
-            legacy_db_path,
-            target_legacy_path.display()
-        );
-
-        fs::copy(legacy_db_path, &target_legacy_path).map_err(|e| sqlx::Error::Io(e))?;
-
-        // Now use the standard initialization which will detect and migrate the legacy db
-        Self::new_from_app_handle(app_handle).await
     }
 
     pub fn pool(&self) -> &SqlitePool {

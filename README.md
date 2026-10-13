@@ -37,6 +37,9 @@ The app database is encrypted. On Linux/WSL, install `libdbus-1-dev`, `perl` and
 export MATCHWISE_DB_KEY=$(openssl rand -hex 32)   # keep a copy; without it the database cannot be read
 ```
 
+Instead of exporting them each session, put the values in a `.env` at the repo root (copy `.env.example`). The
+`pnpm run tauri:dev` / `tauri:build` scripts load it automatically, and a variable already present in the environment always wins.
+
 ```bash
 cargo test -p matchmaking-core          # engine tests
 cd frontend && pnpm install && pnpm run tauri:dev

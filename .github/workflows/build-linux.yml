@@ -33,7 +33,7 @@ on:
         description: 'Sign the build'
         required: true
         type: boolean
-        default: true
+        default: false
       upload-artifacts:
         description: 'Upload build artifacts'
         required: true
@@ -202,9 +202,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Tauri updater signing (ALWAYS enabled for .sig files)
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: frontend
           args: --target x86_64-unknown-linux-gnu --features openblas ${{ steps.build-profile.outputs.args }}

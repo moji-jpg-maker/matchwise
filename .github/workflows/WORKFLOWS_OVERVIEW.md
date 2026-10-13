@@ -77,7 +77,6 @@ This document provides a quick overview of all available CI/CD workflows in this
 **Key Features:**
 - Support for Ubuntu 22.04 and 24.04
 - Multiple bundle formats (DEB, AppImage, RPM)
-- Tauri updater signing
 - AppImage compatibility fixes
 - Package verification
 
@@ -137,7 +136,6 @@ This document provides a quick overview of all available CI/CD workflows in this
 - Version tags from `tauri.conf.json`
 - Uploads release assets
 - **macOS and Windows only** (Linux excluded from production releases)
-- Auto-generates `latest.json` for Tauri updater
 - **Auto-increment versioning**: If tag exists, auto-increments (e.g., `0.1.1` -> `0.1.1.1` -> `0.1.1.2`, up to `.100`)
 
 **Triggers:**
@@ -149,9 +147,8 @@ This document provides a quick overview of all available CI/CD workflows in this
 
 **Outputs:**
 - GitHub Release (draft)
-- macOS: DMG installer, app.tar.gz (updater), .sig
-- Windows: MSI installer (signed), NSIS installer (signed), .sig files
-- Updater manifest: latest.json
+- macOS: DMG installer, app bundle
+- Windows: MSI installer, NSIS installer
 - Release notes auto-generated
 
 **Version Behavior:**
@@ -291,10 +288,6 @@ All workflows require these secrets to be configured:
 - `SM_CLIENT_CERT_FILE_B64` - Client cert (base64)
 - `SM_CLIENT_CERT_PASSWORD` - Client cert password
 - `SM_CODE_SIGNING_CERT_SHA1_HASH` - Certificate hash
-
-### Tauri Updater (All Platforms)
-- `TAURI_SIGNING_PRIVATE_KEY` - Ed25519 private key
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` - Key password
 
 ### Application Configuration
 
