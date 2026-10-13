@@ -7,6 +7,11 @@
 //! * **Reproducible text.** The same decisions must always serialise to the same bytes, so rows are emitted in a fixed
 //!   order and numbers are formatted deterministically.
 
+/// How many finished matches are needed before a learned ranking could be compared with the deterministic baseline.
+/// The gate is *reported*, never enforced: the dataset and the readiness view both quote this one number, so a
+/// matchmaker reading either sees the same threshold. Below it a comparison would fit noise.
+pub const RANKING_MINIMUM: i64 = 100;
+
 /// One decision, flattened for export. Mirrors the app layer's `OutcomeRow`; kept here so formatting is testable
 /// without a database.
 #[derive(Debug, Clone, PartialEq)]

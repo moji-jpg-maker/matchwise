@@ -8,10 +8,6 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { DatasetSummary, ExportDoc } from '@/types/matchmaking';
 
-/// The minimum number of finished matches at which outcome-based learning starts to be worth evaluating.
-/// Below it the deterministic baseline is the only ranking, which is what the plan asks for.
-const LEARNING_MINIMUM = 100;
-
 export default function ExportPage() {
   const router = useRouter();
   const [summary, setSummary] = useState<DatasetSummary | null>(null);
@@ -60,7 +56,9 @@ export default function ExportPage() {
     toast.success('Copied to the clipboard');
   };
 
-  const enough = (summary?.finished ?? 0) >= LEARNING_MINIMUM;
+  // The gate comes from the command (`minimum_finished`), which is the one place it is defined; nothing is hard-coded here.
+  const gate = summary?.minimum_finished ?? 0;
+  const enough = (summary?.finished ?? 0) >= gate;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -133,7 +131,7 @@ export default function ExportPage() {
                 <p className={enough ? '' : 'text-amber-700'}>
                   {enough
                     ? `${summary.finished} finished matches is enough to start comparing a learned ranking with the deterministic one.`
-                    : `${summary.finished} of ${LEARNING_MINIMUM} finished matches. Until there are more, ranking stays fully deterministic — learning from a handful of outcomes would fit noise.`}
+                    : `${summary.finished} of ${gate} finished matches. Until there are more, ranking stays fully deterministic — learning from a handful of outcomes would fit noise.`}
                 </p>
               </div>
             </>

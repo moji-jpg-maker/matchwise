@@ -8,15 +8,12 @@
 //!
 //! What lives here is collection and reporting only. Nothing computes a ranking, fits a model or re-orders a list.
 
+use matchmaking_core::RANKING_MINIMUM;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
 
 use super::repository::ORG;
-
-/// How many matched-and-finished pairs are needed before a learned ranking could be compared against the rules.
-/// Below this the comparison would be noise; the number is stated once here and reported rather than enforced.
-pub const RANKING_MINIMUM: i64 = 100;
 
 /// One candidate that a search returned, ready to be written as an exposure row.
 #[derive(Debug, Clone)]

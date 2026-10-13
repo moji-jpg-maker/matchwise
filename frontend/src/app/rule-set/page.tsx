@@ -11,7 +11,7 @@ import { ExprEditor } from '@/components/matchmaking/ExprEditor';
 import { RuleResultList } from '@/components/matchmaking/RuleResultList';
 import { isConditionField } from '@/lib/conditions';
 import { describeExpr, emptyRuleSet, newNode, newRule } from '@/lib/rules';
-import { DimensionDef, FieldDef, MatchEvaluation, ProfileSummary, Rule, RuleIssue, RuleSetView } from '@/types/matchmaking';
+import { DimensionDef, FieldDef, MatchEvaluation, ProfileSummary, Rule, RuleIssue, RuleSetView, ScoringConfigSummary } from '@/types/matchmaking';
 
 const sel = 'border rounded-md px-2 py-1.5 text-sm bg-white';
 
@@ -26,6 +26,8 @@ function Editor() {
   const [meta, setMeta] = useState<RuleSetView | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [configs, setConfigs] = useState<ScoringConfigSummary[]>([]);
+  const [scoringConfigId, setScoringConfigId] = useState('');
   const [rules, setRules] = useState<Rule[]>([]);
   const [minScore, setMinScore] = useState('');
   const [groupWeights, setGroupWeights] = useState<{ group: string; weight: string }[]>([]);
@@ -46,6 +48,7 @@ function Editor() {
     setMeta(v);
     setName(v.name);
     setDescription(v.description);
+    setScoringConfigId(v.scoring_config_id ?? '');
     setRules(v.definition.rules);
     setMinScore(v.definition.min_score == null ? '' : String(v.definition.min_score));
     setPriorScore(v.definition.prior_score == null ? '' : String(v.definition.prior_score));
@@ -58,19 +61,22 @@ function Editor() {
   const load = useCallback(
     async (version?: number) => {
       try {
-        const [f, plist, catalog] = await Promise.all([
+        const [f, plist, catalog, cfgs] = await Promise.all([
           invoke<FieldDef[]>('mm_list_fields'),
           invoke<ProfileSummary[]>('mm_list_profiles', { includeDeactivated: false }),
           invoke<DimensionDef[]>('mm_dimension_catalog'),
+          invoke<ScoringConfigSummary[]>('mm_list_scoring_configs', { includeArchived: false }),
         ]);
         setFields(f);
         setDims(catalog);
         setProfiles(plist);
+        setConfigs(cfgs);
         if (isNew) {
           const e = emptyRuleSet();
           setMeta(null);
           setName('');
           setDescription('');
+          setScoringConfigId('');
           setRules(e.rules);
           setMinScore('');
           setPriorScore('');
@@ -129,6 +135,7 @@ function Editor() {
         name: name.trim(),
         description,
         definition: buildDefinition(),
+        scoringConfigId: scoringConfigId === '' ? null : scoringConfigId,
         note: note || null,
       });
       toast.success(`Saved as version ${v.current_version}`);
@@ -185,6 +192,29 @@ function Editor() {
             <Input className="w-28" type="number" placeholder="none" value={minScore} onChange={(e) => { setMinScore(e.target.value); touch(); }} />
             <label className="text-sm font-medium" title="Scores resting on little information are pulled towards this neutral value">Neutral baseline (0-100)</label>
             <Input className="w-28" type="number" placeholder="50" value={priorScore} onChange={(e) => { setPriorScore(e.target.value); touch(); }} />
+          </div>
+
+          <div className="border-t pt-3">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium">Scoring config</label>
+              <select className={sel} value={scoringConfigId} onChange={(e) => { setScoringConfigId(e.target.value); touch(); }}>
+                <option value="">No config — the built-in defaults</option>
+                {configs.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} (v{c.current_version})
+                  </option>
+                ))}
+              </select>
+              <button className="text-sm text-blue-600 hover:underline" onClick={() => router.push('/scoring')}>
+                Edit scoring configs
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              How this rule set reads a scorecard: the strong and mixed cutoffs, and the neutral baseline. It is a
+              property of the rule set rather than of a version — switching it re-reads later results under the new
+              numbers, while every stored scorecard keeps the version that actually judged it.
+              {isNew ? ' Choose a config now and it is attached when the rule set is created.' : ''}
+            </p>
           </div>
 
           <div>

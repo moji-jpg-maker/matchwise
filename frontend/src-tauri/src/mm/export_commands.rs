@@ -6,7 +6,7 @@
 use super::export_repo::{ExportRepo, OutcomeRow};
 use crate::mm::repository::{MmRepository, ORG};
 use crate::state::AppState;
-use matchmaking_core::{export_header, rows_to_csv, ExportRow};
+use matchmaking_core::{export_header, rows_to_csv, ExportRow, RANKING_MINIMUM};
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
@@ -33,6 +33,9 @@ pub struct ExportDoc {
 pub struct DatasetSummary {
     pub matches: i64,
     pub finished: i64,
+    /// Finished matches the ranking gate asks for. Quoted here so the page that reports the counts and the page that
+    /// reports the gate read the same number from the same place.
+    pub minimum_finished: i64,
     pub with_outcome: i64,
     /// Outcome -> count, for matches that have one.
     pub outcome_counts: BTreeMap<String, i64>,
@@ -155,6 +158,7 @@ pub async fn summary(pool: &SqlitePool) -> Result<DatasetSummary, String> {
     Ok(DatasetSummary {
         matches,
         finished,
+        minimum_finished: RANKING_MINIMUM,
         with_outcome,
         outcome_counts,
         open_by_status,

@@ -51,8 +51,10 @@ matches the TypeScript types.
 
 ## Not verified / limits
 - **The 100-match learning gate is my own placeholder.** The plan says ranking should wait until there is enough
-  outcome data, but does not name a number. `LEARNING_MINIMUM = 100` in the export page is the value I chose for the
-  copy; it gates nothing yet. Tell me the threshold you want before ranking v1 uses it.
+  outcome data, but does not name a number. It gates nothing yet. It is no longer hard-coded in the export page: it
+  now lives once as `RANKING_MINIMUM` in `matchmaking-core` and reaches the page through
+  `DatasetSummary.minimum_finished` (see [`M7B2_STATUS.md`](./M7B2_STATUS.md)). Tell me the threshold you want before
+  ranking v1 uses it.
 - **Blank-versus-zero is a convention the reader must know.** The CSV says "no score" by being empty, which is correct
   but easy to misread in a spreadsheet that treats an empty cell as `0`. The page and the column list say so.
 - **`profile_a`/`profile_b` ids are exported** so a row can be joined back to the profiles. They are identifiers, not

@@ -242,6 +242,8 @@ export interface RuleSetSummary {
   description: string;
   current_version: number;
   archived: boolean;
+  /** The scoring config this rule set reads its scorecards with, if it has been given one. */
+  scoring_config_id: string | null;
   rule_count: number;
   updated_at: string;
 }
@@ -252,9 +254,53 @@ export interface RuleSetView {
   description: string;
   archived: boolean;
   current_version: number;
+  scoring_config_id: string | null;
   version: number;
   definition: RuleSet;
   versions: { version: number; created_at: string; note: string | null }[];
+}
+
+// ---- versioned scoring configs (mirror matchmaking-core/src/scoring_config.rs + src-tauri mm/scoring_config_commands.rs)
+
+/** The three numbers that turn dimension scores into a verdict. */
+export interface ScoringConfig {
+  /** A dimension at or above this is `strong` (0-100). */
+  strong_threshold: number;
+  /** A dimension at or above this (but below strong) is `mixed` (0-100). */
+  mixed_threshold: number;
+  /** Neutral score (0-100) that thin evidence is pulled towards in the ranking score. */
+  prior_score: number;
+}
+
+/** A config in a list, carrying the numbers in force so it can be read without opening it. */
+export interface ScoringConfigSummary {
+  id: string;
+  name: string;
+  description: string;
+  current_version: number;
+  archived: boolean;
+  definition: ScoringConfig;
+  /** How many rule sets currently score with this config. */
+  used_by: number;
+  updated_at: string;
+}
+
+export interface VersionInfo {
+  version: number;
+  created_at: string;
+  note: string | null;
+}
+
+/** One config, and which version of it is being shown (which may be older than current). */
+export interface ScoringConfigView {
+  id: string;
+  name: string;
+  description: string;
+  archived: boolean;
+  current_version: number;
+  version: number;
+  definition: ScoringConfig;
+  versions: VersionInfo[];
 }
 
 export interface UpdateResult {
@@ -335,6 +381,12 @@ export interface MatchDetail {
   rule_set_id: string;
   rule_set_name: string | null;
   rule_set_version: number;
+  /** Which scoring config judged the latest snapshot, and which version of it. Null for pre-config snapshots. */
+  scoring_config_id: string | null;
+  scoring_config_name: string | null;
+  scoring_config_version: number | null;
+  /** The numbers the latest snapshot was judged by. Null when no config was recorded. */
+  scoring_config: ScoringConfig | null;
   status: MatchStatus;
   allowed_next: MatchStatus[];
   eligible: boolean;
@@ -605,6 +657,8 @@ export interface ExportDoc {
 export interface DatasetSummary {
   matches: number;
   finished: number;
+  /** The ranking gate: finished matches needed before a learned ranking could be compared. */
+  minimum_finished: number;
   with_outcome: number;
   outcome_counts: Record<string, number>;
   open_by_status: Record<string, number>;
@@ -613,4 +667,39 @@ export interface DatasetSummary {
   rule_set_versions: string[];
   earliest_created_at: string | null;
   latest_updated_at: string | null;
+}
+
+/** What the exposure log holds. Mirrors `mm::exposure_repo::ExposureSummary`. */
+export interface ExposureSummary {
+  exposures: number;
+  /** Distinct (profile, candidate) pairs that have appeared in a result list. */
+  pairs_shown: number;
+  /** How many of those shown pairs later produced a recorded outcome. */
+  pairs_with_outcome: number;
+  searches: number;
+  first_at: string | null;
+  last_at: string | null;
+}
+
+/**
+ * Whether there is enough recorded history to compare a learned ranking, and the counts that decide it.
+ * Read-only: it reports the gate and proposes no ordering. Mirrors `mm::exposure_repo::RankingReadiness`.
+ */
+export interface RankingReadiness {
+  /** Finished matches needed before a learned ranking could be compared (the gate). */
+  minimum_finished: number;
+  finished: number;
+  ready: boolean;
+  /** One plain sentence describing the current position, shown as-is. */
+  state: string;
+  with_outcome: number;
+  /** Matches carrying a stored scorecard: without one there is nothing to compare a result against. */
+  with_snapshot: number;
+  outcome_counts: Record<string, number>;
+  open_by_status: Record<string, number>;
+  /** Candidate rows in the exposure log, and the distinct pairs behind them. */
+  exposures: number;
+  pairs_shown: number;
+  /** How many of those shown pairs later produced a recorded outcome. */
+  pairs_with_outcome: number;
 }

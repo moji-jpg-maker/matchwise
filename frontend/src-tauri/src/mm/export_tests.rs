@@ -192,3 +192,65 @@ async fn the_export_is_recorded_in_the_audit_log_without_its_content() {
     assert!(detail.contains("1 rows"));
     assert!(!detail.contains("Sara") && !detail.contains("09120000000"), "the audit log records counts, never content");
 }
+
+/// The dataset summary and the readiness view must quote the *same* gate: a matchmaker reading the decision-data page
+/// and a matchmaker reading the ranking gate are looking at one number, not two that happen to agree today.
+#[tokio::test]
+async fn the_dataset_summary_quotes_the_one_ranking_gate() {
+    let pool = test_pool().await;
+    let summary = export_commands::summary(&pool).await.unwrap();
+    let readiness = super::exposure_repo::ExposureRepo::ranking_readiness(&pool).await.unwrap();
+    assert_eq!(summary.minimum_finished, 100);
+    assert_eq!(summary.minimum_finished, readiness.minimum_finished);
+    assert_eq!(summary.minimum_finished, matchmaking_core::RANKING_MINIMUM);
+    // The gate is reported, not applied: an empty dataset is still summarised rather than refused.
+    assert_eq!(summary.matches, 0);
+    assert!(!readiness.ready);
+}
+/// The create-then-version path, which no other test drives directly: a config starts at v1, a save appends v2 without
+/// rewriting v1, and a rule set can be pointed at either. The exact numbers matter because a stored snapshot names the
+/// version that judged it.
+#[tokio::test]
+async fn a_scoring_config_creates_at_v1_and_versions_append_while_old_ones_stay_readable() {
+    let pool = test_pool().await;
+    use super::scoring_config_repo::ScoringConfigRepo;
+    let tight = matchmaking_core::ScoringConfig { strong_threshold: 85.0, mixed_threshold: 60.0, prior_score: 40.0 };
+    let id = ScoringConfigRepo::create(&pool, "Strict cutoffs", "for pairs with thin evidence", &tight, Some("first")).await.unwrap();
+
+    assert_eq!(ScoringConfigRepo::name(&pool, &id).await.unwrap().as_deref(), Some("Strict cutoffs"));
+    assert!(ScoringConfigRepo::name_taken(&pool, "Strict cutoffs", None).await.unwrap());
+    assert!(!ScoringConfigRepo::name_taken(&pool, "Strict cutoffs", Some(&id)).await.unwrap(), "a config may keep its own name");
+
+    let (meta, def, versions) = ScoringConfigRepo::get(&pool, &id, None).await.unwrap().unwrap();
+    assert_eq!(meta.current_version, 1);
+    assert_eq!(def, tight);
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0].version, 1);
+    assert_eq!(versions[0].note.as_deref(), Some("first"));
+
+    let looser = matchmaking_core::ScoringConfig { prior_score: 20.0, ..tight.clone() };
+    assert_eq!(ScoringConfigRepo::save_version(&pool, &id, "Strict cutoffs", "re-tuned", &looser, Some("lowered the baseline")).await.unwrap(), 2);
+    let (meta, def, versions) = ScoringConfigRepo::get(&pool, &id, None).await.unwrap().unwrap();
+    assert_eq!((meta.current_version, versions.len(), versions[0].version), (2, 2, 2));
+    assert_eq!(def, looser);
+    // v1 is still exactly what it was: history is append-only, so a stored snapshot keeps its meaning.
+    let (_, old, _) = ScoringConfigRepo::get(&pool, &id, Some(1)).await.unwrap().unwrap();
+    assert_eq!(old, tight);
+    assert!(ScoringConfigRepo::get(&pool, &id, Some(99)).await.unwrap().is_none());
+
+    // A rule set can then be pointed at it, and the list reports which rule sets use it.
+    assert_eq!(ScoringConfigRepo::set_rule_set_config(&pool, "missing-rule-set", Some(&id)).await.unwrap(), 0);
+    MmRepository::ensure_default_rule_set(&pool).await.unwrap();
+    let (set, _) = MmRepository::list_rule_sets(&pool, false).await.unwrap().into_iter().next().unwrap();
+    ScoringConfigRepo::set_rule_set_config(&pool, &set.id, Some(&id)).await.unwrap();
+    assert_eq!(ScoringConfigRepo::effective_for_rule_set(&pool, &set.id).await.unwrap().definition, looser);
+    let summary = ScoringConfigRepo::list(&pool, false).await.unwrap().into_iter().find(|c| c.id == id).unwrap();
+    assert_eq!(summary.used_by, 1);
+    assert_eq!(summary.definition, looser);
+
+    // Archiving is a label, not a delete: the config still resolves for the rule set that uses it.
+    assert_eq!(ScoringConfigRepo::set_archived(&pool, &id, true).await.unwrap(), 1);
+    assert!(ScoringConfigRepo::list(&pool, false).await.unwrap().iter().all(|c| c.id != id));
+    assert!(ScoringConfigRepo::list(&pool, true).await.unwrap().iter().any(|c| c.id == id));
+    assert_eq!(ScoringConfigRepo::effective_for_rule_set(&pool, &set.id).await.unwrap().definition, looser);
+}
