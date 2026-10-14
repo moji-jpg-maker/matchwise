@@ -56,6 +56,11 @@ separates what a run has demonstrated from what is still a claim.
   for emptiness and stops with a named list before the KeyLocker action is downloaded. Previously a dispatch with
   `sign-windows` on and no secrets configured died at the cert-sync step with `403 Invalid credentials`, which reads
   like a build break rather than a missing prerequisite -- run `38526550067` failed exactly that way.
+- **The preflight does not leak the API key.** The `Verify DigiCert Setup` steps in `build-windows.yml` and `build.yml`
+  printed the first 20 characters of `SM_API_KEY`. GitHub masks the full registered secret value but not a substring of
+  it, so on the first run that reached those steps the prefix would have been in the log. The password line already used
+  `***SET***` / `NOT SET`; the API key line now does the same. No leak occurred: signed run `38526550067` died at the
+  cert-sync step and run `38537279482` died in the new preflight, so neither reached the lines that printed it.
 - **Docs.** `WORKFLOWS_OVERVIEW.md` matched the new inputs, naming and the honest signing status;
   `ACCELERATION_GUIDE.md` and `frontend/src-tauri/templates/README.md` lost the last upstream product-name references
   (the templates README now names the `Matchwise` directory the loader actually uses -- `dirs::data_dir()` +
@@ -81,6 +86,11 @@ Run `38528056988` (`workflow_dispatch` of `build-windows.yml` on `main`, `headSh
   reading goes but has never signed anything: no `.ps1` can be executed or linted in this sandbox. The new preflight
   step means a `sign-windows` dispatch now fails immediately with the missing secret names instead of a 403. The
   OV-versus-EV choice and whether to submit the build for SmartScreen reputation are still decisions, not work.
+- **The secret set is empty, not partially filled.** `gh api repos/moji-jpg-maker/matchwise/actions/secrets` reports
+  `total_count: 0`, the repo is a personal (User) public repo, and no workflow declares an `environment:`, so there is
+  no second scope holding them. Re-dispatching with `sign-windows: true` (`38537279482`, 26s) fails identically every
+  time until a KeyLocker subscription exists -- the secrets cannot be supplied before the certificate, not after.
+  **Build unsigned (`sign-windows: false`) until then**; the green run `38528056988` is that path.
 - **The installer has still never been installed.** Building and installing are different claims; everything below
   needs a clean Windows VM.
 - **The QA checklist below has not been run at all.** It is a checklist, not a result.
