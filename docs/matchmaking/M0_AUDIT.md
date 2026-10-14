@@ -99,7 +99,8 @@ Done:
     and **must be deleted by you** once verified. Verified in a scratch crate: conversion, user_version, wrong-key rejection.
   - Build requirements: `perl` and `make` (vendored OpenSSL); Linux also needs the D-Bus dev package (`libdbus-1-dev`) for the keyring crate.
     Windows-native builds of vendored OpenSSL additionally need Strawberry Perl and NASM. `build.yml`, `build-windows.yml` and `build-devtest.yml`
-    now install both (choco `strawberryperl` + `nasm`, added to `PATH`) on their Windows runners; still unverified until a Windows CI run goes green.
+    now install both (choco `strawberryperl` + `nasm`, added to `PATH`) on their Windows runners; **verified in run `38528056988`**
+    (Perl 5.42.0 + NASM 3.02, step passed in 9s).
     `sqlx`'s `sqlite-unbundled` must not be enabled.
 
 - **Encryption review fixes** (branch `fix-encryption-review`):
@@ -121,5 +122,5 @@ Done:
     "Refused to ..." CSP messages.
 
 Not done: encrypted photo storage (no photo feature yet), legacy-import UI removal. The analytics shim call-site cleanup and the orphaned release-manifest
-scripts are both finished. Still unverified from this machine: the Windows CI job (a real Windows run is the only proof the Strawberry Perl + NASM step works)
-and the OS credential-store branch (needs a real Secret Service / Keychain / Credential Manager).
+scripts are both finished. The Windows CI job ran green (run `38528056988`): Perl + NASM provisioned, both installers built, resources fix confirmed
+end-to-end. Still unverified from this machine: the OS credential-store branch (needs a real Secret Service / Keychain / Credential Manager).

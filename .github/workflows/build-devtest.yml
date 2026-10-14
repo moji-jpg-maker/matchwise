@@ -206,6 +206,30 @@ jobs:
           echo "Certificate imported: $CERT_ID"
 
       # Windows signing setup
+      # Fail here rather than inside the KeyLocker action or the cert sync: when the
+      # secrets are absent, `sign-windows` otherwise surfaces as a bare
+      # `403 Invalid credentials` several steps later, which reads like a build defect.
+      - name: Require DigiCert secrets
+        if: contains(matrix.platform, 'windows') && github.event.inputs.sign-windows == 'true'
+        shell: bash
+        env:
+          SM_HOST: ${{ secrets.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: |
+          missing=()
+          for name in SM_HOST SM_API_KEY SM_CLIENT_CERT_FILE_B64 SM_CLIENT_CERT_PASSWORD SM_CODE_SIGNING_CERT_SHA1_HASH; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::sign-windows is on, but these secrets are unset: ${missing[*]}"
+            echo "Set them in Settings -> Secrets and variables -> Actions, or re-run with sign-windows = false to build unsigned."
+            exit 1
+          fi
+          echo "All DigiCert secrets present."
+
       - name: Setup DigiCert KeyLocker
         if: contains(matrix.platform, 'windows') && github.event.inputs.sign-windows == 'true'
         uses: digicert/ssm-code-signing@v1.1.1
