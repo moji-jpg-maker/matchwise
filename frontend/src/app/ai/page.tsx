@@ -3,14 +3,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { AiConfig, AiLogRow, AiSettings } from '@/types/matchmaking';
+import { BuiltInAIAPI, BuiltInModelInfo, getStatusLabel, isModelAvailable } from '@/lib/builtin-ai';
 
 const PROVIDERS: { value: AiConfig['provider']; label: string; help: string }[] = [
   { value: 'none', label: 'Off', help: 'No AI features.' },
+  { value: 'builtin', label: 'Built-in model on this computer (no install)', help: 'Downloads a small model once, then runs inside the app. Nothing leaves your computer.' },
   { value: 'ollama', label: 'Ollama on this computer (recommended)', help: 'Runs on your machine: nothing leaves it. Install Ollama and a model first.' },
   { value: 'openai_compatible', label: 'OpenAI-compatible server', help: 'LM Studio, vLLM or llama.cpp on this computer, or a cloud service.' },
   { value: 'anthropic', label: 'Anthropic (Claude), cloud', help: 'Cloud: needs your acceptance of the cloud notice and an API key.' },
@@ -28,6 +31,22 @@ export default function AiSettingsPage() {
   const [log, setLog] = useState<AiLogRow[]>([]);
   const [showLog, setShowLog] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [builtinModels, setBuiltinModels] = useState<BuiltInModelInfo[]>([]);
+  const [dlProgress, setDlProgress] = useState<number | null>(null);
+
+  const loadBuiltin = useCallback(async () => {
+    try { setBuiltinModels(await BuiltInAIAPI.listModels()); } catch (e) { toast.error(`${e}`); }
+  }, []);
+  useEffect(() => {
+    if (provider !== 'builtin') return;
+    void loadBuiltin();
+    const un = listen<{ model: string; progress: number; status: string }>('builtin-ai-download-progress', (ev) => {
+      const p = ev.payload;
+      if (p.status === 'downloading') setDlProgress(Math.round(p.progress));
+      else { setDlProgress(null); void loadBuiltin(); }
+    });
+    return () => { void un.then((f) => f()); };
+  }, [provider, loadBuiltin]);
 
   const apply = useCallback((v: AiSettings) => {
     setS(v);
@@ -62,7 +81,9 @@ export default function AiSettingsPage() {
 
   if (!s) return <div className="p-6 text-gray-500">Loading…</div>;
   const defaultUrl = (p: string) => s.default_urls.find(([k]) => k === p)?.[1] ?? '';
-  const urlIsCloud = provider !== 'none' && baseUrl.trim() !== '' && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(baseUrl.trim());
+  const isBuiltin = provider === 'builtin';
+  const urlIsCloud = provider !== 'none' && !isBuiltin && baseUrl.trim() !== '' && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(baseUrl.trim());
+  const selectedBuiltin = builtinModels.find((m) => m.name === model);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -80,12 +101,36 @@ export default function AiSettingsPage() {
           <div className="space-y-2">
             {PROVIDERS.map((p) => (
               <label key={p.value} className="flex items-start gap-2 text-sm">
-                <input type="radio" className="mt-1" checked={provider === p.value} onChange={() => { setProvider(p.value); setBaseUrl(defaultUrl(p.value)); }} />
+                <input type="radio" className="mt-1" checked={provider === p.value} onChange={() => { setProvider(p.value); setBaseUrl(p.value === 'builtin' ? '' : defaultUrl(p.value)); if (p.value === 'builtin' && !builtinModels.some((m) => m.name === model)) setModel('qwen3.5:4b'); }} />
                 <span><span className="font-medium">{p.label}</span><br /><span className="text-gray-500">{p.help}</span></span>
               </label>
             ))}
           </div>
-          {provider !== 'none' && (
+          {isBuiltin && (
+            <div className="grid grid-cols-3 gap-3 items-center">
+              <label className="text-sm font-medium">Model</label>
+              <select className="col-span-2 border rounded h-9 px-2 text-sm bg-white" value={model} onChange={(e) => setModel(e.target.value)}>
+                {!selectedBuiltin && <option value={model}>{model}</option>}
+                {builtinModels.map((m) => (
+                  <option key={m.name} value={m.name}>{m.display_name} ({Math.round(m.size_mb / 100) / 10} GB), {getStatusLabel(m.status)}</option>
+                ))}
+              </select>
+              <span />
+              <div className="col-span-2 flex items-center gap-3 text-sm">
+                {selectedBuiltin && isModelAvailable(selectedBuiltin.status) ? (
+                  <span className="text-green-700">Downloaded and ready.</span>
+                ) : (
+                  <>
+                    <Button size="sm" variant="outline" disabled={dlProgress !== null || !selectedBuiltin} onClick={() => { setDlProgress(0); BuiltInAIAPI.downloadModel(model).catch((e) => toast.error(`${e}`)).finally(() => { setDlProgress(null); void loadBuiltin(); }); }}>
+                      {dlProgress !== null ? `Downloading… ${dlProgress}%` : 'Download model'}
+                    </Button>
+                    <span className="text-gray-500">Download it once before use.</span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          {provider !== 'none' && !isBuiltin && (
             <div className="grid grid-cols-3 gap-3 items-center">
               <label className="text-sm font-medium">Model</label>
               <Input className="col-span-2" placeholder={provider === 'ollama' ? 'for example llama3.1:8b (see `ollama list`)' : 'model name'} value={model} onChange={(e) => setModel(e.target.value)} />
@@ -101,7 +146,7 @@ export default function AiSettingsPage() {
           )}
           {provider !== 'none' && (
             <div className={`text-sm rounded p-2 border ${urlIsCloud ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-green-50 border-green-200 text-green-900'}`}>
-              {urlIsCloud ? 'This address is outside your computer: it is treated as a cloud provider.' : 'This address is on your computer: nothing is sent elsewhere.'}
+              {urlIsCloud ? 'This address is outside your computer: it is treated as a cloud provider.' : (isBuiltin ? 'The model runs inside this app: nothing is sent elsewhere.' : 'This address is on your computer: nothing is sent elsewhere.')}
             </div>
           )}
           <div className="flex justify-end">
@@ -130,7 +175,7 @@ export default function AiSettingsPage() {
           </div>
         )}
 
-        {s.config.provider !== 'none' && s.config.provider !== 'ollama' && (
+        {s.config.provider !== 'none' && s.config.provider !== 'ollama' && s.config.provider !== 'builtin' && (
           <div className="bg-white rounded-lg border p-4 space-y-2">
             <h2 className="font-medium">API key</h2>
             {s.has_key ? (

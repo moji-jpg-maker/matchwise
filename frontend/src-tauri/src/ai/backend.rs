@@ -43,6 +43,35 @@ pub enum Kind {
     Anthropic,
 }
 
+static APP_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where the built-in models live (the app data directory). Set once at startup.
+pub fn set_app_data_dir(dir: std::path::PathBuf) {
+    let _ = APP_DATA_DIR.set(dir);
+}
+
+/// The model that ships with the app, run on this computer through the llama-helper sidecar. No network.
+pub struct BuiltinBackend {
+    model: String,
+}
+
+impl BuiltinBackend {
+    pub fn new(model: &str) -> Self {
+        Self { model: model.to_string() }
+    }
+}
+
+#[async_trait]
+impl LlmBackend for BuiltinBackend {
+    /// The sidecar has no JSON mode; the prompts already demand a JSON object and the parsers extract it.
+    async fn complete(&self, system: &str, user: &str, _json: bool) -> Result<String, AiError> {
+        let dir = APP_DATA_DIR.get().ok_or_else(|| AiError::Unreachable("the app data directory is not known yet".into()))?;
+        crate::summary::summary_engine::generate_with_builtin(dir, &self.model, system, user, None)
+            .await
+            .map_err(|e| AiError::Server(e.to_string().chars().take(300).collect()))
+    }
+}
+
 pub struct HttpBackend {
     kind: Kind,
     client: reqwest::Client,

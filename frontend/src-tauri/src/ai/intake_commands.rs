@@ -130,7 +130,7 @@ pub(crate) async fn run_batch(
     let gate = prepare(pool).await;
     let session = match &gate {
         Ok((config, mode, backend)) => Some(Session {
-            backend,
+            backend: backend.as_ref(),
             provider: config.provider.clone(),
             model: config.model.clone(),
             mode: *mode,

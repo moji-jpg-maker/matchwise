@@ -476,6 +476,9 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            if let Ok(dir) = _app.handle().path().app_data_dir() {
+                ai::backend::set_app_data_dir(dir);
+            }
             #[cfg(target_os = "windows")]
             match _app.path().resolve(
                 "onnxruntime.dll",

@@ -62,9 +62,18 @@ pub fn kind_of(provider: &str) -> Option<Kind> {
     }
 }
 
+pub const BUILTIN: &str = "builtin";
+
 pub fn validate_config(c: &AiConfig) -> Result<(), String> {
     if c.provider == "none" {
         return Ok(());
+    }
+    if c.provider == BUILTIN {
+        return if crate::summary::summary_engine::get_model_by_name(c.model.trim()).is_some() {
+            Ok(())
+        } else {
+            Err(format!("Unknown built-in model '{}'", c.model))
+        };
     }
     if kind_of(&c.provider).is_none() {
         return Err(format!("Unknown AI provider '{}'", c.provider));
@@ -160,6 +169,9 @@ pub fn check_gate(config: &AiConfig, consent: Option<&CloudConsent>, has_key: bo
         return Err("AI is turned off. Choose a provider on the AI page.".into());
     }
     validate_config(config)?;
+    if config.provider == BUILTIN {
+        return Ok(Mode { is_cloud: false, include_sensitive: config.local_include_sensitive });
+    }
     if is_local_url(&config.base_url) {
         return Ok(Mode { is_cloud: false, include_sensitive: config.local_include_sensitive });
     }

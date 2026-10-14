@@ -1,7 +1,7 @@
 //! Tauri commands for the AI layer. Every command that calls a model goes through [`prepare`], which applies the
 //! privacy gate first: no provider, no cloud consent, or a missing key means the model is never contacted.
 
-use super::backend::{is_local_url, HttpBackend};
+use super::backend::{is_local_url, BuiltinBackend, HttpBackend, LlmBackend};
 use super::repo::{self, LogRow, SuggestionRow};
 use super::service::{self, Decision, ExtractionView, PairView, Session};
 use super::settings::{self, AiConfig, CloudConsent, Mode};
@@ -16,15 +16,20 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 }
 
 /// Gate, key and backend for one request. Shared with the bulk-intake commands, which read the gate once per run.
-pub(crate) async fn prepare(pool: &SqlitePool) -> Result<(AiConfig, Mode, HttpBackend), String> {
+pub(crate) async fn prepare(pool: &SqlitePool) -> Result<(AiConfig, Mode, Box<dyn LlmBackend>), String> {
     let config = settings::load_config(pool).await?;
     let consent = settings::load_consent(pool).await?;
     let key = settings::load_key().ok().flatten().map(|(k, _)| k);
     let mode = settings::check_gate(&config, consent.as_ref(), key.is_some())?;
+    if config.provider == settings::BUILTIN {
+        let backend: Box<dyn LlmBackend> = Box::new(BuiltinBackend::new(config.model.trim()));
+        return Ok((config, mode, backend));
+    }
     let kind = settings::kind_of(&config.provider).ok_or("Unknown AI provider")?;
     // a key is only ever sent to the provider it was stored for, and never to a local server that does not need one
     let key = if config.provider == "ollama" { None } else { key };
-    Ok((config.clone(), mode, HttpBackend::new(kind, &config.base_url, &config.model, key)))
+    let backend: Box<dyn LlmBackend> = Box::new(HttpBackend::new(kind, &config.base_url, &config.model, key));
+    Ok((config, mode, backend))
 }
 
 #[derive(Serialize)]
@@ -48,7 +53,7 @@ async fn settings_view(pool: &SqlitePool) -> Result<AiSettingsView, String> {
     let key = settings::load_key().ok().flatten();
     let gate = settings::check_gate(&config, consent.as_ref(), key.is_some());
     Ok(AiSettingsView {
-        is_cloud: config.provider != "none" && !is_local_url(&config.base_url),
+        is_cloud: config.provider != "none" && config.provider != settings::BUILTIN && !is_local_url(&config.base_url),
         has_key: key.is_some(),
         key_source: key.as_ref().map(|(_, s)| s.to_string()),
         consent,
@@ -128,7 +133,7 @@ pub async fn ai_test_connection(state: State<'_, AppState>) -> Result<TestResult
     let pool = state.db_manager.pool();
     let (config, mode, backend) = prepare(pool).await?;
     let (system, user) = ("Reply with one JSON object.".to_string(), "Return {\"ok\": true}".to_string());
-    let res = super::backend::LlmBackend::complete(&backend, &system, &user, true).await;
+    let res = backend.complete(&system, &user, true).await;
     let _ = repo::log_call(pool, "test", &config.provider, &config.model, mode, None, None, system.len() + user.len(), res.as_ref().map(|r| r.len()).unwrap_or(0), res.is_ok(), res.as_ref().err().map(|e| e.to_string()).as_deref(), None).await;
     res.map_err(err)?;
     Ok(TestResult { ok: true, is_cloud: mode.is_cloud })
@@ -154,7 +159,7 @@ pub async fn ai_preview_extraction(state: State<'_, AppState>, profile_id: Strin
 pub async fn ai_extract_profile(state: State<'_, AppState>, profile_id: String, extra_text: Option<String>) -> Result<ExtractionView, String> {
     let pool = state.db_manager.pool();
     let (config, mode, backend) = prepare(pool).await?;
-    let s = Session { backend: &backend, provider: config.provider, model: config.model, mode };
+    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode };
     service::extract_profile(pool, &s, &profile_id, extra_text.as_deref()).await
 }
 
@@ -187,7 +192,7 @@ pub async fn ai_preview_match(state: State<'_, AppState>, match_id: String) -> R
 pub async fn ai_analyse_match(state: State<'_, AppState>, match_id: String) -> Result<PairView, String> {
     let pool = state.db_manager.pool();
     let (config, mode, backend) = prepare(pool).await?;
-    let s = Session { backend: &backend, provider: config.provider, model: config.model, mode };
+    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode };
     service::analyse_pair(pool, &s, &match_id).await
 }
 

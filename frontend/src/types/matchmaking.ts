@@ -496,7 +496,7 @@ export interface TelegramInbox {
 
 // ---- AI (mirror src-tauri/src/ai)
 export interface AiConfig {
-  provider: 'none' | 'ollama' | 'openai_compatible' | 'anthropic';
+  provider: 'none' | 'builtin' | 'ollama' | 'openai_compatible' | 'anthropic';
   model: string;
   base_url: string;
   local_include_sensitive: boolean;

@@ -121,6 +121,15 @@ fn configuration_is_validated() {
 
 // ------------------------------------------------------------------ extraction
 
+#[test]
+fn built_in_model_runs_on_this_computer_without_consent_or_key() {
+    let b = |model: &str, sensitive: bool| AiConfig { provider: "builtin".into(), model: model.into(), base_url: String::new(), local_include_sensitive: sensitive };
+    assert!(validate_config(&b("qwen3.5:4b", true)).is_ok());
+    assert!(validate_config(&b("no-such-model", true)).is_err());
+    assert_eq!(check_gate(&b("qwen3.5:4b", true), None, false).unwrap(), Mode { is_cloud: false, include_sensitive: true });
+    assert!(!check_gate(&b("qwen3.5:4b", false), None, false).unwrap().include_sensitive);
+}
+
 const GOOD: &str = r#"{"suggestions":[{"field":"smoking","value":"never","evidence":"I have never smoked","confidence":0.9},
   {"field":"occupation","value":"Nurse","evidence":"I work as a nurse","confidence":0.8}],
  "preferences":[{"field":"smoking","op":"in","value":["never"],"strength":"deal_breaker","evidence":"does not smoke"}],
