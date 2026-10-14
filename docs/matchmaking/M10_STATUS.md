@@ -60,6 +60,9 @@ existing Extraction and PairAnalysis tasks are covered.
   settings, gate, session, analysis, stored result with the match's status and score snapshots unchanged.
 - `cargo test -p matchmaking-core`: all pass, including the new authority-claim test.
 - `npx tsc --noEmit` in `frontend/`: clean.
+- The Windows release build carries this work: run `38589160522` (commit `8515db1`, unsigned) went green and produced
+  `matchwise_0.4.1_x64-setup.exe` (NSIS, 43 MB, sha256 `7250f8bd...46c1`) and `matchwise_0.4.1_x64_en-US.msi`. That
+  proves the AI layer compiles and bundles on Windows; it does not prove any model runs there.
 
 ## Not verified
 - **No real model was run.** Neither the built-in sidecar with a downloaded GGUF, nor a real Ollama, nor a cloud
