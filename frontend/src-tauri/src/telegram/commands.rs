@@ -426,11 +426,24 @@ pub async fn tg_resolve_request(state: State<'_, AppState>, id: i64) -> Result<(
 mod command_tests {
     use super::valid_token_format;
 
+    /// Build the sample tokens at runtime: a literal of this shape is indistinguishable
+    /// from a real bot token and trips GitHub secret scanning (alert #1).
     #[test]
     fn token_format() {
-        assert!(valid_token_format("123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"));
-        for bad in ["", "abc", "123:short", "abc:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw!", ":AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "123456789:AAHdq TcvCH1vGWJxfSeofSAs0K5PALDsaw"] {
-            assert!(!valid_token_format(bad), "{bad}");
+        let secret = "A".repeat(35);
+        assert!(valid_token_format(&format!("123456789:{secret}")));
+        let with_space = format!("{} {}", "A".repeat(20), "A".repeat(14));
+        let bad = vec![
+            String::new(),
+            "abc".to_string(),
+            "123:short".to_string(),
+            format!("abc:{secret}"),
+            format!("123456789:{secret}!"),
+            format!(":{secret}"),
+            format!("123456789:{with_space}"),
+        ];
+        for bad in bad {
+            assert!(!valid_token_format(&bad), "{bad}");
         }
     }
 }
