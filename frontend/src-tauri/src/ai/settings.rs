@@ -69,10 +69,10 @@ pub fn validate_config(c: &AiConfig) -> Result<(), String> {
         return Ok(());
     }
     if c.provider == BUILTIN {
-        return if crate::summary::summary_engine::get_model_by_name(c.model.trim()).is_some() {
+        return if super::models::find_model(&c.model).is_some() {
             Ok(())
         } else {
-            Err(format!("Unknown built-in model '{}'", c.model))
+            Err(format!("'{}' is not a built-in model MatchWise offers", c.model))
         };
     }
     if kind_of(&c.provider).is_none() {
@@ -93,13 +93,18 @@ pub fn validate_config(c: &AiConfig) -> Result<(), String> {
 
 pub async fn load_config(pool: &SqlitePool) -> Result<AiConfig, String> {
     match get_meta(pool, "ai_config").await.map_err(|e| e.to_string())? {
-        Some(j) => serde_json::from_str(&j).map_err(|e| e.to_string()),
+        Some(j) => serde_json::from_str::<AiConfig>(&j).map(|mut c| {
+            c.provider = super::models::normalize_provider(&c.provider);
+            c
+        }).map_err(|e| e.to_string()),
         None => Ok(AiConfig::default()),
     }
 }
 
 pub async fn save_config(pool: &SqlitePool, c: &AiConfig) -> Result<(), String> {
-    set_meta(pool, "ai_config", &serde_json::to_string(c).map_err(|e| e.to_string())?).await.map_err(|e| e.to_string())
+    let mut c = c.clone();
+    c.provider = super::models::normalize_provider(&c.provider);
+    set_meta(pool, "ai_config", &serde_json::to_string(&c).map_err(|e| e.to_string())?).await.map_err(|e| e.to_string())
 }
 
 pub async fn load_consent(pool: &SqlitePool) -> Result<Option<CloudConsent>, String> {

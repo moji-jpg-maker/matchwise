@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod commands;
 pub mod intake_commands;
+pub mod models;
 pub mod repo;
 pub mod service;
 pub mod settings;

@@ -137,6 +137,26 @@ pub async fn generate_with_builtin(
     user_prompt: &str,
     cancellation_token: Option<&CancellationToken>,
 ) -> Result<String> {
+    generate_with_builtin_overrides(app_data_dir, model_name, system_prompt, user_prompt, cancellation_token, None).await
+}
+
+/// Per-call generation settings that replace the model's summary defaults (used by the matchmaking AI layer).
+#[derive(Debug, Clone)]
+pub struct GenerationOverrides {
+    pub sampling: Option<models::SamplingParams>,
+    pub max_tokens: Option<i32>,
+    pub timeout_secs: Option<u64>,
+}
+
+/// Like [`generate_with_builtin`], with optional sampling, token and timeout overrides. `None` keeps the defaults.
+pub async fn generate_with_builtin_overrides(
+    app_data_dir: &PathBuf,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    cancellation_token: Option<&CancellationToken>,
+    overrides: Option<&GenerationOverrides>,
+) -> Result<String> {
     // Check cancellation at start
     if let Some(token) = cancellation_token {
         if token.is_cancelled() {
@@ -179,10 +199,14 @@ pub async fn generate_with_builtin(
     }
 
     // Prepare generation request with model-specific sampling parameters
-    let sampling = model_def.sampling.sanitize_for_llama_helper();
+    let sampling = overrides
+        .and_then(|o| o.sampling.as_ref())
+        .unwrap_or(&model_def.sampling)
+        .sanitize_for_llama_helper();
+    let max_tokens = overrides.and_then(|o| o.max_tokens).unwrap_or(models::DEFAULT_MAX_TOKENS);
     let request = Request::Generate {
         prompt: formatted_prompt,
-        max_tokens: Some(models::DEFAULT_MAX_TOKENS),
+        max_tokens: Some(max_tokens),
         context_size: Some(model_def.context_size),
         model_path: Some(model_path.to_string_lossy().to_string()),
         temperature: Some(sampling.temperature),
@@ -198,7 +222,7 @@ pub async fn generate_with_builtin(
     let request_json = serde_json::to_string(&request)?;
 
     // Send request with timeout
-    let timeout = Duration::from_secs(models::GENERATION_TIMEOUT_SECS);
+    let timeout = Duration::from_secs(overrides.and_then(|o| o.timeout_secs).unwrap_or(models::GENERATION_TIMEOUT_SECS));
 
     log::info!("Sending generation request to sidecar");
 

@@ -502,6 +502,24 @@ export interface AiConfig {
   local_include_sensitive: boolean;
 }
 
+export interface AiProviderInfo {
+  id: AiConfig['provider'];
+  label: string;
+  default_url: string;
+  always_local: boolean;
+  needs_key: boolean;
+  model_from_list: boolean;
+}
+
+export interface AiBuiltinModel {
+  id: string;
+  label: string;
+  note: string;
+  recommended: boolean;
+  file: 'downloaded' | 'not_downloaded' | 'unknown';
+  size_mb: number;
+}
+
 export interface AiSettings {
   config: AiConfig;
   is_cloud: boolean;
@@ -511,6 +529,9 @@ export interface AiSettings {
   consent_text: string;
   consent_version: number;
   default_urls: [string, string][];
+  catalog: AiProviderInfo[];
+  builtin_models: AiBuiltinModel[];
+  readiness: 'ready' | 'disabled' | 'model_missing' | 'needs_key' | 'needs_consent' | 'invalid';
   ready: boolean;
   not_ready_reason: string | null;
   mode: { is_cloud: boolean; include_sensitive: boolean } | null;

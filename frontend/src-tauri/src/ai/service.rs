@@ -54,7 +54,7 @@ async fn ask<T>(
     let mut prompt = user.to_string();
     let mut last_err = String::new();
     for attempt in 0..2 {
-        let result = s.backend.complete(system, &prompt, true).await;
+        let result = s.backend.complete_for(super::models::TaskProfile::for_kind(kind), system, &prompt, true).await;
         let (ok, out_len, error) = match &result {
             Ok(text) => (true, text.chars().count(), None),
             Err(e) => (false, 0, Some(e.to_string())),

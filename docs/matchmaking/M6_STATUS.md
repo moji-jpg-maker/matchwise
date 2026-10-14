@@ -46,3 +46,5 @@ mapping, key never in an error). The commands ran end to end against a stand-in 
 - Pair analysis works on tracked matches only. It does not influence ranking; learned ranking from outcomes is the next milestone, evaluated against the deterministic baseline.
 - No streaming, no embeddings, no automatic runs: every model call is a button press.
 - The first live test (install Ollama, pull a model, point the app at it) is yours; the AI page has a Test connection button.
+
+- Provider and model selection, task profiles and the readiness states were reworked in M10: see `M10_STATUS.md`. Pair analysis now also drops statements that claim to decide a score or status.

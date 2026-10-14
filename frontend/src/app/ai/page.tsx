@@ -9,15 +9,24 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { AiConfig, AiLogRow, AiSettings } from '@/types/matchmaking';
-import { BuiltInAIAPI, BuiltInModelInfo, getStatusLabel, isModelAvailable } from '@/lib/builtin-ai';
+import { BuiltInAIAPI } from '@/lib/builtin-ai';
 
-const PROVIDERS: { value: AiConfig['provider']; label: string; help: string }[] = [
-  { value: 'none', label: 'Off', help: 'No AI features.' },
-  { value: 'builtin', label: 'Built-in model on this computer (no install)', help: 'Downloads a small model once, then runs inside the app. Nothing leaves your computer.' },
-  { value: 'ollama', label: 'Ollama on this computer (recommended)', help: 'Runs on your machine: nothing leaves it. Install Ollama and a model first.' },
-  { value: 'openai_compatible', label: 'OpenAI-compatible server', help: 'LM Studio, vLLM or llama.cpp on this computer, or a cloud service.' },
-  { value: 'anthropic', label: 'Anthropic (Claude), cloud', help: 'Cloud: needs your acceptance of the cloud notice and an API key.' },
-];
+const PROVIDER_HELP: Record<string, string> = {
+  none: 'No AI features.',
+  builtin: 'Downloads a small model once, then runs inside the app. Nothing leaves your computer.',
+  ollama: 'Runs on your machine: nothing leaves it. Install Ollama and a model first.',
+  openai_compatible: 'LM Studio, vLLM or llama.cpp on this computer, or a cloud service.',
+  anthropic: 'Cloud: needs your acceptance of the cloud notice and an API key.',
+};
+
+const READINESS_LABEL: Record<AiSettings['readiness'], string> = {
+  ready: 'Ready',
+  disabled: 'Off',
+  model_missing: 'Model not downloaded',
+  needs_key: 'Needs API key',
+  needs_consent: 'Needs consent',
+  invalid: 'Check settings',
+};
 
 export default function AiSettingsPage() {
   const router = useRouter();
@@ -31,22 +40,7 @@ export default function AiSettingsPage() {
   const [log, setLog] = useState<AiLogRow[]>([]);
   const [showLog, setShowLog] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [builtinModels, setBuiltinModels] = useState<BuiltInModelInfo[]>([]);
   const [dlProgress, setDlProgress] = useState<number | null>(null);
-
-  const loadBuiltin = useCallback(async () => {
-    try { setBuiltinModels(await BuiltInAIAPI.listModels()); } catch (e) { toast.error(`${e}`); }
-  }, []);
-  useEffect(() => {
-    if (provider !== 'builtin') return;
-    void loadBuiltin();
-    const un = listen<{ model: string; progress: number; status: string }>('builtin-ai-download-progress', (ev) => {
-      const p = ev.payload;
-      if (p.status === 'downloading') setDlProgress(Math.round(p.progress));
-      else { setDlProgress(null); void loadBuiltin(); }
-    });
-    return () => { void un.then((f) => f()); };
-  }, [provider, loadBuiltin]);
 
   const apply = useCallback((v: AiSettings) => {
     setS(v);
@@ -66,6 +60,17 @@ export default function AiSettingsPage() {
   }, [apply]);
   useEffect(() => { void load(); }, [load]);
 
+  useEffect(() => {
+    if (provider !== 'builtin') return;
+    const un = listen<{ model: string; progress: number; status: string }>('builtin-ai-download-progress', (ev) => {
+      const p = ev.payload;
+      if (p.status === 'downloading') setDlProgress(Math.round(p.progress));
+      else { setDlProgress(null); void load(); }
+    });
+    return () => { void un.then((f) => f()); };
+  }, [provider, load]);
+
+
   const run = async (fn: () => Promise<AiSettings | void>, ok?: string) => {
     setBusy(true);
     try {
@@ -83,7 +88,9 @@ export default function AiSettingsPage() {
   const defaultUrl = (p: string) => s.default_urls.find(([k]) => k === p)?.[1] ?? '';
   const isBuiltin = provider === 'builtin';
   const urlIsCloud = provider !== 'none' && !isBuiltin && baseUrl.trim() !== '' && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(baseUrl.trim());
-  const selectedBuiltin = builtinModels.find((m) => m.name === model);
+  const builtinModels = s.builtin_models;
+  const selectedBuiltin = builtinModels.find((m) => m.id === model);
+  const recommended = builtinModels.find((m) => m.recommended) ?? builtinModels[0];
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -99,10 +106,10 @@ export default function AiSettingsPage() {
         <div className="bg-white rounded-lg border p-4 space-y-3">
           <h2 className="font-medium">Provider</h2>
           <div className="space-y-2">
-            {PROVIDERS.map((p) => (
-              <label key={p.value} className="flex items-start gap-2 text-sm">
-                <input type="radio" className="mt-1" checked={provider === p.value} onChange={() => { setProvider(p.value); setBaseUrl(p.value === 'builtin' ? '' : defaultUrl(p.value)); if (p.value === 'builtin' && !builtinModels.some((m) => m.name === model)) setModel('qwen3.5:4b'); }} />
-                <span><span className="font-medium">{p.label}</span><br /><span className="text-gray-500">{p.help}</span></span>
+            {s.catalog.map((p) => (
+              <label key={p.id} className="flex items-start gap-2 text-sm">
+                <input type="radio" className="mt-1" checked={provider === p.id} onChange={() => { setProvider(p.id); setBaseUrl(defaultUrl(p.id)); if (p.model_from_list && !builtinModels.some((m) => m.id === model) && recommended) setModel(recommended.id); }} />
+                <span><span className="font-medium">{p.label}</span><br /><span className="text-gray-500">{PROVIDER_HELP[p.id] ?? ''}</span></span>
               </label>
             ))}
           </div>
@@ -112,19 +119,19 @@ export default function AiSettingsPage() {
               <select className="col-span-2 border rounded h-9 px-2 text-sm bg-white" value={model} onChange={(e) => setModel(e.target.value)}>
                 {!selectedBuiltin && <option value={model}>{model}</option>}
                 {builtinModels.map((m) => (
-                  <option key={m.name} value={m.name}>{m.display_name} ({Math.round(m.size_mb / 100) / 10} GB), {getStatusLabel(m.status)}</option>
+                  <option key={m.id} value={m.id}>{m.label} ({Math.round(m.size_mb / 100) / 10} GB), {m.file === 'downloaded' ? 'Downloaded' : 'Not downloaded'}{m.recommended ? ', recommended' : ''}</option>
                 ))}
               </select>
               <span />
               <div className="col-span-2 flex items-center gap-3 text-sm">
-                {selectedBuiltin && isModelAvailable(selectedBuiltin.status) ? (
+                {selectedBuiltin && selectedBuiltin.file === 'downloaded' ? (
                   <span className="text-green-700">Downloaded and ready.</span>
                 ) : (
                   <>
-                    <Button size="sm" variant="outline" disabled={dlProgress !== null || !selectedBuiltin} onClick={() => { setDlProgress(0); BuiltInAIAPI.downloadModel(model).catch((e) => toast.error(`${e}`)).finally(() => { setDlProgress(null); void loadBuiltin(); }); }}>
+                    <Button size="sm" variant="outline" disabled={dlProgress !== null || !selectedBuiltin} onClick={() => { setDlProgress(0); BuiltInAIAPI.downloadModel(model).catch((e) => toast.error(`${e}`)).finally(() => { setDlProgress(null); void load(); }); }}>
                       {dlProgress !== null ? `Downloading… ${dlProgress}%` : 'Download model'}
                     </Button>
-                    <span className="text-gray-500">Download it once before use.</span>
+                    <span className="text-gray-500">{selectedBuiltin?.note ?? 'Choose a model from the list.'}</span>
                   </>
                 )}
               </div>
@@ -197,7 +204,7 @@ export default function AiSettingsPage() {
 
         <div className="bg-white rounded-lg border p-4 space-y-3">
           <div className="flex items-center gap-3">
-            <span className={`text-xs px-2 py-0.5 rounded ${s.ready ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>{s.ready ? 'Ready' : 'Not ready'}</span>
+            <span className={`text-xs px-2 py-0.5 rounded ${s.ready ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>{READINESS_LABEL[s.readiness]}</span>
             <span className="text-sm text-gray-600 flex-1">{s.ready ? (s.mode?.is_cloud ? 'Cloud mode: redacted text leaves this computer.' : 'Local mode: nothing leaves this computer.') : s.not_ready_reason}</span>
             <Button size="sm" variant="outline" disabled={busy || !s.ready} onClick={() => run(async () => { await invoke('ai_test_connection'); toast.success('The model answered'); })}>Test connection</Button>
           </div>

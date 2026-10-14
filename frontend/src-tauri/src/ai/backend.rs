@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use super::models::TaskProfile;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiError {
     /// Wrong or missing API key (401/403).
@@ -34,6 +36,12 @@ impl std::fmt::Display for AiError {
 pub trait LlmBackend: Send + Sync {
     /// One question, one answer. `json` asks the server to produce JSON where it supports that.
     async fn complete(&self, system: &str, user: &str, json: bool) -> Result<String, AiError>;
+
+    /// Like [`complete`](Self::complete), run with the settings of one matchmaking task. Backends that have no
+    /// per-task settings just answer the plain request.
+    async fn complete_for(&self, _task: TaskProfile, system: &str, user: &str, json: bool) -> Result<String, AiError> {
+        self.complete(system, user, json).await
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +56,10 @@ static APP_DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLo
 /// Where the built-in models live (the app data directory). Set once at startup.
 pub fn set_app_data_dir(dir: std::path::PathBuf) {
     let _ = APP_DATA_DIR.set(dir);
+}
+
+pub fn app_data_dir() -> Option<&'static std::path::PathBuf> {
+    APP_DATA_DIR.get()
 }
 
 /// The model that ships with the app, run on this computer through the llama-helper sidecar. No network.
@@ -65,8 +77,23 @@ impl BuiltinBackend {
 impl LlmBackend for BuiltinBackend {
     /// The sidecar has no JSON mode; the prompts already demand a JSON object and the parsers extract it.
     async fn complete(&self, system: &str, user: &str, _json: bool) -> Result<String, AiError> {
+        self.run(None, system, user).await
+    }
+
+    async fn complete_for(&self, task: TaskProfile, system: &str, user: &str, _json: bool) -> Result<String, AiError> {
+        self.run(Some(task), system, user).await
+    }
+}
+
+impl BuiltinBackend {
+    async fn run(&self, task: Option<TaskProfile>, system: &str, user: &str) -> Result<String, AiError> {
         let dir = APP_DATA_DIR.get().ok_or_else(|| AiError::Unreachable("the app data directory is not known yet".into()))?;
-        crate::summary::summary_engine::generate_with_builtin(dir, &self.model, system, user, None)
+        let def = super::models::find_model(&self.model).ok_or_else(|| AiError::Server(format!("Unknown built-in model '{}'", self.model)))?;
+        if super::models::model_file_state(dir, def) != super::models::ModelFile::Downloaded {
+            return Err(AiError::Unreachable(format!("The model '{}' is not downloaded yet. Download it on the AI page.", def.label)));
+        }
+        let overrides = task.and_then(|t| t.overrides_for(def));
+        crate::summary::summary_engine::generate_with_builtin_overrides(dir, def.summary_model, system, user, None, overrides.as_ref())
             .await
             .map_err(|e| AiError::Server(e.to_string().chars().take(300).collect()))
     }
@@ -95,6 +122,12 @@ impl HttpBackend {
             Some(k) if !k.is_empty() => s.replace(k.as_str(), "<key>"),
             _ => s,
         }
+    }
+
+    async fn run(&self, task: Option<TaskProfile>, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
+        let temperature = task.map_or(0.2, |t| t.temperature());
+        let max_tokens = task.map_or(2048, |t| t.max_tokens());
+        self.run_with(temperature, max_tokens, system, user, json_mode).await
     }
 
     async fn post(&self, url: &str, body: &Value, headers: &[(&str, String)]) -> Result<(u16, Value), AiError> {
@@ -130,10 +163,20 @@ fn text_of(v: Option<&Value>, what: &str) -> Result<String, AiError> {
 #[async_trait]
 impl LlmBackend for HttpBackend {
     async fn complete(&self, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
+        self.run(None, system, user, json_mode).await
+    }
+
+    async fn complete_for(&self, task: TaskProfile, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
+        self.run(Some(task), system, user, json_mode).await
+    }
+}
+
+impl HttpBackend {
+    async fn run_with(&self, temperature: f32, max_tokens: i32, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
         let messages = json!([{"role": "system", "content": system}, {"role": "user", "content": user}]);
         match self.kind {
             Kind::Ollama => {
-                let mut body = json!({"model": self.model, "messages": messages, "stream": false, "options": {"temperature": 0.2}});
+                let mut body = json!({"model": self.model, "messages": messages, "stream": false, "options": {"temperature": temperature, "num_predict": max_tokens}});
                 if json_mode {
                     body["format"] = json!("json");
                 }
@@ -141,7 +184,7 @@ impl LlmBackend for HttpBackend {
                 text_of(r.pointer("/message/content"), "message")
             }
             Kind::OpenAiCompatible => {
-                let mut body = json!({"model": self.model, "messages": messages, "temperature": 0.2});
+                let mut body = json!({"model": self.model, "messages": messages, "temperature": temperature});
                 if json_mode {
                     body["response_format"] = json!({"type": "json_object"});
                 }
@@ -162,7 +205,7 @@ impl LlmBackend for HttpBackend {
                 text_of(r.pointer("/choices/0/message/content"), "message")
             }
             Kind::Anthropic => {
-                let body = json!({"model": self.model, "max_tokens": 2048, "temperature": 0.2, "system": system, "messages": [{"role": "user", "content": user}]});
+                let body = json!({"model": self.model, "max_tokens": max_tokens, "temperature": temperature, "system": system, "messages": [{"role": "user", "content": user}]});
                 let headers = [("x-api-key", self.key.clone().unwrap_or_default()), ("anthropic-version", "2023-06-01".to_string())];
                 let (_, r) = self.post(&format!("{}/v1/messages", self.base), &body, &headers).await?;
                 text_of(r.pointer("/content/0/text"), "text")

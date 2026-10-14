@@ -463,6 +463,38 @@ fn clean_text(s: &str, max: usize) -> String {
     clip(&s.chars().filter(|c| !c.is_control() || *c == '\n').collect::<String>().trim().to_string(), max)
 }
 
+/// Phrases by which a model would claim to decide a score or a status. The AI is advisory: such statements are
+/// dropped, not shown, so nothing on screen reads as a verdict.
+const AUTHORITY_PHRASES: &[&str] = &[
+    "score should be",
+    "change the score",
+    "changed the score",
+    "adjust the score",
+    "adjusted the score",
+    "raise the score",
+    "lower the score",
+    "set the score",
+    "new score",
+    "update the status",
+    "change the status",
+    "set the status",
+    "status should be",
+    "mark this match as",
+    "mark as accepted",
+    "mark as rejected",
+    "should be rejected",
+    "should be approved",
+    "i have rejected",
+    "i have approved",
+    "i reject this match",
+    "i approve this match",
+];
+
+fn claims_authority(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    AUTHORITY_PHRASES.iter().any(|p| lower.contains(p))
+}
+
 /// Keep only claims that cite real facts. Questions may cite nothing.
 pub fn parse_pair_analysis(raw: &str, facts: &[AiFact]) -> Result<PairAnalysis, String> {
     let root = extract_json_object(raw).ok_or("The model did not return readable JSON")?;
@@ -475,6 +507,10 @@ pub fn parse_pair_analysis(raw: &str, facts: &[AiFact]) -> Result<PairAnalysis, 
             let text = clean_text(item.get("text").and_then(|v| v.as_str()).unwrap_or(""), MAX_ITEM_CHARS);
             let refs: Vec<String> = item.get("refs").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|r| r.as_str()).filter(|r| ids.contains(r)).map(String::from).collect()).unwrap_or_default();
             if text.is_empty() {
+                continue;
+            }
+            if need_refs && claims_authority(&text) {
+                dropped.push(format!("A statement in '{key}' was dropped because it tried to decide a score or status"));
                 continue;
             }
             if need_refs && refs.is_empty() {
@@ -498,6 +534,9 @@ pub fn parse_pair_analysis(raw: &str, facts: &[AiFact]) -> Result<PairAnalysis, 
         let text = clean_text(o.get("text").and_then(|v| v.as_str()).unwrap_or(""), MAX_ASSESSMENT_CHARS);
         let refs: Vec<String> = o.get("refs").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|r| r.as_str()).filter(|r| ids.contains(r)).map(String::from).collect()).unwrap_or_default();
         if text.is_empty() {
+            None
+        } else if claims_authority(&text) {
+            dropped.push("The overall assessment was dropped because it tried to decide a score or status".to_string());
             None
         } else if refs.is_empty() {
             dropped.push("The overall assessment was dropped because it cited no listed fact".to_string());

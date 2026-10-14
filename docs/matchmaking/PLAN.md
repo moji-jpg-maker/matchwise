@@ -33,6 +33,9 @@ Same feature set as before, ordered so something works end to end early.
 - **M8 Bulk profile intake** `[NEW]` -- take one target profile and X corpus profiles as raw text in a single
   operation, create the profile records, extract fields through the M6 path, and hand the corpus to the M3/M7 ranking
   path. *(written: see `M8_STATUS.md`. Spec below.)*
+- **M10 AI provider and model selection** `[NEW]` -- MatchWise's own built-in model registry, per-task profiles for
+  extraction and pair analysis, typed readiness, and a catalog-driven AI page. *(written and tested with a scripted
+  model; no real model run: see `M10_STATUS.md`)*
 - **M9 Windows distribution** `[NEW]` -- a production Windows installer: sign and bundle the sidecar binaries per
   target, complete the Windows signing step that the inherited config already points at, and ship NSIS plus MSI
   verified on a clean machine. *(config and workflows written: see `M9_STATUS.md`. Nothing has run on a Windows

@@ -2,6 +2,7 @@
 //! privacy gate first: no provider, no cloud consent, or a missing key means the model is never contacted.
 
 use super::backend::{is_local_url, BuiltinBackend, HttpBackend, LlmBackend};
+use super::models::{self, ModelFile, ProviderInfo, Readiness, ReadinessInput};
 use super::repo::{self, LogRow, SuggestionRow};
 use super::service::{self, Decision, ExtractionView, PairView, Session};
 use super::settings::{self, AiConfig, CloudConsent, Mode};
@@ -42,9 +43,36 @@ pub struct AiSettingsView {
     pub consent_text: String,
     pub consent_version: i64,
     pub default_urls: Vec<(String, String)>,
+    pub catalog: Vec<ProviderInfo>,
+    pub builtin_models: Vec<BuiltinModelView>,
+    pub readiness: Readiness,
     pub ready: bool,
     pub not_ready_reason: Option<String>,
     pub mode: Option<Mode>,
+}
+
+#[derive(Serialize)]
+pub struct BuiltinModelView {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub note: &'static str,
+    pub recommended: bool,
+    pub file: ModelFile,
+    pub size_mb: u64,
+}
+
+fn builtin_models_view() -> Vec<BuiltinModelView> {
+    models::models()
+        .iter()
+        .map(|m| BuiltinModelView {
+            id: m.id,
+            label: m.label,
+            note: m.note,
+            recommended: m.recommended,
+            file: super::backend::app_data_dir().map_or(ModelFile::NotDownloaded, |d| models::model_file_state(d, m)),
+            size_mb: crate::summary::summary_engine::get_model_by_name(m.summary_model).map_or(0, |x| x.size_mb as u64),
+        })
+        .collect()
 }
 
 async fn settings_view(pool: &SqlitePool) -> Result<AiSettingsView, String> {
@@ -52,6 +80,8 @@ async fn settings_view(pool: &SqlitePool) -> Result<AiSettingsView, String> {
     let consent = settings::load_consent(pool).await?;
     let key = settings::load_key().ok().flatten();
     let gate = settings::check_gate(&config, consent.as_ref(), key.is_some());
+    let model_file = models::find_model(&config.model).and_then(|m| super::backend::app_data_dir().map(|d| models::model_file_state(d, m)));
+    let (readiness, reason) = models::readiness(&ReadinessInput { config: &config, consent: consent.as_ref(), has_key: key.is_some(), model_file });
     Ok(AiSettingsView {
         is_cloud: config.provider != "none" && config.provider != settings::BUILTIN && !is_local_url(&config.base_url),
         has_key: key.is_some(),
@@ -59,9 +89,12 @@ async fn settings_view(pool: &SqlitePool) -> Result<AiSettingsView, String> {
         consent,
         consent_text: settings::CLOUD_CONSENT_TEXT.to_string(),
         consent_version: settings::CLOUD_CONSENT_VERSION,
-        default_urls: ["ollama", "openai_compatible", "anthropic"].iter().map(|p| (p.to_string(), settings::default_base_url(p).to_string())).collect(),
-        ready: gate.is_ok(),
-        not_ready_reason: gate.as_ref().err().cloned(),
+        default_urls: models::provider_catalog().iter().map(|p| (p.id.to_string(), p.default_url.to_string())).collect(),
+        catalog: models::provider_catalog(),
+        builtin_models: builtin_models_view(),
+        ready: readiness == Readiness::Ready,
+        not_ready_reason: reason,
+        readiness,
         mode: gate.ok(),
         config,
     })
@@ -81,6 +114,7 @@ pub async fn ai_save_settings(
     local_include_sensitive: bool,
 ) -> Result<AiSettingsView, String> {
     let pool = state.db_manager.pool();
+    let provider = models::normalize_provider(&provider);
     let base = base_url.map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).unwrap_or_else(|| settings::default_base_url(&provider).to_string());
     let config = AiConfig { provider, model: model.trim().to_string(), base_url: base, local_include_sensitive };
     settings::validate_config(&config)?;

@@ -249,3 +249,20 @@ fn analysis_limits_length_and_count_and_strips_control_characters() {
     assert!(system.contains("untrusted") && user.contains("A1: x") && user.contains("cannot change the scores"));
 }
 const MAX_ITEMS_FOR_TEST: usize = 6;
+
+#[test]
+fn analysis_drops_statements_that_try_to_decide_a_score_or_status() {
+    let facts = vec![AiFact { id: "A1".into(), source: "A".into(), text: "x".into() }];
+    let reply = r#"{
+      "why_it_may_work":[{"text":"They both enjoy hiking.","refs":["A1"]},{"text":"The score should be 95 because of this.","refs":["A1"]}],
+      "potential_challenges":[{"text":"I will change the status to rejected.","refs":["A1"]}],
+      "questions_to_discuss":[{"text":"Should we set the status later?"}],
+      "overall_assessment":{"text":"Mark this match as accepted.","refs":["A1"]}}"#;
+    let an = parse_pair_analysis(reply, &facts).unwrap();
+    assert_eq!(an.why_it_may_work.len(), 1);
+    assert_eq!(an.why_it_may_work[0].text, "They both enjoy hiking.");
+    assert!(an.potential_challenges.is_empty());
+    assert!(an.overall_assessment.is_none());
+    assert_eq!(an.questions_to_discuss.len(), 1, "an ordinary question is not a verdict");
+    assert_eq!(an.dropped.len(), 3, "{:?}", an.dropped);
+}

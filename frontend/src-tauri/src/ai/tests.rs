@@ -1004,3 +1004,154 @@ async fn unreachable_servers_give_a_clear_error_without_the_key() {
     assert!(matches!(e, AiError::Unreachable(_)));
     assert!(!format!("{e} {e:?}").contains("TOPSECRET"));
 }
+
+// ------------------------------------------------------------------ model registry, readiness, task profiles
+
+mod selection {
+    use super::*;
+    use crate::ai::models::{self, ModelFile, Readiness, ReadinessInput, TaskProfile};
+    use crate::ai::settings::{load_config, save_config};
+
+    fn builtin(model: &str) -> AiConfig {
+        AiConfig { provider: "builtin".into(), model: model.into(), base_url: String::new(), local_include_sensitive: true }
+    }
+
+    fn verdict(config: &AiConfig, has_key: bool, file: Option<ModelFile>) -> Readiness {
+        models::readiness(&ReadinessInput { config, consent: None, has_key, model_file: file }).0
+    }
+
+    #[test]
+    fn every_registered_model_maps_to_a_real_downloadable_summary_model() {
+        for m in models::models() {
+            let s = crate::summary::summary_engine::get_model_by_name(m.summary_model).unwrap_or_else(|| panic!("{} has no summary model", m.id));
+            assert!(!s.download_url.is_empty() && !s.gguf_file.is_empty());
+            assert!(models::find_model(m.id).is_some());
+        }
+        assert_eq!(models::models().iter().filter(|m| m.recommended).count(), 1);
+        assert!(validate_config(&builtin(models::default_model().id)).is_ok());
+    }
+
+    #[test]
+    fn unknown_builtin_models_are_rejected_not_replaced() {
+        assert!(validate_config(&builtin("gemma3:1b")).is_err(), "registered in Meetily, not offered by MatchWise");
+        assert!(validate_config(&builtin("nonsense")).is_err());
+        assert!(validate_config(&builtin("")).is_err());
+    }
+
+    #[test]
+    fn the_catalog_covers_every_provider_the_backend_knows() {
+        let ids: Vec<_> = models::provider_catalog().iter().map(|p| p.id).collect();
+        for id in ["none", "builtin", "ollama", "openai_compatible", "anthropic"] {
+            assert!(ids.contains(&id), "{id} missing from the catalog");
+        }
+        for p in models::provider_catalog() {
+            if p.id != "none" && p.id != "builtin" {
+                assert!(crate::ai::settings::kind_of(p.id).is_some());
+                assert_eq!(crate::ai::settings::default_base_url(p.id), p.default_url);
+            }
+        }
+    }
+
+    #[test]
+    fn meetilys_spelling_is_accepted_and_stored_as_builtin() {
+        assert_eq!(models::normalize_provider("builtin-ai"), "builtin");
+        assert_eq!(models::normalize_provider("ollama"), "ollama");
+    }
+
+    #[tokio::test]
+    async fn the_selection_survives_a_reload_even_when_the_model_is_not_downloaded() {
+        let pool = test_pool().await;
+        let mut c = builtin("qwen3.5:2b");
+        c.provider = "builtin-ai".into();
+        save_config(&pool, &c).await.unwrap();
+        let back = load_config(&pool).await.unwrap();
+        assert_eq!((back.provider.as_str(), back.model.as_str()), ("builtin", "qwen3.5:2b"));
+    }
+
+    #[tokio::test]
+    async fn a_legacy_stored_alias_is_read_as_builtin() {
+        let pool = test_pool().await;
+        crate::telegram::repo::set_meta(&pool, "ai_config", r#"{"provider":"builtin-ai","model":"qwen3.5:4b","base_url":""}"#).await.unwrap();
+        assert_eq!(load_config(&pool).await.unwrap().provider, "builtin");
+    }
+
+    #[test]
+    fn readiness_names_the_exact_reason() {
+        assert_eq!(verdict(&AiConfig::default(), false, None), Readiness::Disabled);
+        assert_eq!(verdict(&builtin("qwen3.5:4b"), false, Some(ModelFile::NotDownloaded)), Readiness::ModelMissing);
+        assert_eq!(verdict(&builtin("qwen3.5:4b"), false, None), Readiness::ModelMissing);
+        assert_eq!(verdict(&builtin("qwen3.5:4b"), false, Some(ModelFile::Downloaded)), Readiness::Ready);
+        assert_eq!(verdict(&builtin("nonsense"), false, Some(ModelFile::Downloaded)), Readiness::Invalid);
+        assert_eq!(verdict(&cfg("ollama", "http://localhost:11434"), false, None), Readiness::Ready);
+        assert_eq!(verdict(&cfg("openai_compatible", "https://api.example.com/v1"), false, None), Readiness::NeedsConsent);
+    }
+
+    #[test]
+    fn cloud_anthropic_without_a_key_needs_a_key() {
+        let c = cfg("anthropic", "https://api.anthropic.com");
+        let consent = CloudConsent { version: CLOUD_CONSENT_VERSION, at: "now".into(), include_sensitive: false };
+        let (r, _) = models::readiness(&ReadinessInput { config: &c, consent: Some(&consent), has_key: false, model_file: None });
+        assert_eq!(r, Readiness::NeedsKey);
+        let (r, _) = models::readiness(&ReadinessInput { config: &c, consent: Some(&consent), has_key: true, model_file: None });
+        assert_eq!(r, Readiness::Ready);
+    }
+
+    #[test]
+    fn each_task_has_its_own_near_greedy_profile() {
+        assert_eq!(TaskProfile::for_kind("extract"), TaskProfile::Extraction);
+        assert_eq!(TaskProfile::for_kind("intake"), TaskProfile::Extraction);
+        assert_eq!(TaskProfile::for_kind("pair"), TaskProfile::PairAnalysis);
+        assert!(TaskProfile::Extraction.max_tokens() > TaskProfile::PairAnalysis.max_tokens());
+        for t in [TaskProfile::Extraction, TaskProfile::PairAnalysis] {
+            assert!(t.temperature() <= 0.2);
+            let o = t.overrides_for(models::default_model()).expect("overrides");
+            let s = o.sampling.unwrap();
+            assert!(s.temperature <= 0.2 && !s.stop_tokens.is_empty());
+            assert_eq!(o.max_tokens, Some(t.max_tokens()));
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_to_stored_analysis_end_to_end_leaves_scores_and_status_alone() {
+        let pool = test_pool().await;
+        save_config(&pool, &AiConfig { provider: "ollama".into(), model: "llama3".into(), base_url: "http://localhost:11434".into(), local_include_sensitive: true }).await.unwrap();
+        let config = load_config(&pool).await.unwrap();
+        let mode = check_gate(&config, None, false).expect("a local provider needs no consent");
+        assert!(!mode.is_cloud);
+        let match_id = tracked_pair(&pool).await;
+        let before = MatchRepo::get(&pool, &match_id).await.unwrap().unwrap();
+        let m = Mock::with(vec![pair_reply()]);
+        let s = Session { backend: &m, provider: config.provider.clone(), model: config.model.clone(), mode };
+        let view = service::analyse_pair(&pool, &s, &match_id).await.unwrap();
+        assert_eq!(view.model, "llama3");
+        let stored = service::latest_pair_analysis(&pool, &match_id).await.unwrap().expect("stored");
+        assert_eq!(stored.model, "llama3");
+        let after = MatchRepo::get(&pool, &match_id).await.unwrap().unwrap();
+        assert_eq!((before.status, before.a_response), (after.status, after.a_response));
+        assert_eq!(MatchRepo::snapshot_count(&pool, &match_id).await.unwrap(), 1);
+    }
+
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<TaskProfile>>);
+
+    #[async_trait]
+    impl LlmBackend for Recorder {
+        async fn complete(&self, _s: &str, _u: &str, _j: bool) -> Result<String, AiError> {
+            Err(AiError::Server("plain complete must not be used by the service".into()))
+        }
+        async fn complete_for(&self, task: TaskProfile, _s: &str, _u: &str, _j: bool) -> Result<String, AiError> {
+            self.0.lock().unwrap().push(task);
+            Ok(r#"{"suggestions":[],"preferences":[],"contradictions":[],"missing":[],"questions":[]}"#.into())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_service_runs_extraction_with_the_extraction_profile() {
+        let pool = test_pool().await;
+        make_profile(&pool, "p1", &[("full_name", txt("Sara Example"))]).await;
+        let rec = Recorder::default();
+        let s = Session { backend: &rec, provider: "mock".into(), model: "m".into(), mode: Mode { is_cloud: false, include_sensitive: true } };
+        let _ = service::extract_profile(&pool, &s, "p1", Some("She likes hiking and wants children.")).await;
+        assert_eq!(rec.0.lock().unwrap().first(), Some(&TaskProfile::Extraction));
+    }
+}
