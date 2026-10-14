@@ -16,11 +16,13 @@ export function TelegramPanel({ profileId }: { profileId: string }) {
   const [text, setText] = useState('');
   const [showSent, setShowSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const l = await invoke<TelegramLink>('tg_get_link', { profileId });
       setLink(l);
+      setLoadError(null);
       if (l.linked) {
         setMessages(await invoke<TelegramMessage[]>('tg_messages', { profileId }));
         setOutbox(await invoke<OutboxItem[]>('tg_outbox', { profileId }));
@@ -29,7 +31,7 @@ export function TelegramPanel({ profileId }: { profileId: string }) {
         }
       }
     } catch (e) {
-      toast.error(`${e}`);
+      setLoadError(`${e}`);
     }
   }, [profileId]);
 
@@ -45,7 +47,21 @@ export function TelegramPanel({ profileId }: { profileId: string }) {
     try { await fn(); } catch (e) { toast.error(`${e}`); } finally { setBusy(false); }
   };
 
-  if (!link) return null;
+  if (!link) {
+    return (
+      <div className="bg-white rounded-lg border p-4 text-sm">
+        <h2 className="font-medium mb-1">Telegram</h2>
+        {loadError ? (
+          <div className="text-red-700 flex items-center gap-2">
+            Could not load Telegram: {loadError}
+            <Button size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+          </div>
+        ) : (
+          <p className="text-gray-500">Loading…</p>
+        )}
+      </div>
+    );
+  }
   const copy = (s: string) => navigator.clipboard?.writeText(s).then(() => toast.success('Copied')).catch(() => toast.error('Could not copy'));
 
   return (

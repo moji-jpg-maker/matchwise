@@ -31,10 +31,13 @@ function MatchPage() {
   const [existingId, setExistingId] = useState<string | null>(null);
   const [showRules, setShowRules] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [setsLoaded, setSetsLoaded] = useState(false);
 
   // ---- tracked match (record mode)
   const loadDetail = useCallback(async () => {
     if (!matchId) return;
+    setLoadError(null);
     try {
       const [d, catalog] = await Promise.all([
         invoke<MatchDetail>('mm_get_match', { id: matchId }),
@@ -43,6 +46,7 @@ function MatchPage() {
       setDetail(d);
       setDims(catalog);
     } catch (e) {
+      setLoadError(`${e}`);
       toast.error(`${e}`);
     }
   }, [matchId]);
@@ -65,7 +69,10 @@ function MatchPage() {
         setNames({ a: nameOf(pa, 'Person A'), b: nameOf(pb, 'Person B') });
         setExistingId(existing);
       } catch (e) {
+        setLoadError(`${e}`);
         toast.error(`${e}`);
+      } finally {
+        setSetsLoaded(true);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,6 +103,17 @@ function MatchPage() {
   };
 
   if (!matchId && (!a || !b)) return <div className="p-6">Choose two profiles to compare.</div>;
+
+  if (loadError && (matchId ? !detail : !view))
+    return (
+      <div className="p-6 space-y-3">
+        <div className="text-red-700">Could not load this {matchId ? 'match' : 'comparison'}: {loadError}</div>
+        <div className="flex gap-2">
+          {matchId && <Button variant="outline" onClick={() => void loadDetail()}>Retry</Button>}
+          <Button variant="ghost" onClick={() => router.push(matchId ? '/matches' : '/profiles')}>Back</Button>
+        </div>
+      </div>
+    );
 
   const title = matchId ? `${detail?.name_a || 'Person A'} ↔ ${detail?.name_b || 'Person B'}` : `${names.a} ↔ ${names.b}`;
 
@@ -137,7 +155,12 @@ function MatchPage() {
           </>
         )}
 
-        {!matchId && !view && <div className="text-gray-500">Scoring…</div>}
+        {!matchId && !view && setsLoaded && sets.length === 0 && (
+          <div className="text-gray-500">
+            No rule sets yet. <button className="underline" onClick={() => router.push('/rules')}>Create a rule set</button> to score this pair.
+          </div>
+        )}
+        {!matchId && !view && !(setsLoaded && sets.length === 0) && <div className="text-gray-500">Scoring…</div>}
         {!matchId && view && (
           <>
             <ScoreCardView card={view.scorecard} nameA={names.a} nameB={names.b} />

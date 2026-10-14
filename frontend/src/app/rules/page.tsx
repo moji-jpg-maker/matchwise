@@ -6,12 +6,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { RuleSetSummary } from '@/types/matchmaking';
 
 export default function RuleSetsPage() {
   const router = useRouter();
   const [sets, setSets] = useState<RuleSetSummary[]>([]);
   const [showArchived, setShowArchived] = useState(false);
+  const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -35,6 +37,11 @@ export default function RuleSetsPage() {
     }
   };
 
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? sets.filter((s) => s.name.toLowerCase().includes(needle) || (s.description ?? '').toLowerCase().includes(needle))
+    : sets;
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto p-6 space-y-5">
@@ -53,14 +60,24 @@ export default function RuleSetsPage() {
           </Button>
         </div>
 
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-          Show archived
-        </label>
+        <div className="flex items-center gap-4">
+          <Input className="max-w-xs" placeholder="Search rule sets" aria-label="Search rule sets" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+            Show archived
+          </label>
+          {query && (
+            <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear</Button>
+          )}
+        </div>
 
         <div className="bg-white rounded-lg border divide-y">
-          {sets.length === 0 && !loading && <div className="p-6 text-center text-sm text-gray-500">No rule sets yet.</div>}
-          {sets.map((s) => (
+          {visible.length === 0 && !loading && (
+            <div className="p-6 text-center text-sm text-gray-500">
+              {sets.length === 0 ? 'No rule sets yet.' : 'No rule sets match your search.'}
+            </div>
+          )}
+          {visible.map((s) => (
             <div key={s.id} className="p-4 flex items-center gap-4">
               <button className="flex-1 min-w-0 text-left" onClick={() => router.push(`/rule-set?id=${encodeURIComponent(s.id)}`)}>
                 <div className="font-medium">

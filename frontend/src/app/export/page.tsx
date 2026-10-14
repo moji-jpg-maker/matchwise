@@ -13,11 +13,14 @@ export default function ExportPage() {
   const [summary, setSummary] = useState<DatasetSummary | null>(null);
   const [doc, setDoc] = useState<ExportDoc | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       setSummary(await invoke<DatasetSummary>('mm_outcome_dataset_summary'));
+      setLoadError(null);
     } catch (e) {
+      setLoadError(`${e}`);
       toast.error(`Could not read the decision data: ${e}`);
     }
   }, []);
@@ -79,7 +82,14 @@ export default function ExportPage() {
         <div className="bg-white rounded-lg border p-5 space-y-4">
           <h2 className="font-medium">What is here</h2>
           {!summary ? (
-            <p className="text-sm text-gray-500">Reading…</p>
+            loadError ? (
+              <div className="space-y-2">
+                <p className="text-sm text-red-700">Could not read the decision data: {loadError}</p>
+                <Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">Reading…</p>
+            )
           ) : (
             <>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -195,4 +205,3 @@ function Stat({ label, value }: { label: string; value: number }) {
     </div>
   );
 }
-

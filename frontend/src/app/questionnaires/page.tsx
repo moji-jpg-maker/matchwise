@@ -80,14 +80,20 @@ export default function QuestionnairesPage() {
   const [open, setOpen] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       const [l, d] = await Promise.all([invoke<InstrumentView[]>('q_list_instruments', { includeArchived: showArchived }), invoke<DimensionDef[]>('mm_dimension_catalog')]);
       setList(l);
       setDims(d);
     } catch (e) {
+      setLoadError(`${e}`);
       toast.error(`${e}`);
+    } finally {
+      setLoading(false);
     }
   }, [showArchived]);
   useEffect(() => { void load(); }, [load]);
@@ -133,6 +139,16 @@ export default function QuestionnairesPage() {
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Show archived</label>
 
         <div className="space-y-3">
+          {loading && <div className="text-sm text-gray-500">Loading…</div>}
+          {loadError && !loading && (
+            <div className="bg-white rounded-lg border p-6 text-center space-y-2">
+              <p className="text-sm text-red-700">Could not load questionnaires: {loadError}</p>
+              <Button variant="outline" size="sm" onClick={() => { setLoading(true); void load(); }}>Retry</Button>
+            </div>
+          )}
+          {!loading && !loadError && list.length === 0 && (
+            <div className="bg-white rounded-lg border p-6 text-center text-sm text-gray-500">No questionnaires yet.</div>
+          )}
           {list.map((v) => {
             const i = v.instrument;
             const id = `${i.key}@${i.version}`;

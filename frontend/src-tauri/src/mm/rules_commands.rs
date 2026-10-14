@@ -265,8 +265,16 @@ pub async fn mm_find_matches(
     rule_set_id: String,
     limit: Option<usize>,
     include_ineligible: Option<bool>,
-) -> Result<Vec<MatchCandidate>, String> {
-    find_matches(state.db_manager.pool(), &profile_id, &rule_set_id, limit, include_ineligible.unwrap_or(false)).await
+) -> Result<MatchSearch, String> {
+    let (candidates, total) =
+        find_matches_with_total(state.db_manager.pool(), &profile_id, &rule_set_id, limit, include_ineligible.unwrap_or(false)).await?;
+    Ok(MatchSearch { candidates, total })
+}
+
+#[derive(Serialize)]
+pub struct MatchSearch {
+    pub candidates: Vec<MatchCandidate>,
+    pub total: usize,
 }
 
 /// The body of `mm_find_matches`, split out so it can be exercised without a Tauri `State`. Nothing about the result
@@ -278,6 +286,17 @@ pub async fn find_matches(
     limit: Option<usize>,
     include_ineligible: bool,
 ) -> Result<Vec<MatchCandidate>, String> {
+    find_matches_with_total(pool, profile_id, rule_set_id, limit, include_ineligible).await.map(|(out, _)| out)
+}
+
+/// [`find_matches`] plus how many candidates matched before the limit cut the list.
+pub async fn find_matches_with_total(
+    pool: &sqlx::SqlitePool,
+    profile_id: &str,
+    rule_set_id: &str,
+    limit: Option<usize>,
+    include_ineligible: bool,
+) -> Result<(Vec<MatchCandidate>, usize), String> {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let (_, set, _) = MmRepository::get_rule_set(pool, &rule_set_id, None).await.map_err(err)?.ok_or("Rule set not found")?;
     let config = ScoringConfigRepo::effective_for_rule_set(pool, &rule_set_id).await.map_err(err)?;
@@ -318,6 +337,7 @@ pub async fn find_matches(
             .then(y.confidence.unwrap_or(-1.0).partial_cmp(&x.confidence.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal))
             .then(x.unknown_count.cmp(&y.unknown_count))
     });
+    let total = out.len();
     out.truncate(limit.unwrap_or(50).min(500));
     // Log what was actually shown: one row per returned candidate, in the order returned. Candidates filtered out or
     // cut by the limit are not logged -- they were never on screen, and a browsing history that claims otherwise
@@ -347,5 +367,5 @@ pub async fn find_matches(
     )
     .await
     .map_err(err)?;
-    Ok(out)
+    Ok((out, total))
 }

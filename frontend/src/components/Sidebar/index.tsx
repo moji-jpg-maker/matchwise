@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Users, ListChecks, HeartHandshake, Send, Sparkles, ClipboardList, Database, Gauge, Inbox } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
+import { confirmNavigation } from '@/lib/navigation-guard';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
@@ -39,7 +40,16 @@ interface SidebarItem {
 }
 
 const Sidebar: React.FC = () => {
-  const router = useRouter();
+  const nextRouter = useRouter();
+  const router = useMemo(
+    () => ({
+      ...nextRouter,
+      push: (href: string, options?: Parameters<typeof nextRouter.push>[1]) => {
+        if (confirmNavigation()) nextRouter.push(href, options);
+      },
+    }),
+    [nextRouter]
+  );
   const pathname = usePathname();
   const {
     currentMeeting,
@@ -691,8 +701,7 @@ const Sidebar: React.FC = () => {
               toggleFolder(item.id);
             } else {
               setCurrentMeeting({ id: item.id, title: item.title });
-              const basePath = item.id.startsWith('intro-call') ? '/' :
-                item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
+              const basePath = item.id.startsWith('intro-call') ? '/' : `/meeting-details?id=${item.id}`;
               router.push(basePath);
             }
           }}

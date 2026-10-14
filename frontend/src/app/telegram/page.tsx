@@ -43,9 +43,15 @@ export default function TelegramSettingsPage() {
   useEffect(() => { void load(); }, [load]);
 
   // keep the running/last-error indicators fresh while the page is open
+  const [pollFailures, setPollFailures] = useState(0);
   useEffect(() => {
     const t = setInterval(async () => {
-      try { setStatus(await invoke<TelegramStatus>('tg_get_status')); } catch { /* ignore */ }
+      try {
+        setStatus(await invoke<TelegramStatus>('tg_get_status'));
+        setPollFailures(0);
+      } catch {
+        setPollFailures((n) => n + 1);
+      }
     }, 5000);
     return () => clearInterval(t);
   }, []);
@@ -85,6 +91,12 @@ export default function TelegramSettingsPage() {
             <p className="text-sm text-gray-500">Let candidates complete profiles, answer introductions and message you through your own bot.</p>
           </div>
         </div>
+
+        {pollFailures >= 3 && (
+          <div className="bg-red-50 border border-red-200 rounded p-2 text-sm text-red-800">
+            Bot status is unavailable (the last {pollFailures} checks failed). The information below may be out of date.
+          </div>
+        )}
 
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm space-y-1">
           <div className="font-medium">What stays on this computer, and what does not</div>

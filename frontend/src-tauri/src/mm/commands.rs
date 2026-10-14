@@ -212,6 +212,7 @@ pub async fn mm_search_profiles(
     state: State<'_, AppState>,
     conditions: Vec<Condition>,
     include_unknown: Option<bool>,
+    include_deactivated: Option<bool>,
 ) -> Result<Vec<SearchResultRow>, String> {
     let pool = state.db_manager.pool();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
@@ -225,7 +226,7 @@ pub async fn mm_search_profiles(
         }
     }
     let filter = conditions_to_expr(&conditions)?;
-    let stored = MmRepository::list_profiles(pool, false).await.map_err(err)?;
+    let stored = MmRepository::list_profiles(pool, include_deactivated.unwrap_or(false)).await.map_err(err)?;
     let profiles: Vec<Profile> = stored.iter().map(|s| s.profile.clone()).collect();
     let hits = search(&profiles, &filter, include_unknown.unwrap_or(false));
     let by_id: BTreeMap<&str, &StoredProfile> = stored.iter().map(|s| (s.profile.id.as_str(), s)).collect();

@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { ArrowLeft, FileUp, ListOrdered, CheckCheck } from 'lucide-react';
+import { ArrowLeft, FileUp, ListOrdered, CheckCheck, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -35,6 +35,12 @@ const readFile = async (file: File): Promise<{ text: string | null; entries: str
   return { text: raw, entries: null };
 };
 
+const countEntries = (corpus: string, entries: string[] | null): number => {
+  if (entries) return entries.filter((e) => e.trim() !== '').length;
+  const blocks = /^\s*-{3,}\s*$/m.test(corpus) ? corpus.split(/^\s*-{3,}\s*$/m) : corpus.split(/\n\s*\n/);
+  return blocks.filter((b) => b.trim() !== '').length;
+};
+
 export default function IntakePage() {
   const router = useRouter();
   const [target, setTarget] = useState('');
@@ -45,6 +51,39 @@ export default function IntakePage() {
   const [report, setReport] = useState<IntakeBatchReport | null>(null);
   const [accepted, setAccepted] = useState<IntakeAcceptReport | null>(null);
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<'idle' | 'reading' | 'accepting'>('idle');
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (phase === 'idle') {
+      setElapsed(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [phase]);
+
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = window.localStorage.getItem('intake:lastBatch');
+    } catch {
+      saved = null;
+    }
+    if (!saved) return;
+    const id = saved;
+    invoke<IntakeBatchReport>('ai_intake_report', { batchId: id })
+      .then((r) => {
+        setBatchId(id);
+        setReport(r);
+      })
+      .catch(() => {
+        try {
+          window.localStorage.removeItem('intake:lastBatch');
+        } catch {}
+      });
+  }, []);
 
   const loadFile = async (file: File) => {
     try {
@@ -67,6 +106,7 @@ export default function IntakePage() {
       return;
     }
     setBusy(true);
+    setPhase('reading');
     setAccepted(null);
     try {
       const id = `intake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -78,18 +118,23 @@ export default function IntakePage() {
       });
       setBatchId(id);
       setReport(r);
+      try {
+        window.localStorage.setItem('intake:lastBatch', id);
+      } catch {}
       if (!r.parsed) toast.message('Saved, but nothing was read', { description: r.note ?? undefined });
       else toast.success(`${r.created} created, ${r.suggestions} suggestion(s) to review`);
     } catch (e) {
       toast.error(`${e}`);
     } finally {
       setBusy(false);
+      setPhase('idle');
     }
   };
 
   const acceptAll = async () => {
     if (!batchId) return;
     setBusy(true);
+    setPhase('accepting');
     try {
       const r = await invoke<IntakeAcceptReport>('ai_intake_accept_all', { batchId });
       setAccepted(r);
@@ -98,6 +143,7 @@ export default function IntakePage() {
       toast.error(`${e}`);
     } finally {
       setBusy(false);
+      setPhase('idle');
     }
   };
 
@@ -168,6 +214,26 @@ export default function IntakePage() {
             )}
           </div>
         </div>
+
+        {phase !== 'idle' && (
+          <div className="bg-white rounded-lg border p-4 space-y-2" role="status" aria-live="polite">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {phase === 'reading'
+                ? `Reading ${countEntries(corpus, entries)} entr${countEntries(corpus, entries) === 1 ? 'y' : 'ies'} with the AI…`
+                : 'Accepting suggestions…'}
+              <span className="text-gray-500 font-normal">{elapsed}s</span>
+            </div>
+            <div className="h-1.5 bg-gray-100 rounded overflow-hidden">
+              <div className="h-full w-1/3 bg-blue-500 rounded animate-pulse" />
+            </div>
+            <p className="text-xs text-gray-500">
+              {phase === 'reading'
+                ? 'This can take a while for a long corpus. Stay on this page; the result appears below when it finishes.'
+                : 'Applying every suggestion that is safe to accept.'}
+            </p>
+          </div>
+        )}
 
         {report && (
           <div className="bg-white rounded-lg border">

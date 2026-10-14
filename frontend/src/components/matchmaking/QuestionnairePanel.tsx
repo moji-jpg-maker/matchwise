@@ -19,8 +19,11 @@ export function QuestionnairePanel({ profileId, onScores }: { profileId: string;
   const [pick, setPick] = useState('');
   const [detail, setDetail] = useState<QuestionnaireDetail | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       const [ins, res] = await Promise.all([
         invoke<InstrumentView[]>('q_list_instruments', { includeArchived: false }),
@@ -31,7 +34,10 @@ export function QuestionnairePanel({ profileId, onScores }: { profileId: string;
       setResponses(res);
       setPick((p) => p || latest[0]?.instrument.key || '');
     } catch (e) {
+      setLoadError(`${e}`);
       toast.error(`${e}`);
+    } finally {
+      setLoading(false);
     }
   }, [profileId]);
   useEffect(() => { void load(); }, [load]);
@@ -86,7 +92,14 @@ export function QuestionnairePanel({ profileId, onScores }: { profileId: string;
         <span className="text-xs text-gray-500">They can answer on Telegram (/questionnaires) if linked, or you can enter their answers below.</span>
       </div>
 
-      {responses.length === 0 && <p className="p-4 text-sm text-gray-500">No questionnaires yet.</p>}
+      {loading && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+      {loadError && !loading && (
+        <div className="p-4 text-sm text-red-700 flex items-center gap-2">
+          Could not load questionnaires: {loadError}
+          <Button size="sm" variant="outline" onClick={() => { setLoading(true); void load(); }}>Retry</Button>
+        </div>
+      )}
+      {!loading && !loadError && responses.length === 0 && <p className="p-4 text-sm text-gray-500">No questionnaires yet.</p>}
       <div className="divide-y">
         {responses.map((r) => (
           <div key={r.id} className="p-4 space-y-2">

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { FieldDef, ProfileView, RecordValue, UpdateResult, Value, kindName, kindOptions, recordFields } from '@/types/matchmaking';
 import { RecordsInput } from '@/components/matchmaking/RecordsInput';
 import { PreferencesPanel } from '@/components/matchmaking/PreferencesPanel';
+import { setNavigationGuard } from '@/lib/navigation-guard';
 import { MatchesPanel } from '@/components/matchmaking/MatchesPanel';
 import { TelegramPanel } from '@/components/matchmaking/TelegramPanel';
 import { AiPanel } from '@/components/matchmaking/AiPanel';
@@ -31,9 +32,11 @@ function ProfileEditor() {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [intakeNote, setIntakeNote] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
+    setLoadError(null);
     try {
       const [f, p] = await Promise.all([
         invoke<FieldDef[]>('mm_list_fields'),
@@ -44,13 +47,43 @@ function ProfileEditor() {
       setDraft({});
       invoke<string | null>('mm_intake_note', { id }).then(setIntakeNote).catch(() => setIntakeNote(null));
     } catch (e) {
+      setLoadError(`${e}`);
       toast.error(`Could not load profile: ${e}`);
     }
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
 
+  const dirty = Object.keys(draft).length > 0;
+
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+
+  useEffect(() => {
+    setNavigationGuard(dirty ? 'You have unsaved changes. Leave without saving?' : null);
+    return () => setNavigationGuard(null);
+  }, [dirty]);
+
+  const goTo = (path: string) => {
+    if (dirty && !window.confirm('You have unsaved changes. Leave without saving?')) return;
+    router.push(path);
+  };
+
   if (!id) return <div className="p-6">No profile selected.</div>;
+  if (loadError && !profile)
+    return (
+      <div className="p-6 space-y-3">
+        <div className="text-red-700">Could not load this profile: {loadError}</div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => void load()}>Retry</Button>
+          <Button variant="ghost" onClick={() => router.push('/profiles')}>Back to profiles</Button>
+        </div>
+      </div>
+    );
   if (!profile) return <div className="p-6 text-gray-500">Loading…</div>;
 
   const current = (key: string): Value | undefined => {
@@ -58,7 +91,6 @@ function ProfileEditor() {
     return profile.fields[key]?.value;
   };
   const setField = (key: string, v: Value | null) => setDraft((d) => ({ ...d, [key]: v }));
-  const dirty = Object.keys(draft).length > 0;
 
   const save = async () => {
     setSaving(true);
@@ -152,7 +184,7 @@ function ProfileEditor() {
       <div className="max-w-3xl mx-auto p-6 space-y-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button onClick={() => router.push('/profiles')} className="p-2 rounded-lg hover:bg-gray-200" aria-label="Back">
+            <button onClick={() => goTo('/profiles')} className="p-2 rounded-lg hover:bg-gray-200" aria-label="Back">
               <ArrowLeft className="w-5 h-5" />
             </button>
             <h1 className="text-2xl font-semibold">
@@ -160,7 +192,10 @@ function ProfileEditor() {
             </h1>
             {profile.status === 'deactivated' && <span className="text-xs px-2 py-0.5 rounded bg-gray-200">deactivated</span>}
           </div>
-          <Button onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => goTo(`/matches?profile=${encodeURIComponent(id)}`)}>Tracked matches</Button>
+            <Button onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</Button>
+          </div>
         </div>
 
         <div className="bg-white rounded-lg border p-4 text-sm flex items-center justify-between">

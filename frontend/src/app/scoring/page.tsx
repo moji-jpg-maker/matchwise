@@ -6,14 +6,17 @@ import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { OrderingResult, RankingComparison, RankingReadiness, ScoringConfigSummary } from '@/types/matchmaking';
+import { Input } from '@/components/ui/input';
+import { ExposureSummary, OrderingResult, RankingComparison, RankingReadiness, ScoringConfigSummary } from '@/types/matchmaking';
 
 export default function ScoringConfigsPage() {
   const router = useRouter();
   const [configs, setConfigs] = useState<ScoringConfigSummary[]>([]);
   const [readiness, setReadiness] = useState<RankingReadiness | null>(null);
   const [comparison, setComparison] = useState<RankingComparison | null>(null);
+  const [exposure, setExposure] = useState<ExposureSummary | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -34,6 +37,7 @@ export default function ScoringConfigsPage() {
   useEffect(() => {
     invoke<RankingReadiness>('mm_ranking_readiness').then(setReadiness).catch(() => setReadiness(null));
     invoke<RankingComparison>('mm_ranking_comparison').then(setComparison).catch(() => setComparison(null));
+    invoke<ExposureSummary>('mm_exposure_summary').then(setExposure).catch(() => setExposure(null));
   }, []);
 
   const toggleArchive = async (c: ScoringConfigSummary) => {
@@ -44,6 +48,11 @@ export default function ScoringConfigsPage() {
       toast.error(`${e}`);
     }
   };
+
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? configs.filter((c) => c.name.toLowerCase().includes(needle) || (c.description ?? '').toLowerCase().includes(needle))
+    : configs;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -66,14 +75,24 @@ export default function ScoringConfigsPage() {
           </Button>
         </div>
 
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-          Show archived
-        </label>
+        <div className="flex items-center gap-4">
+          <Input className="max-w-xs" placeholder="Search scoring configs" aria-label="Search scoring configs" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+            Show archived
+          </label>
+          {query && (
+            <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear</Button>
+          )}
+        </div>
 
         <div className="bg-white rounded-lg border divide-y">
-          {configs.length === 0 && !loading && <div className="p-6 text-center text-sm text-gray-500">No scoring configs yet.</div>}
-          {configs.map((c) => (
+          {visible.length === 0 && !loading && (
+            <div className="p-6 text-center text-sm text-gray-500">
+              {configs.length === 0 ? 'No scoring configs yet.' : 'No scoring configs match your search.'}
+            </div>
+          )}
+          {visible.map((c) => (
             <div key={c.id} className="p-4 flex items-center gap-4">
               <button className="flex-1 min-w-0 text-left" onClick={() => router.push(`/scoring-config?id=${encodeURIComponent(c.id)}`)}>
                 <div className="font-medium">
@@ -107,6 +126,13 @@ export default function ScoringConfigsPage() {
             <p className="text-sm text-gray-500">Reading…</p>
           ) : (
             <>
+              {exposure && (
+                <p className="text-xs text-gray-500">
+                  {exposure.searches} searches logged, {exposure.exposures} candidates shown
+                  {exposure.first_at ? ` since ${new Date(exposure.first_at).toLocaleDateString()}` : ''}
+                  {exposure.last_at ? `, last on ${new Date(exposure.last_at).toLocaleDateString()}` : ''}.
+                </p>
+              )}
               <p className={`text-sm ${readiness.ready ? 'text-green-800' : 'text-amber-700'}`}>{readiness.state}</p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <Stat label="Finished matches" value={readiness.finished} />
