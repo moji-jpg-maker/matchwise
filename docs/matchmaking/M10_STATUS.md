@@ -68,7 +68,7 @@ existing Extraction and PairAnalysis tasks are covered.
 - **No real model was run.** Neither the built-in sidecar with a downloaded GGUF, nor a real Ollama, nor a cloud
   provider. Output quality, whether the 3072/1536 token caps are enough, and the timeouts are unmeasured.
 - The three loopback HTTP tests, which should be run on a normal machine.
-- The page was type-checked, not opened. The download button and progress event were not exercised.
+- The page was type-checked, not opened. The download button and progress event were not exercised in the running app. The event handling is covered by `frontend/tests/lib/download-progress.test.ts` (model filter, completion only on `completed`, error, cancel, clamping).
 - The `AUTHORITY_PHRASES` list is a short English list; it will not catch every phrasing or other languages.
 
 ## Differences from the plan

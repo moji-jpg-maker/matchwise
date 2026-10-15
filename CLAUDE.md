@@ -27,6 +27,11 @@ Planning docs: `docs/matchmaking/PLAN.md` (roadmap) and `docs/matchmaking/M0_AUD
 - Phases 2-5 (learned ranking, agentic assistant, web/mobile/API ecosystem) are deferred and out of scope. Do not
   build toward them.
 
+### Download progress events
+- Built-in model downloads emit `builtin-ai-download-progress` with `{model, progress 0-100, downloaded_mb, total_mb, speed_mbps, status, error?}`; `status` is `downloading`, `completed`, `error` or `cancelled`.
+- `completed` is emitted only after validation finishes, so the UI must not treat `progress >= 100` as done. Filter events by `model`.
+- Use `lib/download-progress.ts` for the state transitions and `components/ui/progress.tsx` for the bar (it clamps and exposes `role="progressbar"`).
+
 ### Key Technology Stack
 - **Desktop App**: Tauri 2.x (Rust) + Next.js 14 + React 18
 - **Audio Processing**: Rust (cpal, whisper-rs, professional audio mixing)

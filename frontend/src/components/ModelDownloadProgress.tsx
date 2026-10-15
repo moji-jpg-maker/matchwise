@@ -28,7 +28,7 @@ export function ModelDownloadProgress({ status, modelName, onCancel }: ModelDown
       </div>
       
       <div className="relative">
-        <div className="w-full bg-blue-200 rounded-full h-2">
+        <div className="w-full bg-blue-200 rounded-full h-2" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(progress, 100))}>
           <div 
             className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out"
             style={{ width: `${Math.min(progress, 100)}%` }}
