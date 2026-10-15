@@ -86,7 +86,7 @@ export function AiPanel({ profileId, fields, onApplied }: { profileId: string; f
       {!settings.ready && (
         <div className="p-4 text-sm text-gray-600 flex items-center gap-3">
           <span className="flex-1">{settings.not_ready_reason}</span>
-          <Button size="sm" variant="outline" onClick={() => router.push('/ai')}>AI settings</Button>
+          <Button size="sm" variant="outline" onClick={() => router.push('/settings?tab=ai')}>AI settings</Button>
         </div>
       )}
 

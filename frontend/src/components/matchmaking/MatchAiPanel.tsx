@@ -78,7 +78,7 @@ export function MatchAiPanel({ matchId, nameA, nameB }: { matchId: string; nameA
             <Button size="sm" disabled={busy} onClick={generate}>{busy ? 'Writing…' : view ? 'Write again' : 'Explain this match'}</Button>
           </div>
         ) : (
-          <Button size="sm" variant="outline" onClick={() => router.push('/ai')}>AI settings</Button>
+          <Button size="sm" variant="outline" onClick={() => router.push('/settings?tab=ai')}>AI settings</Button>
         )}
       </div>
       {!settings.ready && !view && <p className="p-4 text-sm text-gray-600">{settings.not_ready_reason}</p>}

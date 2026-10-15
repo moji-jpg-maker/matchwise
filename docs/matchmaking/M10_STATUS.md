@@ -45,7 +45,7 @@ existing Extraction and PairAnalysis tasks are covered.
   and applies the sampling overrides.
 - `ai/service.rs`: `ask` calls `complete_for` with the profile for its call kind.
 - `ai/commands.rs`: the settings view gains `catalog`, `builtin_models` (with file state) and `readiness`.
-- `app/ai/page.tsx`, `types/matchmaking.ts`: the page renders from the catalog and model list, with no hardcoded
+- `components/AiSettings.tsx` (the "AI assistant" tab in Settings; `/ai` redirects to `/settings?tab=ai`), `types/matchmaking.ts`: the tab renders from the catalog and model list, with no hardcoded
   provider list or default model, and shows the readiness state.
 - `matchmaking-core/src/ai.rs`: pair-analysis claims that try to decide a score or status are dropped and reported in
   `dropped`. Questions are exempt (they only ask).
