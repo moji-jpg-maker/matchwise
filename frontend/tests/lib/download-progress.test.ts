@@ -4,6 +4,7 @@ import {
   applyDownloadEvent,
   clampPercent,
   formatDownloadDetail,
+  isCancelledError,
   startDownloadState,
 } from '../../src/lib/download-progress';
 
@@ -45,6 +46,19 @@ describe('download progress events', () => {
 
   test('detail text omits unknown parts', () => {
     expect(formatDownloadDetail(start)).toBe('0%');
-    expect(formatDownloadDetail({ model: 'm1', progress: 42.4, downloadedMb: 310.2, totalMb: 1200, speedMbps: 5.25 })).toBe('42% · 310 / 1200 MB · 5.3 MB/s');
+    expect(formatDownloadDetail({ model: 'm1', progress: 42.4, downloadedMb: 310.2, totalMb: 1200, speedMbps: 5.25 })).toBe('42% · 310 / 1200 MiB · 5.3 MiB/s');
+  });
+
+  test('a CANCELLED: rejection is recognised, other errors are not', () => {
+    expect(isCancelledError('CANCELLED: Download cancelled by user')).toBe(true);
+    expect(isCancelledError(new Error('CANCELLED: x'))).toBe(true);
+    expect(isCancelledError('network down')).toBe(false);
+    expect(isCancelledError(undefined)).toBe(false);
+  });
+
+  test('a foreign error event does not clear the tracked download', () => {
+    const r = applyDownloadEvent(start, { model: 'other', status: 'error', error: 'x' }, 'm1');
+    expect(r.state).toBe(start);
+    expect(r.finished).toBeNull();
   });
 });

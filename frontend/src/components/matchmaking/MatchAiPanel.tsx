@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { AiClaim, AiPairView, AiPromptPreview, AiSettings } from '@/types/matchmaking';
@@ -33,6 +34,14 @@ export function MatchAiPanel({ matchId, nameA, nameB }: { matchId: string; nameA
     }
   }, [matchId]);
   useEffect(() => { void load(); }, [load]);
+
+  // Refresh readiness when a built-in download finishes elsewhere (terminal statuses only).
+  useEffect(() => {
+    const un = listen<{ status: string }>('builtin-ai-download-progress', (ev) => {
+      if (['completed', 'cancelled', 'error'].includes(ev.payload.status)) void load();
+    });
+    return () => { void un.then((f) => f()); };
+  }, [load]);
 
   const facts = useMemo(() => Object.fromEntries((view?.facts ?? []).map((f) => [f.id, f.text])), [view]);
   const who = (id: string) => (id.startsWith('A') ? nameA : id.startsWith('B') ? nameB : id.startsWith('P') ? 'Preference' : 'Rules');
@@ -75,7 +84,7 @@ export function MatchAiPanel({ matchId, nameA, nameB }: { matchId: string; nameA
         {settings.ready ? (
           <div className="flex gap-2">
             <Button size="sm" variant="outline" disabled={busy} onClick={async () => { try { setPreview(await invoke<AiPromptPreview>('ai_preview_match', { matchId })); } catch (e) { toast.error(`${e}`); } }}>What will be sent</Button>
-            <Button size="sm" disabled={busy} onClick={generate}>{busy ? 'Writing…' : view ? 'Write again' : 'Explain this match'}</Button>
+            <Button size="sm" disabled={busy} aria-busy={busy} onClick={generate}>{busy ? 'Writing…' : view ? 'Write again' : 'Explain this match'}</Button>
           </div>
         ) : (
           <Button size="sm" variant="outline" onClick={() => router.push('/settings?tab=ai')}>AI settings</Button>

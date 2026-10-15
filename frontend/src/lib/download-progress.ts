@@ -29,6 +29,12 @@ export function clampPercent(value: number | undefined | null): number {
   return Math.min(100, Math.max(0, value));
 }
 
+/** The backend rejects a user-cancelled download with a `CANCELLED:` prefixed message. */
+export function isCancelledError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? '');
+  return msg.startsWith('CANCELLED:');
+}
+
 export function startDownloadState(model: string): DownloadState {
   return { model, progress: 0, downloadedMb: 0, totalMb: 0, speedMbps: 0 };
 }
@@ -59,7 +65,7 @@ export function applyDownloadEvent(
 
 export function formatDownloadDetail(state: DownloadState): string {
   const parts = [`${Math.round(state.progress)}%`];
-  if (state.totalMb > 0) parts.push(`${Math.round(state.downloadedMb)} / ${Math.round(state.totalMb)} MB`);
-  if (state.speedMbps > 0) parts.push(`${state.speedMbps.toFixed(1)} MB/s`);
+  if (state.totalMb > 0) parts.push(`${Math.round(state.downloadedMb)} / ${Math.round(state.totalMb)} MiB`);
+  if (state.speedMbps > 0) parts.push(`${state.speedMbps.toFixed(1)} MiB/s`);
   return parts.join(' · ');
 }

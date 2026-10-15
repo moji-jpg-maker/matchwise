@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { describePreference } from '@/lib/conditions';
@@ -35,6 +36,14 @@ export function AiPanel({ profileId, fields, onApplied }: { profileId: string; f
     }
   }, [profileId]);
   useEffect(() => { void load(); }, [load]);
+
+  // Refresh readiness when a built-in download finishes elsewhere (terminal statuses only).
+  useEffect(() => {
+    const un = listen<{ status: string }>('builtin-ai-download-progress', (ev) => {
+      if (['completed', 'cancelled', 'error'].includes(ev.payload.status)) void load();
+    });
+    return () => { void un.then((f) => f()); };
+  }, [load]);
 
   const label = (k: string) => byKey[k]?.label ?? k;
 
@@ -99,7 +108,7 @@ export function AiPanel({ profileId, fields, onApplied }: { profileId: string; f
             onChange={(e) => setExtra(e.target.value)}
           />
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy} onClick={read}>{busy ? 'Reading…' : 'Read with AI'}</Button>
+            <Button size="sm" disabled={busy} aria-busy={busy} onClick={read}>{busy ? 'Reading…' : 'Read with AI'}</Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={showPreview}>Show exactly what will be sent</Button>
           </div>
           {preview && (

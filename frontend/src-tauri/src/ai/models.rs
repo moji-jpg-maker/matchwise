@@ -203,3 +203,16 @@ pub fn readiness(i: &ReadinessInput<'_>) -> (Readiness, Option<String>) {
         Ok(_) => (Readiness::Ready, None),
     }
 }
+
+#[cfg(test)]
+mod event_key_tests {
+    use super::*;
+
+    /// The download events carry the summary-engine model name, and the UI matches them against `id`.
+    #[test]
+    fn model_id_matches_summary_model_event_key() {
+        for m in models() {
+            assert_eq!(m.id, m.summary_model, "download events would not match model {}", m.id);
+        }
+    }
+}

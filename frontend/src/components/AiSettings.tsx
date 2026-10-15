@@ -1,21 +1,15 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { AiConfig, AiLogRow, AiSettings } from '@/types/matchmaking';
 import { BuiltInAIAPI } from '@/lib/builtin-ai';
-import {
-  applyDownloadEvent,
-  DownloadEvent,
-  DownloadState,
-  formatDownloadDetail,
-  startDownloadState,
-} from '@/lib/download-progress';
+import { formatDownloadDetail } from '@/lib/download-progress';
+import { useBuiltInDownload } from '@/lib/use-builtin-download';
 
 const PROVIDER_HELP: Record<string, string> = {
   none: 'No AI features.',
@@ -45,16 +39,6 @@ export function AiSettingsPanel() {
   const [log, setLog] = useState<AiLogRow[]>([]);
   const [showLog, setShowLog] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [download, setDownload] = useState<DownloadState | null>(null);
-  const downloadRef = useRef<DownloadState | null>(null);
-  const modelRef = useRef('');
-  const errorShownRef = useRef(false);
-  const dlProgress = download ? Math.round(download.progress) : null;
-
-  const updateDownload = useCallback((next: DownloadState | null) => {
-    downloadRef.current = next;
-    setDownload(next);
-  }, []);
 
   const apply = useCallback((v: AiSettings) => {
     setS(v);
@@ -74,45 +58,19 @@ export function AiSettingsPanel() {
   }, [apply]);
   useEffect(() => { void load(); }, [load]);
 
-  useEffect(() => {
-    modelRef.current = model;
-  }, [model]);
+  const refreshAfterDownload = useCallback((finishedModel: string, status: 'completed' | 'error' | 'cancelled') => {
+    void (async () => {
+      try {
+        // Same readiness refresh the built-in model manager uses, then reload matchmaking settings.
+        if (status === 'completed') await BuiltInAIAPI.isModelReady(finishedModel, true);
+      } catch { /* the settings reload below still reports the real state */ }
+      void load();
+    })();
+  }, [load]);
 
-  useEffect(() => {
-    if (provider !== 'builtin') return;
-    const un = listen<DownloadEvent>('builtin-ai-download-progress', (ev) => {
-      const tracked = downloadRef.current?.model ?? modelRef.current;
-      const update = applyDownloadEvent(downloadRef.current, ev.payload, tracked);
-      updateDownload(update.state);
-      if (update.finished === 'error' && !errorShownRef.current) {
-        errorShownRef.current = true;
-        toast.error(update.error ?? 'Download failed');
-      }
-      if (update.finished) void load();
-    });
-    return () => { void un.then((f) => f()); };
-  }, [provider, load, updateDownload]);
-
-  const startDownload = (target: string) => {
-    errorShownRef.current = false;
-    updateDownload(startDownloadState(target));
-    BuiltInAIAPI.downloadModel(target)
-      .catch((e) => {
-        if (!errorShownRef.current) {
-          errorShownRef.current = true;
-          toast.error(`${e}`);
-        }
-      })
-      .finally(() => {
-        if (downloadRef.current?.model === target) updateDownload(null);
-        void load();
-      });
-  };
-
-  const cancelDownload = () => {
-    const target = downloadRef.current?.model;
-    if (target) BuiltInAIAPI.cancelDownload(target).catch((e) => toast.error(`${e}`));
-  };
+  const { download, start: startDownload, cancel: cancelDownload } = useBuiltInDownload(model, refreshAfterDownload);
+  const downloadingSelected = download !== null && download.model === model;
+  const dlProgress = downloadingSelected && download ? Math.round(download.progress) : null;
 
 
   const run = async (fn: () => Promise<AiSettings | void>, ok?: string) => {
@@ -168,10 +126,10 @@ export function AiSettingsPanel() {
                   <span className="text-green-700">Downloaded and ready.</span>
                 ) : (
                   <>
-                    <Button size="sm" variant="outline" disabled={dlProgress !== null || !selectedBuiltin} onClick={() => startDownload(model)}>
+                    <Button size="sm" variant="outline" disabled={download !== null || !selectedBuiltin} onClick={() => startDownload(model)}>
                       {dlProgress !== null ? `Downloading… ${dlProgress}%` : 'Download model'}
                     </Button>
-                    {dlProgress !== null && (
+                    {download !== null && (
                       <Button size="sm" variant="ghost" onClick={cancelDownload}>Cancel</Button>
                     )}
                     <span className="text-gray-500">{selectedBuiltin?.note ?? 'Choose a model from the list.'}</span>
@@ -180,7 +138,7 @@ export function AiSettingsPanel() {
               </div>
               {download && (
                 <div className="col-span-3 space-y-1">
-                  <Progress value={download.progress} aria-label={`Downloading ${download.model}`} />
+                  <Progress value={download.progress} aria-label={`Downloading ${download.model}`} aria-valuetext={formatDownloadDetail(download)} />
                   <div className="text-xs text-gray-500">{formatDownloadDetail(download)}</div>
                 </div>
               )}
