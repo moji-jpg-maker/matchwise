@@ -104,7 +104,10 @@ export function AiPanel({ profileId, fields, onApplied }: { profileId: string; f
           </div>
           {preview && (
             <div className="border rounded-md p-3 bg-gray-50 text-xs space-y-2">
-              <div className="font-medium">{preview.is_cloud ? 'This will leave your computer:' : 'This stays on your computer:'}</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-medium">{preview.is_cloud ? 'This will leave your computer:' : 'This stays on your computer:'}</div>
+                <Button size="sm" variant="ghost" onClick={() => setPreview(null)}>Close</Button>
+              </div>
               <pre className="whitespace-pre-wrap font-sans max-h-72 overflow-auto">{preview.user}</pre>
             </div>
           )}
