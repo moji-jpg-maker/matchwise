@@ -1,10 +1,12 @@
 'use client';
 
+import { fieldLabel } from '@/lib/field-label';
 import React from 'react';
 import { Plus, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { CmpOp, Expr, FieldDef, Operand, Side, Value, kindName, kindOptions } from '@/types/matchmaking';
-import { CMP_LABEL, NODE_TYPES, NodeType, convertNode, fieldOperand, hintField, litOperand, newNode } from '@/lib/rules';
+import { useI18n } from '@/i18n';
+import { CMP_LABEL, NODE_TYPES, NodeType, cmpLabel, convertNode, fieldOperand, hintField, litOperand, newNode } from '@/lib/rules';
 import { isConditionField } from '@/lib/conditions';
 
 const sel = 'border rounded-md px-2 py-1.5 text-sm bg-white';
@@ -13,9 +15,6 @@ interface FieldsProps {
   fields: FieldDef[];
   byKey: Record<string, FieldDef>;
 }
-
-/** Which person a field is read from. Directional rules read "A's partner is B". */
-const SIDE_LABEL: Record<Side, string> = { a: 'Person A', b: 'Person B' };
 
 type LitKind = 'number' | 'text' | 'bool' | 'list';
 const litKind = (v: Value): LitKind => (typeof v === 'number' ? 'number' : typeof v === 'boolean' ? 'bool' : Array.isArray(v) ? 'list' : 'text');
@@ -37,6 +36,7 @@ function OperandEditor({
   allowOffset?: boolean;
   numericOnly?: boolean;
 }) {
+  const { t, locale } = useI18n();
   const usable = fields.filter(isConditionField).filter((f) => !numericOnly || kindName(f.kind) === 'number');
   const kind: 'field' | 'lit' | 'offset' = 'field' in operand ? 'field' : 'lit' in operand ? 'lit' : 'offset';
   const firstKey = usable[0]?.key ?? '';
@@ -44,12 +44,12 @@ function OperandEditor({
   const fieldPicker = (of: Side, key: string, set: (of: Side, key: string) => void) => (
     <>
       <select className={sel} value={of} onChange={(e) => set(e.target.value as Side, key)}>
-        <option value="a">{SIDE_LABEL.a}</option>
-        <option value="b">{SIDE_LABEL.b}</option>
+        <option value="a">{t('expr.personA')}</option>
+        <option value="b">{t('expr.personB')}</option>
       </select>
       <select className={sel} value={key} onChange={(e) => set(of, e.target.value)}>
         {usable.map((f) => (
-          <option key={f.key} value={f.key}>{f.label}</option>
+          <option key={f.key} value={f.key}>{fieldLabel(f, locale)}</option>
         ))}
       </select>
     </>
@@ -74,29 +74,29 @@ function OperandEditor({
               set(nk === 'number' ? 0 : nk === 'bool' ? true : nk === 'list' ? [] : '');
             }}
           >
-            <option value="number">number</option>
-            <option value="text">text</option>
-            <option value="bool">yes / no</option>
-            <option value="list">list</option>
+            <option value="number">{t('expr.number')}</option>
+            <option value="text">{t('expr.text')}</option>
+            <option value="bool">{t('expr.bool')}</option>
+            <option value="list">{t('expr.list')}</option>
           </select>
         )}
-        {k === 'number' && <Input className="w-24" type="number" value={String(v)} onChange={(e) => set(e.target.value === '' ? 0 : Number(e.target.value))} />}
+        {k === 'number' && <Input className="w-24" dir="ltr" type="number" value={String(v)} onChange={(e) => set(e.target.value === '' ? 0 : Number(e.target.value))} />}
         {k === 'bool' && (
           <select className={sel} value={String(v)} onChange={(e) => set(e.target.value === 'true')}>
-            <option value="true">yes</option>
-            <option value="false">no</option>
+            <option value="true">{t('expr.yes')}</option>
+            <option value="false">{t('expr.no')}</option>
           </select>
         )}
         {k === 'text' &&
           (hint ? (
             <select className={sel} value={String(v)} onChange={(e) => set(e.target.value)}>
-              <option value="">choose…</option>
+              <option value="">{t('expr.choose')}</option>
               {kindOptions(hint.kind).map((o) => (
                 <option key={o} value={o}>{o.replace(/_/g, ' ')}</option>
               ))}
             </select>
           ) : (
-            <Input className="w-44" value={String(v)} onChange={(e) => set(e.target.value)} />
+            <Input className="w-44" dir="auto" value={String(v)} onChange={(e) => set(e.target.value)} />
           ))}
         {k === 'list' &&
           (hint ? (
@@ -113,7 +113,7 @@ function OperandEditor({
               ))}
             </span>
           ) : (
-            <Input className="w-56" placeholder="comma separated" value={(v as string[]).join(', ')}
+            <Input className="w-56" dir="auto" placeholder={t('expr.commaSeparated')} value={(v as string[]).join(', ')}
               onChange={(e) => set(e.target.value.split(',').map((x) => x.trim()).filter(Boolean))} />
           ))}
       </>
@@ -125,7 +125,7 @@ function OperandEditor({
       <>
         {fieldPicker(bf.of, bf.key, (of, key) => onChange({ offset: { base: fieldOperand(of, key), by: operand.offset.by } }))}
         <span className="text-sm text-gray-500">+</span>
-        <Input className="w-20" type="number" value={String(operand.offset.by)}
+        <Input className="w-20" dir="ltr" type="number" value={String(operand.offset.by)}
           onChange={(e) => onChange({ offset: { base, by: e.target.value === '' ? 0 : Number(e.target.value) } })} />
       </>
     );
@@ -144,9 +144,9 @@ function OperandEditor({
             else onChange({ offset: { base: fieldOperand('a', firstKey), by: 0 } });
           }}
         >
-          <option value="field">field</option>
-          {allowLiteral && <option value="lit">value</option>}
-          {allowOffset && <option value="offset">field ± number</option>}
+          <option value="field">{t('expr.kindField')}</option>
+          {allowLiteral && <option value="lit">{t('expr.kindValue')}</option>}
+          {allowOffset && <option value="offset">{t('expr.kindOffset')}</option>}
         </select>
       )}
       {body}
@@ -163,6 +163,7 @@ interface Props extends FieldsProps {
 
 /** Recursive editor for a rule condition tree. */
 export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 }: Props) {
+  const { t } = useI18n();
   const common = { fields, byKey };
   const typeSelect = (
     <select
@@ -170,13 +171,13 @@ export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 
       value={expr.op}
       onChange={(e) => onChange(convertNode(expr, e.target.value as NodeType, fields))}
     >
-      {NODE_TYPES.map((t) => (
-        <option key={t.value} value={t.value}>{t.label}</option>
+      {NODE_TYPES.map((node) => (
+        <option key={node.value} value={node.value}>{t(node.labelKey)}</option>
       ))}
     </select>
   );
   const remove = onRemove && (
-    <button type="button" className="p-1 rounded hover:bg-gray-200 ml-auto" aria-label="Remove condition" onClick={onRemove}>
+    <button type="button" className="p-1 rounded hover:bg-gray-200 ms-auto" aria-label={t('expr.removeCondition')} onClick={onRemove}>
       <X className="w-4 h-4" />
     </button>
   );
@@ -190,7 +191,7 @@ export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 
           <OperandEditor {...common} operand={expr.left} other={expr.right} onChange={(left) => onChange({ ...expr, left })} />
           <select className={sel} value={expr.cmp} onChange={(e) => onChange({ ...expr, cmp: e.target.value as CmpOp })}>
             {(Object.keys(CMP_LABEL) as CmpOp[]).map((c) => (
-              <option key={c} value={c}>{CMP_LABEL[c]}</option>
+              <option key={c} value={c}>{cmpLabel(c, t)}</option>
             ))}
           </select>
           <OperandEditor {...common} operand={expr.right} other={expr.left} onChange={(right) => onChange({ ...expr, right })} />
@@ -202,9 +203,9 @@ export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 
         <div className={`${box} flex flex-wrap items-center gap-2`}>
           {typeSelect}
           <OperandEditor {...common} operand={expr.value} allowLiteral={false} allowOffset={false} numericOnly onChange={(value) => onChange({ ...expr, value })} />
-          <span className="text-sm text-gray-500">between</span>
+          <span className="text-sm text-gray-500">{t('expr.between')}</span>
           <OperandEditor {...common} operand={expr.lo} numericOnly onChange={(lo) => onChange({ ...expr, lo })} />
-          <span className="text-sm text-gray-500">and</span>
+          <span className="text-sm text-gray-500">{t('expr.and')}</span>
           <OperandEditor {...common} operand={expr.hi} numericOnly onChange={(hi) => onChange({ ...expr, hi })} />
           {remove}
         </div>
@@ -214,15 +215,15 @@ export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 
         <div className={`${box} flex flex-wrap items-center gap-2`}>
           {typeSelect}
           <OperandEditor {...common} operand={expr.value} allowLiteral={false} allowOffset={false} onChange={(value) => onChange({ ...expr, value })} />
-          <span className="text-sm text-gray-500">is filled in</span>
+          <span className="text-sm text-gray-500">{t('expr.isFilledIn')}</span>
           {remove}
         </div>
       );
     case 'not':
       return (
         <div className={`${box} space-y-2`}>
-          <div className="flex items-center gap-2">{typeSelect}<span className="text-sm text-gray-500">this must NOT hold:</span>{remove}</div>
-          <div className="pl-4">
+          <div className="flex items-center gap-2">{typeSelect}<span className="text-sm text-gray-500">{t('expr.mustNot')}</span>{remove}</div>
+          <div className="ps-4">
             <ExprEditor {...common} expr={expr.arg} depth={depth + 1} onChange={(arg) => onChange({ ...expr, arg })} />
           </div>
         </div>
@@ -231,10 +232,10 @@ export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 
       return (
         <div className={`${box} space-y-2`}>
           <div className="flex items-center gap-2">{typeSelect}{remove}</div>
-          <div className="pl-4 space-y-2">
-            <div className="text-xs font-semibold text-gray-500">IF</div>
+          <div className="ps-4 space-y-2">
+            <div className="text-xs font-semibold text-gray-500">{t('expr.ifLabel')}</div>
             <ExprEditor {...common} expr={expr.when} depth={depth + 1} onChange={(when) => onChange({ ...expr, when })} />
-            <div className="text-xs font-semibold text-gray-500">THEN</div>
+            <div className="text-xs font-semibold text-gray-500">{t('expr.thenLabel')}</div>
             <ExprEditor {...common} expr={expr.then} depth={depth + 1} onChange={(then) => onChange({ ...expr, then })} />
           </div>
         </div>
@@ -247,10 +248,10 @@ export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 
         <div className={`${box} space-y-2`}>
           <div className="flex items-center gap-2">
             {typeSelect}
-            <span className="text-sm text-gray-500">{expr.op === 'and' ? 'every one of these must hold:' : 'at least one of these must hold:'}</span>
+            <span className="text-sm text-gray-500">{expr.op === 'and' ? t('expr.everyOne') : t('expr.atLeastOne')}</span>
             {remove}
           </div>
-          <div className="pl-4 space-y-2">
+          <div className="ps-4 space-y-2">
             {args.map((a, i) => (
               <ExprEditor
                 key={i}
@@ -263,10 +264,10 @@ export function ExprEditor({ expr, onChange, onRemove, fields, byKey, depth = 0 
             ))}
             <div className="flex gap-2">
               <button type="button" className="text-sm text-blue-600 hover:underline flex items-center" onClick={() => setArgs([...args, newNode('cmp', fields)])}>
-                <Plus className="w-3.5 h-3.5 mr-0.5" /> condition
+                <Plus className="w-3.5 h-3.5 me-0.5" /> {t('expr.addCondition')}
               </button>
               <button type="button" className="text-sm text-blue-600 hover:underline flex items-center" onClick={() => setArgs([...args, newNode('or', fields)])}>
-                <Plus className="w-3.5 h-3.5 mr-0.5" /> group
+                <Plus className="w-3.5 h-3.5 me-0.5" /> {t('expr.addGroup')}
               </button>
             </div>
           </div>

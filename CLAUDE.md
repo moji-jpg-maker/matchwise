@@ -411,6 +411,15 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
   - `enhance/*`: Feature enhancements
   - Current: `fix/audio-mixing` (working on audio pipeline improvements)
 
+## Internationalization (en / fa)
+
+- **Frontend**: `useI18n()` returns `{locale, dir, setLocale, t, fmt}`. Catalogs are `frontend/src/i18n/en.ts` and `fa.ts` (keys must match, values on one line, same `{params}`). Check with `npm run check:i18n` (add `--strict` to fail on suspected hardcoded JSX strings). Outside React use `currentLocale()` and `translate()`.
+- **Markup**: `<bdi>` around names and user text, `dir="ltr"` on numbers and ids, `dir="auto"` on free text and Rust-sourced text. Use `tRef` in effects with empty dependencies.
+- **Rust core** (`matchmaking-core`): `foo_for(.., locale)` holds the logic and `foo(..)` is an English wrapper. Persian is inline via `locale.pick(en, fa)` or `match locale`, with «guillemets». Tauri commands take `locale: Option<String>` and parse it with `Locale::parse_or_default`.
+- **Tray and notifications** read the UI locale from `ui_locale.rs`, which the frontend sets through `set_ui_locale`.
+- **Stays English**: stored values, error text the frontend matches on (for example "No recording in progress"), AI system rules, summary template prompts, logs. Text a matchmaker typed is never translated.
+- **Handoff and status**: `docs/i18n/HANDOFF-fa.md`.
+
 ## Key Files Reference
 
 **Core Coordination**:

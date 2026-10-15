@@ -21,6 +21,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { LANGUAGES } from '@/constants/languages';
+import { useI18n } from '@/i18n';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
 
 interface RetranscribeDialogProps {
@@ -57,6 +58,7 @@ export function RetranscribeDialog({
   meetingFolderPath,
   onComplete,
 }: RetranscribeDialogProps) {
+  const { t, fmt } = useI18n();
   const { selectedLanguage, transcriptModelConfig } = useConfig();
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState<RetranscriptionProgress | null>(null);
@@ -147,7 +149,7 @@ export function RetranscribeDialog({
           if (event.payload.meeting_id === meetingId) {
             setIsProcessing(false);
             toast.success(
-              `Retranscription complete! ${event.payload.segments_count} segments created.`
+              t('meetingPanel.rtComplete', { count: fmt.number(event.payload.segments_count) })
             );
             onCompleteRef.current?.();
             onOpenChangeRef.current(false);
@@ -185,11 +187,18 @@ export function RetranscribeDialog({
       cleanedUpRef.current = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [open, meetingId]);
+  }, [open, meetingId, t, fmt]);
+
+  const languageLabel = (code: string, fallback: string) => {
+    if (code === 'auto') return t('meetingPanel.rtAutoOriginal');
+    if (code === 'auto-translate') return t('meetingPanel.rtAutoTranslate');
+    const name = fmt.languageName(code);
+    return name === code ? fallback : name;
+  };
 
   const handleStartRetranscription = async () => {
     if (!meetingFolderPath) {
-      setError('Meeting folder path not available');
+      setError(t('meetingPanel.rtNoFolder'));
       return;
     }
 
@@ -219,7 +228,7 @@ export function RetranscribeDialog({
         await invoke('cancel_retranscription_command');
         setIsProcessing(false);
         setProgress(null);
-        toast.info('Retranscription cancelled');
+        toast.info(t('meetingPanel.rtCancelled'));
       } catch (err) {
         console.error('Failed to cancel retranscription:', err);
       }
@@ -259,26 +268,26 @@ export function RetranscribeDialog({
             {isProcessing ? (
               <>
                 <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-                Retranscribing...
+                {t('meetingPanel.rtRunning')}
               </>
             ) : error ? (
               <>
                 <AlertCircle className="h-5 w-5 text-red-600" />
-                Retranscription Failed
+                {t('meetingPanel.rtFailed')}
               </>
             ) : (
               <>
                 <RefreshCw className="h-5 w-5 text-blue-600" />
-                Retranscribe Meeting
+                {t('meetingPanel.rtTitle')}
               </>
             )}
           </DialogTitle>
           <DialogDescription>
             {isProcessing
-              ? progress?.message || 'Processing audio...'
+              ? progress?.message || t('meetingPanel.rtProcessing')
               : error
-                ? 'An error occurred during retranscription'
-                : 'Re-process the audio with different language settings'}
+                ? t('meetingPanel.rtErrorDesc')
+                : t('meetingPanel.rtDesc')}
           </DialogDescription>
         </DialogHeader>
 
@@ -288,32 +297,32 @@ export function RetranscribeDialog({
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <Globe className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Language</span>
+                  <span className="text-sm font-medium">{t('meetingPanel.rtLanguage')}</span>
                 </div>
                 <Select value={selectedLang} onValueChange={setSelectedLang}>
                   <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select language" />
+                    <SelectValue placeholder={t('meetingPanel.rtSelectLanguage')} />
                   </SelectTrigger>
                   <SelectContent className="max-h-60">
                     {LANGUAGES.map((lang) => (
                       <SelectItem key={lang.code} value={lang.code}>
-                        {lang.name}
+                        {languageLabel(lang.code, lang.name)}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Select a specific language to improve accuracy, or use auto-detect
+                  {t('meetingPanel.rtLanguageHint')}
                 </p>
               </div>
             ) : (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <Globe className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Language</span>
+                  <span className="text-sm font-medium">{t('meetingPanel.rtLanguage')}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Language selection isn't supported for Parakeet. It always uses automatic detection.
+                  {t('meetingPanel.rtParakeet')}
                 </p>
               </div>
             )
@@ -323,22 +332,22 @@ export function RetranscribeDialog({
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Cpu className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Model</span>
+                <span className="text-sm font-medium">{t('meetingPanel.rtModel')}</span>
               </div>
               <Select value={selectedModelKey} onValueChange={setSelectedModelKey} disabled={loadingModels}>
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder={loadingModels ? "Loading models..." : "Select model"} />
+                  <SelectValue placeholder={loadingModels ? t('meetingPanel.rtLoadingModels') : t('meetingPanel.rtSelectModel')} />
                 </SelectTrigger>
                 <SelectContent>
                   {availableModels.map((model) => (
                     <SelectItem key={`${model.provider}:${model.name}`} value={`${model.provider}:${model.name}`}>
-                      {model.displayName} ({Math.round(model.size_mb)} MB)
+                      {t('meetingPanel.rtModelSize', { name: model.displayName, size: fmt.number(Math.round(model.size_mb)) })}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Choose a transcription model
+                {t('meetingPanel.rtModelHint')}
               </p>
             </div>
           )}
@@ -353,19 +362,19 @@ export function RetranscribeDialog({
                   />
                 </div>
                 <div className="flex justify-between text-xs text-gray-600 mt-1">
-                  <span>{progress.stage}</span>
+                  <span dir="auto">{progress.stage}</span>
                   <span>{Math.round(progress.progress_percentage)}%</span>
                 </div>
               </div>
               <p className="text-sm text-muted-foreground text-center">
-                {progress.message}
+                <bdi>{progress.message}</bdi>
               </p>
             </div>
           )}
 
           {error && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-              <p className="text-sm text-red-800">{error}</p>
+              <p className="text-sm text-red-800" dir="auto">{error}</p>
             </div>
           )}
         </div>
@@ -374,28 +383,28 @@ export function RetranscribeDialog({
           {!isProcessing && !error && (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
+                {t('meetingPanel.rtCancel')}
               </Button>
               <Button
                 onClick={handleStartRetranscription}
                 className="bg-blue-600 hover:bg-blue-700"
                 disabled={!meetingFolderPath}
               >
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Start Retranscription
+                <RefreshCw className="h-4 w-4 me-2" />
+                {t('meetingPanel.rtStart')}
               </Button>
             </>
           )}
           {isProcessing && (
             <Button variant="outline" onClick={handleCancel}>
-              <X className="h-4 w-4 mr-2" />
-              Cancel
+              <X className="h-4 w-4 me-2" />
+              {t('meetingPanel.rtCancel')}
             </Button>
           )}
           {error && (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Close
+                {t('meetingPanel.rtClose')}
               </Button>
               <Button
                 onClick={() => {
@@ -404,7 +413,7 @@ export function RetranscribeDialog({
                 }}
                 variant="outline"
               >
-                Try Again
+                {t('meetingPanel.rtRetry')}
               </Button>
             </>
           )}

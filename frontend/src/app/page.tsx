@@ -6,6 +6,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
+import { useT } from '@/i18n';
 import { useConfig } from '@/contexts/ConfigContext';
 import { StatusOverlays } from '@/app/_components/StatusOverlays';
 import { SettingsModals } from './_components/SettingsModal';
@@ -27,6 +28,7 @@ export default function Home() {
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   // Use contexts for state management
+  const t = useT();
   const { meetingTitle } = useTranscripts();
   const { transcriptModelConfig, selectedDevices } = useConfig();
   const recordingState = useRecordingState();
@@ -117,12 +119,12 @@ export default function Home() {
       const result = await recoverMeeting(meetingId);
 
       if (result.success) {
-        toast.success('Meeting recovered successfully!', {
+        toast.success(t('homeRecovery.done'), {
           description: result.audioRecoveryStatus?.status === 'success'
-            ? 'Transcripts and audio recovered'
-            : 'Transcripts recovered (no audio available)',
+            ? t('homeRecovery.withAudio')
+            : t('homeRecovery.noAudio'),
           action: result.meetingId ? {
-            label: 'View Meeting',
+            label: t('recStop.viewMeeting'),
             onClick: () => {
               router.push(`/meeting-details?id=${result.meetingId}`);
             }
@@ -146,8 +148,8 @@ export default function Home() {
         }
       }
     } catch (error) {
-      toast.error('Failed to recover meeting', {
-        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      toast.error(t('homeRecovery.failed'), {
+        description: error instanceof Error ? error.message : t('recStop.unknownError'),
       });
       throw error;
     }
@@ -211,9 +213,9 @@ export default function Home() {
         {(hasMicrophone || isRecording) &&
           status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
-            <div className="fixed bottom-12 left-0 right-0 z-10">
+            <div className="fixed bottom-12 start-0 end-0 z-10">
               <div
-                className="flex justify-center pl-8 transition-[margin] duration-300"
+                className="flex justify-center ps-8 transition-[margin] duration-300"
                 style={{
                   marginLeft: sidebarCollapsed ? '4rem' : '16rem'
                 }}

@@ -1,5 +1,6 @@
 'use client';
 
+import { fieldLabel } from '@/lib/field-label';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
@@ -7,9 +8,11 @@ import { ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useI18n } from '@/i18n';
 import { FieldDef, TelegramInbox, TelegramStatus, kindName } from '@/types/matchmaking';
 
 export default function TelegramSettingsPage() {
+  const { t, fmt, locale } = useI18n();
   const router = useRouter();
   const [status, setStatus] = useState<TelegramStatus | null>(null);
   const [token, setToken] = useState('');
@@ -45,7 +48,7 @@ export default function TelegramSettingsPage() {
   // keep the running/last-error indicators fresh while the page is open
   const [pollFailures, setPollFailures] = useState(0);
   useEffect(() => {
-    const t = setInterval(async () => {
+    const timer = setInterval(async () => {
       try {
         setStatus(await invoke<TelegramStatus>('tg_get_status'));
         setPollFailures(0);
@@ -53,7 +56,7 @@ export default function TelegramSettingsPage() {
         setPollFailures((n) => n + 1);
       }
     }, 5000);
-    return () => clearInterval(t);
+    return () => clearInterval(timer);
   }, []);
 
   const act = async (fn: () => Promise<TelegramStatus>, ok?: string) => {
@@ -74,7 +77,7 @@ export default function TelegramSettingsPage() {
       const s = await invoke<TelegramStatus>('tg_set_sharing', { fields: Array.from(shared), showFirstName: firstName });
       apply(s);
       return s;
-    }, 'Introduction settings saved');
+    }, t('telegram.sharingSaved'));
 
   const sharedDirty = useMemo(
     () => status != null && (firstName !== status.show_first_name || shared.size !== status.introduction_fields.length || status.introduction_fields.some((k) => !shared.has(k))),
@@ -85,59 +88,61 @@ export default function TelegramSettingsPage() {
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-3xl mx-auto p-6 space-y-5">
         <div className="flex items-center gap-3">
-          <button onClick={() => router.push('/')} className="p-2 rounded-lg hover:bg-gray-200" aria-label="Back"><ArrowLeft className="w-5 h-5" /></button>
+          <button onClick={() => router.push('/')} className="p-2 rounded-lg hover:bg-gray-200" aria-label={t('profiles.back')}><ArrowLeft className="w-5 h-5 rtl-mirror" /></button>
           <div>
-            <h1 className="text-2xl font-semibold">Telegram</h1>
-            <p className="text-sm text-gray-500">Let candidates complete profiles, answer introductions and message you through your own bot.</p>
+            <h1 className="text-2xl font-semibold">{t('telegram.title')}</h1>
+            <p className="text-sm text-gray-500">{t('telegram.intro')}</p>
           </div>
         </div>
 
         {pollFailures >= 3 && (
           <div className="bg-red-50 border border-red-200 rounded p-2 text-sm text-red-800">
-            Bot status is unavailable (the last {pollFailures} checks failed). The information below may be out of date.
+            {t('telegram.pollFailed', { count: fmt.number(pollFailures) })}
           </div>
         )}
 
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm space-y-1">
-          <div className="font-medium">What stays on this computer, and what does not</div>
-          <p>Profiles, scores and rules stay in the encrypted database on this computer. Everything sent to or received from Telegram, including introduction cards and anything a candidate types, passes through Telegram’s servers.</p>
-          <p>The bot never shows stored sensitive details, scores or rules to anyone, and never shares contact details: you do that yourself. It only works while Matchwise is running.</p>
+          <div className="font-medium">{t('telegram.privacyTitle')}</div>
+          <p>{t('telegram.privacyLocal')}</p>
+          <p>{t('telegram.privacyBot')}</p>
         </div>
 
         {status && (
           <div className="bg-white rounded-lg border p-4 space-y-3">
-            <h2 className="font-medium">Your bot</h2>
+            <h2 className="font-medium">{t('telegram.botTitle')}</h2>
             {!status.configured && (
               <>
-                <ol className="text-sm text-gray-600 list-decimal pl-5 space-y-1">
-                  <li>In Telegram, open <b>@BotFather</b> and send <code>/newbot</code>.</li>
-                  <li>Choose a name and a username; BotFather replies with a token.</li>
-                  <li>Paste the token here. It is stored in this computer’s credential store, never in the database.</li>
+                <ol className="text-sm text-gray-600 list-decimal ps-5 space-y-1">
+                  <li>{t('telegram.setupStep1')}</li>
+                  <li>{t('telegram.setupStep2')}</li>
+                  <li>{t('telegram.setupStep3')}</li>
                 </ol>
                 <div className="flex gap-2">
-                  <Input type="password" autoComplete="off" placeholder="123456789:AA…" value={token} onChange={(e) => setToken(e.target.value)} />
-                  <Button disabled={busy || token.trim() === ''} onClick={() => act(async () => { const s = await invoke<TelegramStatus>('tg_save_token', { token }); setToken(''); return s; }, 'Token accepted')}>Save token</Button>
+                  <Input type="password" dir="ltr" autoComplete="off" placeholder="123456789:AA…" value={token} onChange={(e) => setToken(e.target.value)} />
+                  <Button disabled={busy || token.trim() === ''} onClick={() => act(async () => { const s = await invoke<TelegramStatus>('tg_save_token', { token }); setToken(''); return s; }, t('telegram.tokenAccepted'))}>{t('telegram.saveToken')}</Button>
                 </div>
-                <p className="text-xs text-gray-500">On WSL or a machine without a credential store, set the environment variable MATCHWISE_TELEGRAM_TOKEN instead.</p>
+                <p className="text-xs text-gray-500">{t('telegram.envHint')}</p>
               </>
             )}
             {status.configured && (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-3 text-sm">
-                  <span className={`px-2 py-0.5 rounded ${status.running ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>{status.running ? 'Running' : 'Stopped'}</span>
-                  {status.bot_username && <span>@{status.bot_username}</span>}
-                  <span className="text-gray-500">token in {status.token_source}</span>
+                  <span className={`px-2 py-0.5 rounded ${status.running ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>{status.running ? t('telegram.running') : t('telegram.stopped')}</span>
+                  {status.bot_username && <bdi dir="ltr">@{status.bot_username}</bdi>}
+                  <span className="text-gray-500">{t('telegram.tokenIn', { source: status.token_source ?? '' })}</span>
                   <div className="flex-1" />
                   {status.running ? (
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => act(() => invoke<TelegramStatus>('tg_stop'))}>Stop</Button>
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => act(() => invoke<TelegramStatus>('tg_stop'))}>{t('telegram.stop')}</Button>
                   ) : (
-                    <Button size="sm" disabled={busy} onClick={() => act(() => invoke<TelegramStatus>('tg_start'), 'Bot started')}>Start</Button>
+                    <Button size="sm" disabled={busy} onClick={() => act(() => invoke<TelegramStatus>('tg_start'), t('telegram.botStarted'))}>{t('telegram.start')}</Button>
                   )}
-                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(() => invoke<TelegramStatus>('tg_clear_token'), 'Token removed')}>Remove token</Button>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(() => invoke<TelegramStatus>('tg_clear_token'), t('telegram.tokenRemoved'))}>{t('telegram.removeToken')}</Button>
                 </div>
-                {status.last_error && <div className="bg-red-50 border border-red-200 rounded p-2 text-sm text-red-800">{status.last_error}</div>}
+                {status.last_error && <div dir="auto" className="bg-red-50 border border-red-200 rounded p-2 text-sm text-red-800">{status.last_error}</div>}
                 <div className="text-xs text-gray-500">
-                  {status.processed_updates} updates handled, {status.sent_messages} messages sent this session{status.last_activity ? `, last activity ${new Date(status.last_activity).toLocaleTimeString()}` : ''}.
+                  {status.last_activity
+                    ? t('telegram.activityLast', { updates: fmt.number(status.processed_updates), messages: fmt.number(status.sent_messages), time: fmt.dateTime(status.last_activity) })
+                    : t('telegram.activityNone', { updates: fmt.number(status.processed_updates), messages: fmt.number(status.sent_messages) })}
                 </div>
               </div>
             )}
@@ -145,39 +150,39 @@ export default function TelegramSettingsPage() {
         )}
 
         <div className="bg-white rounded-lg border p-4 space-y-3">
-          <h2 className="font-medium">What an introduction shows</h2>
-          <p className="text-sm text-gray-600">When you propose an introduction, each person receives a card about the other with only the facts ticked here. Contact details, full names and dates of birth can never be shared this way.</p>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={firstName} onChange={(e) => setFirstName(e.target.checked)} /> Show first names (otherwise “Someone”)</label>
+          <h2 className="font-medium">{t('telegram.introTitle')}</h2>
+          <p className="text-sm text-gray-600">{t('telegram.introDesc')}</p>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={firstName} onChange={(e) => setFirstName(e.target.checked)} /> {t('telegram.showFirstNames')}</label>
           <div className="grid grid-cols-2 gap-1">
             {fields.map((f) => (
               <label key={f.key} className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={shared.has(f.key)} onChange={(e) => setShared((prev) => { const n = new Set(prev); if (e.target.checked) n.add(f.key); else n.delete(f.key); return n; })} />
-                {f.label}
-                {f.sensitive && <span className="text-xs px-1.5 rounded bg-amber-100 text-amber-800">sensitive</span>}
+                <bdi dir="auto">{fieldLabel(f, locale)}</bdi>
+                {f.sensitive && <span className="text-xs px-1.5 rounded bg-amber-100 text-amber-800">{t('profile.sensitive')}</span>}
               </label>
             ))}
           </div>
-          <div className="flex justify-end"><Button size="sm" disabled={busy || !sharedDirty} onClick={saveSharing}>Save</Button></div>
+          <div className="flex justify-end"><Button size="sm" disabled={busy || !sharedDirty} onClick={saveSharing}>{t('common.save')}</Button></div>
         </div>
 
         {inbox && (inbox.unread.length > 0 || inbox.requests.length > 0) && (
           <div className="bg-white rounded-lg border p-4 space-y-3">
-            <h2 className="font-medium">Needs your attention</h2>
+            <h2 className="font-medium">{t('telegram.attentionTitle')}</h2>
             {inbox.unread.map((u) => (
-              <button key={u.profile_id} className="w-full text-left flex items-center gap-3 hover:bg-gray-50 rounded p-2" onClick={() => router.push(`/profile?id=${encodeURIComponent(u.profile_id)}`)}>
-                <span className="flex-1">{u.name || 'Unnamed profile'}</span>
-                <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800">{u.unread} new message{u.unread > 1 ? 's' : ''}</span>
+              <button key={u.profile_id} className="w-full text-start flex items-center gap-3 hover:bg-gray-50 rounded p-2" onClick={() => router.push(`/profile?id=${encodeURIComponent(u.profile_id)}`)}>
+                <span className="flex-1"><bdi dir="auto">{u.name || t('profiles.unnamed')}</bdi></span>
+                <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800">{t(u.unread > 1 ? 'telegram.newMessageMany' : 'telegram.newMessageOne', { count: fmt.number(u.unread) })}</span>
               </button>
             ))}
             {inbox.requests.map((r) => (
               <div key={r.id} className="flex items-center gap-3 p-2 bg-red-50 rounded">
-                <button className="flex-1 text-left" onClick={() => router.push(`/profile?id=${encodeURIComponent(r.profile_id)}`)}>
-                  {r.name || 'Unnamed profile'} asked for their data to be deleted ({new Date(r.created_at).toLocaleDateString()})
+                <button className="flex-1 text-start" onClick={() => router.push(`/profile?id=${encodeURIComponent(r.profile_id)}`)}>
+                  {t('telegram.deleteRequest', { name: r.name || t('profiles.unnamed'), date: fmt.date(r.created_at) })}
                 </button>
-                <Button size="sm" variant="outline" onClick={async () => { try { await invoke('tg_resolve_request', { id: r.id }); await load(); } catch (e) { toast.error(`${e}`); } }}>Mark as done</Button>
+                <Button size="sm" variant="outline" onClick={async () => { try { await invoke('tg_resolve_request', { id: r.id }); await load(); } catch (e) { toast.error(`${e}`); } }}>{t('telegram.markDone')}</Button>
               </div>
             ))}
-            <p className="text-xs text-gray-500">“Mark as done” only records that you handled the request. Delete the profile itself from its page.</p>
+            <p className="text-xs text-gray-500">{t('telegram.markDoneNote')}</p>
           </div>
         )}
       </div>

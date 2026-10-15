@@ -3,16 +3,18 @@ import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import type { PermissionRowProps } from '@/types/onboarding';
+import { useT } from '@/i18n';
 
 export function PermissionRow({ icon, title, description, status, isPending = false, onAction }: PermissionRowProps) {
   const isAuthorized = status === 'authorized';
+  const t = useT();
   const isDenied = status === 'denied';
   const isChecking = isPending;
 
   const getButtonText = () => {
-    if (isChecking) return 'Checking...';
-    if (isDenied) return 'Open Settings';
-    return 'Enable';
+    if (isChecking) return t('onboarding.checking');
+    if (isDenied) return t('onboarding.openSettings');
+    return t('onboarding.enable');
   };
 
   return (
@@ -42,12 +44,12 @@ export function PermissionRow({ icon, title, description, status, isPending = fa
             {isAuthorized ? (
               <span className="text-green-600 flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                Access Granted
+                {t('onboarding.accessGranted')}
               </span>
             ) : isDenied ? (
               <span className="text-red-500 flex items-center gap-1">
                 <XCircle className="w-3.5 h-3.5" />
-                Access Denied - Please grant in System Settings
+                {t('onboarding.accessDenied')}
               </span>
             ) : (
               <span>{description}</span>
@@ -57,7 +59,7 @@ export function PermissionRow({ icon, title, description, status, isPending = fa
       </div>
 
       {/* Right side: Action button or checkmark */}
-      <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+      <div className="flex items-center gap-2 flex-shrink-0 ms-3">
         {!isAuthorized && (
           <Button
             variant={isDenied ? "destructive" : "outline"}
@@ -66,7 +68,7 @@ export function PermissionRow({ icon, title, description, status, isPending = fa
             disabled={isChecking}
             className="min-w-[100px]"
           >
-            {isChecking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isChecking && <Loader2 className="me-2 h-4 w-4 animate-spin" />}
             {getButtonText()}
           </Button>
         )}

@@ -3,6 +3,7 @@ import { AlertTriangle, Mic, Speaker, RefreshCw } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { invoke } from '@tauri-apps/api/core';
 import { useIsLinux } from '@/hooks/usePlatform';
+import { useT } from '@/i18n';
 
 interface PermissionWarningProps {
   hasMicrophone: boolean;
@@ -18,6 +19,7 @@ export function PermissionWarning({
   isRechecking = false
 }: PermissionWarningProps) {
   const isLinux = useIsLinux();
+  const t = useT();
 
   // Don't show on Linux - permission handling is not needed
   if (isLinux) {
@@ -61,7 +63,7 @@ export function PermissionWarning({
             <div className="flex items-center gap-2">
               {!hasMicrophone && <Mic className="h-4 w-4" />}
               {!hasSystemAudio && <Speaker className="h-4 w-4" />}
-              {!hasMicrophone && !hasSystemAudio ? 'Permissions Required' : !hasMicrophone ? 'Microphone Permission Required' : 'System Audio Permission Required'}
+              {!hasMicrophone && !hasSystemAudio ? t('permWarn.titleBoth') : !hasMicrophone ? t('permWarn.titleMic') : t('permWarn.titleSystem')}
             </div>
           </AlertTitle>
           {/* Action Buttons */}
@@ -72,7 +74,7 @@ export function PermissionWarning({
                 className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-md transition-colors"
               >
                 <Mic className="h-4 w-4" />
-                Open Microphone Settings
+                {t('permWarn.openMic')}
               </button>
             )}
             {isMacOS && !hasSystemAudio && (
@@ -81,7 +83,7 @@ export function PermissionWarning({
                 className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
               >
                 <Speaker className="h-4 w-4" />
-                Open Screen Recording Settings
+                {t('permWarn.openScreen')}
               </button>
             )}
             <button
@@ -90,7 +92,7 @@ export function PermissionWarning({
               className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-md transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${isRechecking ? 'animate-spin' : ''}`} />
-              Recheck
+              {t('permWarn.recheck')}
             </button>
           </div>
           <AlertDescription className="text-amber-800 mt-2">
@@ -98,14 +100,14 @@ export function PermissionWarning({
             {!hasMicrophone && (
               <>
                 <p className="mb-3">
-                  Matchwise needs access to your microphone to record meetings. No microphone devices were detected.
+                  {t('permWarn.micNeeded')}
                 </p>
                 <div className="space-y-2 text-sm mb-4">
-                  <p className="font-medium">Please check:</p>
-                  <ul className="list-disc list-inside ml-2 space-y-1">
-                    <li>Your microphone is connected and powered on</li>
-                    <li>Microphone permission is granted in System Settings</li>
-                    <li>No other app is exclusively using the microphone</li>
+                  <p className="font-medium">{t('permWarn.pleaseCheck')}</p>
+                  <ul className="list-disc list-inside ms-2 space-y-1">
+                    <li>{t('permWarn.checkConnected')}</li>
+                    <li>{t('permWarn.checkGranted')}</li>
+                    <li>{t('permWarn.checkExclusive')}</li>
                   </ul>
                 </div>
               </>
@@ -115,17 +117,15 @@ export function PermissionWarning({
             {!hasSystemAudio && (
               <>
                 <p className="mb-3">
-                  {hasMicrophone
-                    ? 'System audio capture is not available. You can still record with your microphone, but computer audio won\'t be captured.'
-                    : 'System audio capture is also not available.'}
+                  {hasMicrophone ? t('permWarn.systemUnavailable') : t('permWarn.systemAlsoUnavailable')}
                 </p>
                 {isMacOS && (
                   <div className="space-y-2 text-sm mb-4">
-                    <p className="font-medium">To enable system audio on macOS:</p>
-                    <ul className="list-disc list-inside ml-2 space-y-1">
-                      <li>Install a virtual audio device (e.g., BlackHole 2ch)</li>
-                      <li>Grant Screen Recording permission to Matchwise</li>
-                      <li>Configure your audio routing in Audio MIDI Setup</li>
+                    <p className="font-medium">{t('permWarn.macEnable')}</p>
+                    <ul className="list-disc list-inside ms-2 space-y-1">
+                      <li>{t('permWarn.macInstall')}</li>
+                      <li>{t('permWarn.macGrant')}</li>
+                      <li>{t('permWarn.macRoute')}</li>
                     </ul>
                   </div>
                 )}

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 import { toast } from 'sonner';
+import { useT } from '@/i18n';
 
 export interface AudioFileInfo {
   path: string;
@@ -60,6 +61,9 @@ export function useImportAudio({
   onComplete,
   onError,
 }: UseImportAudioOptions = {}): UseImportAudioReturn {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [status, setStatus] = useState<ImportStatus>('idle');
   const [fileInfo, setFileInfo] = useState<AudioFileInfo | null>(null);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
@@ -106,8 +110,8 @@ export function useImportAudio({
             await applyPinnedSummaryLanguageToMeeting(event.payload.meeting_id);
           } catch (error) {
             console.warn('Failed to apply pinned summary language to imported meeting:', error);
-            toast.warning('Could not apply default summary language', {
-              description: 'The imported meeting was saved, but the default summary language was not applied.',
+            toast.warning(tRef.current('importHook.langApplyTitle'), {
+              description: tRef.current('importHook.langApplyDesc'),
             });
           }
           onCompleteRef.current?.(event.payload);
@@ -164,7 +168,7 @@ export function useImportAudio({
       }
     } catch (err: any) {
       setStatus('error');
-      const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || 'Failed to validate file');
+      const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || tRef.current('importHook.errValidate'));
       setError(errorMsg);
       onErrorRef.current?.(errorMsg);
       return null;
@@ -183,7 +187,7 @@ export function useImportAudio({
       return result;
     } catch (err: any) {
       setStatus('error');
-      const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || 'Failed to validate file');
+      const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || tRef.current('importHook.errValidate'));
       setError(errorMsg);
       onErrorRef.current?.(errorMsg);
       return null;
@@ -214,7 +218,7 @@ export function useImportAudio({
         });
       } catch (err: any) {
         setStatus('error');
-        const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || 'Failed to start import');
+        const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || tRef.current('importHook.errStart'));
         setError(errorMsg);
         onErrorRef.current?.(errorMsg);
       }

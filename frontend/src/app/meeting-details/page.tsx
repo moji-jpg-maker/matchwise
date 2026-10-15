@@ -9,6 +9,9 @@ import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
+import { useT } from "@/i18n";
+
+const NO_MEETING_ERROR = "no-meeting-selected";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -20,6 +23,7 @@ interface MeetingDetailsResponse {
 }
 
 function MeetingDetailsContent() {
+  const t = useT();
   const searchParams = useSearchParams();
   const meetingId = searchParams.get('id');
   const source = searchParams.get('source'); // Check if navigated from recording
@@ -178,7 +182,7 @@ function MeetingDetailsContent() {
 
     if (!meetingId || meetingId === 'intro-call') {
       console.warn('No valid meeting ID in URL - meetingId:', meetingId);
-      setError("No meeting selected");
+      setError(NO_MEETING_ERROR);
       setIsLoading(false);
       return;
     }
@@ -249,12 +253,12 @@ function MeetingDetailsContent() {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
-          <p className="text-red-500 mb-4">{error}</p>
+          <p className="text-red-500 mb-4" dir="auto">{error === NO_MEETING_ERROR ? t("meetingPage.noMeeting") : error}</p>
           <button
             onClick={() => router.push('/')}
             className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
           >
-            Go Back
+            {t("meetingPage.goBack")}
           </button>
         </div>
       </div>

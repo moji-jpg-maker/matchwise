@@ -5,6 +5,7 @@ import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
+import { useT } from '@/i18n';
 
 interface UseMeetingDataProps {
   meeting: any;
@@ -13,6 +14,7 @@ interface UseMeetingDataProps {
 }
 
 export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMeetingDataProps) {
+  const t = useT();
   // State
   // Use prop directly since summary generation fetches transcripts independently
   const transcripts = meeting.transcripts;
@@ -64,14 +66,14 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
         await handleSaveSummary(aiSummary);
       }
 
-      toast.success("Changes saved successfully");
+      toast.success(t('meetingUi.changesSaved'));
     } catch (error) {
       console.error('Failed to save changes:', error);
-      toast.error("Failed to save changes", { description: String(error) });
+      toast.error(t('meetingUi.changesSaveError'), { description: String(error) });
     } finally {
       setIsSaving(false);
     }
-  }, [aiSummary, handleSaveSummary]);
+  }, [aiSummary, handleSaveSummary, t]);
 
   // Update meeting title from external source (e.g., AI summary)
   const updateMeetingTitle = useCallback((newTitle: string) => {

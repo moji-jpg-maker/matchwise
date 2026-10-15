@@ -3,6 +3,7 @@
 import { motion } from 'framer-motion';
 import { FileQuestion, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useT } from '@/i18n';
 import {
   Tooltip,
   TooltipContent,
@@ -23,6 +24,7 @@ export function EmptyStateSummary({
   isGenerating = false,
   error = null,
 }: EmptyStateSummaryProps) {
+  const t = useT();
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
@@ -32,14 +34,14 @@ export function EmptyStateSummary({
     >
       <FileQuestion className="w-16 h-16 text-gray-300 mb-4" />
       <h3 className="text-lg font-semibold text-gray-900 mb-2">
-        No Summary Generated Yet
+        {t('emptyState.emptyTitle')}
       </h3>
       <p className="text-sm text-gray-500 mb-6 max-w-md">
-        Generate an AI-powered summary of your meeting transcript to get key points, action items, and decisions.
+        {t('emptyState.emptyBody')}
       </p>
 
       {error && (
-        <p role="alert" className="mb-4 max-w-md rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p role="alert" className="mb-4 max-w-md rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" dir="auto">
           {error}
         </p>
       )}
@@ -54,13 +56,13 @@ export function EmptyStateSummary({
                 className="gap-2"
               >
                 <Sparkles className="w-4 h-4" />
-                {isGenerating ? 'Generating...' : error ? 'Retry summary' : 'Generate Summary'}
+                {isGenerating ? t('emptyState.generating') : error ? t('emptyState.retry') : t('meetingUi.gen')}
               </Button>
             </div>
           </TooltipTrigger>
           {!hasModel && (
             <TooltipContent>
-              <p>Please select a model in Settings first</p>
+              <p>{t('emptyState.needModel')}</p>
             </TooltipContent>
           )}
         </Tooltip>
@@ -68,7 +70,7 @@ export function EmptyStateSummary({
 
       {!hasModel && (
         <p className="text-xs text-amber-600 mt-3">
-          Please select a model in Settings first
+          {t('emptyState.needModel')}
         </p>
       )}
     </motion.div>

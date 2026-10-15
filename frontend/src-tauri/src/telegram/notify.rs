@@ -7,7 +7,7 @@ use super::render;
 use super::types::{button, Keyboard};
 use crate::mm::match_repo::{MatchRepo, MatchRow};
 use crate::mm::repository::{MmRepository, StoredProfile};
-use matchmaking_core::{build_introduction_card, first_name, IntroCard, MatchStatus};
+use matchmaking_core::{build_introduction_card_for, first_name_for, IntroCard, Locale, MatchStatus};
 use sqlx::SqlitePool;
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -19,22 +19,25 @@ pub async fn reachable_link(pool: &SqlitePool, profile_id: &str) -> Result<Optio
     Ok(repo::link_by_profile(pool, profile_id).await.map_err(err)?.filter(|l| l.consented && l.notifications_enabled))
 }
 
-pub async fn card_for(pool: &SqlitePool, profile: &StoredProfile) -> Result<IntroCard, String> {
+pub async fn card_for(pool: &SqlitePool, profile: &StoredProfile, locale: Locale) -> Result<IntroCard, String> {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let fields = repo::introduction_fields(pool).await.map_err(err)?;
     let first = repo::show_first_name(pool).await.map_err(err)?;
-    Ok(build_introduction_card(&profile.profile, &reg, &fields, first))
+    Ok(build_introduction_card_for(&profile.profile, &reg, &fields, first, locale))
 }
 
-pub fn intro_keyboard(match_id: &str) -> Keyboard {
-    vec![vec![button("I'm interested", format!("intro:y:{match_id}")), button("Not interested", format!("intro:n:{match_id}"))]]
+pub fn intro_keyboard(locale: Locale, match_id: &str) -> Keyboard {
+    vec![vec![
+        button(locale.pick("I'm interested", "علاقه‌مندم"), format!("intro:y:{match_id}")),
+        button(locale.pick("Not interested", "علاقه‌ای ندارم"), format!("intro:n:{match_id}")),
+    ]]
 }
 
 /// The introduction message `recipient` would receive about `other`.
-pub async fn introduction_message(pool: &SqlitePool, m: &MatchRow, other_id: &str) -> Result<(String, Keyboard), String> {
+pub async fn introduction_message(pool: &SqlitePool, m: &MatchRow, other_id: &str, locale: Locale) -> Result<(String, Keyboard), String> {
     let other = MmRepository::get_profile(pool, other_id).await.map_err(err)?.ok_or("Profile not found")?;
-    let card = card_for(pool, &other).await?;
-    Ok((render::introduction_text(&card, true), intro_keyboard(&m.id)))
+    let card = card_for(pool, &other, locale).await?;
+    Ok((render::introduction_text(locale, &card, true), intro_keyboard(locale, &m.id)))
 }
 
 fn other_of<'a>(m: &'a MatchRow, me: &str) -> &'a str {
@@ -59,21 +62,17 @@ async fn after_status_change_inner(pool: &SqlitePool, match_id: &str, from: Matc
     match to {
         MatchStatus::IntroductionProposed => {
             for me in [&m.profile_a, &m.profile_b] {
-                if reachable_link(pool, me).await?.is_none() {
-                    continue;
-                }
-                let (text, kb) = introduction_message(pool, &m, other_of(&m, me)).await?;
+                let Some(link) = reachable_link(pool, me).await? else { continue };
+                let (text, kb) = introduction_message(pool, &m, other_of(&m, me), link.locale).await?;
                 repo::enqueue(pool, me, "introduction", &text, Some(&kb), Some(&m.id)).await.map_err(err)?;
             }
         }
         MatchStatus::BothInterested => {
             for me in [&m.profile_a, &m.profile_b] {
-                if reachable_link(pool, me).await?.is_none() {
-                    continue;
-                }
+                let Some(link) = reachable_link(pool, me).await? else { continue };
                 let other = MmRepository::get_profile(pool, other_of(&m, me)).await.map_err(err)?.ok_or("Profile not found")?;
-                let name = first_name(&other.profile, repo::show_first_name(pool).await.map_err(err)?);
-                repo::enqueue(pool, me, "both_interested", &render::both_interested_text(&name), None, Some(&m.id)).await.map_err(err)?;
+                let name = first_name_for(&other.profile, repo::show_first_name(pool).await.map_err(err)?, link.locale);
+                repo::enqueue(pool, me, "both_interested", &render::both_interested_text(link.locale, &name), None, Some(&m.id)).await.map_err(err)?;
             }
         }
         MatchStatus::Declined => {
@@ -82,15 +81,17 @@ async fn after_status_change_inner(pool: &SqlitePool, match_id: &str, from: Matc
                 if mine == matchmaking_core::Interest::NotInterested {
                     continue;
                 }
-                if reachable_link(pool, me).await?.is_some() && was_introduced(pool, me, &m.id).await? {
-                    repo::enqueue(pool, me, "not_going_ahead", &render::not_going_ahead_text(), None, Some(&m.id)).await.map_err(err)?;
+                let Some(link) = reachable_link(pool, me).await? else { continue };
+                if was_introduced(pool, me, &m.id).await? {
+                    repo::enqueue(pool, me, "not_going_ahead", &render::not_going_ahead_text(link.locale), None, Some(&m.id)).await.map_err(err)?;
                 }
             }
         }
         MatchStatus::Rejected if from == MatchStatus::IntroductionProposed => {
             for me in [&m.profile_a, &m.profile_b] {
-                if reachable_link(pool, me).await?.is_some() && was_introduced(pool, me, &m.id).await? {
-                    repo::enqueue(pool, me, "withdrawn", &render::withdrawn_text(), None, Some(&m.id)).await.map_err(err)?;
+                let Some(link) = reachable_link(pool, me).await? else { continue };
+                if was_introduced(pool, me, &m.id).await? {
+                    repo::enqueue(pool, me, "withdrawn", &render::withdrawn_text(link.locale), None, Some(&m.id)).await.map_err(err)?;
                 }
             }
         }
@@ -124,9 +125,10 @@ pub async fn queue_reminders(pool: &SqlitePool) -> Result<usize, String> {
             continue;
         }
         for (me, mine) in [(&m.profile_a, m.a_response), (&m.profile_b, m.b_response)] {
-            if mine != matchmaking_core::Interest::Unknown || reachable_link(pool, me).await?.is_none() {
+            if mine != matchmaking_core::Interest::Unknown {
                 continue;
             }
+            let Some(link) = reachable_link(pool, me).await? else { continue };
             let last = repo::last_created(pool, me, &["introduction", "intro_reminder"], Some(&m.id)).await.map_err(err)?;
             if last.is_none() {
                 continue; // never introduced through Telegram: nothing to remind about
@@ -136,8 +138,8 @@ pub async fn queue_reminders(pool: &SqlitePool) -> Result<usize, String> {
                 continue;
             }
             let other = MmRepository::get_profile(pool, other_of(&m, me)).await.map_err(err)?.ok_or("Profile not found")?;
-            let name = first_name(&other.profile, repo::show_first_name(pool).await.map_err(err)?);
-            repo::enqueue(pool, me, "intro_reminder", &render::reminder_intro_text(&name), Some(&intro_keyboard(&m.id)), Some(&m.id)).await.map_err(err)?;
+            let name = first_name_for(&other.profile, repo::show_first_name(pool).await.map_err(err)?, link.locale);
+            repo::enqueue(pool, me, "intro_reminder", &render::reminder_intro_text(link.locale, &name), Some(&intro_keyboard(link.locale, &m.id)), Some(&m.id)).await.map_err(err)?;
             queued += 1;
         }
     }
@@ -155,8 +157,8 @@ pub async fn queue_reminders(pool: &SqlitePool) -> Result<usize, String> {
         if sent >= MAX_PROFILE_REMINDERS || !older_than(&last, REMIND_AFTER_DAYS) {
             continue;
         }
-        let labels: Vec<String> = missing.iter().filter_map(|k| reg.get(k).map(|d| d.label.clone())).collect();
-        repo::enqueue(pool, &sp.profile.id, "profile_reminder", &render::reminder_profile_text(&labels), None, None).await.map_err(err)?;
+        let labels: Vec<String> = missing.iter().filter_map(|k| reg.get(k).map(|d| d.label_for(link.locale).to_string())).collect();
+        repo::enqueue(pool, &sp.profile.id, "profile_reminder", &render::reminder_profile_text(link.locale, &labels), None, None).await.map_err(err)?;
         queued += 1;
     }
     Ok(queued)

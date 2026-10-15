@@ -10,7 +10,7 @@ use super::worker::{flush_outbox, MAX_ATTEMPTS};
 use crate::mm::match_repo::MatchRepo;
 use crate::mm::repository::MmRepository;
 use async_trait::async_trait;
-use matchmaking_core::{ConditionOp, Interest, MatchStatus, Profile, Provenance, Value};
+use matchmaking_core::{ConditionOp, Interest, Locale, MatchStatus, Profile, Provenance, Value};
 use serde_json::json;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -762,7 +762,100 @@ async fn sharing_settings_round_trip() {
     assert!(!repo::show_first_name(&pool).await.unwrap());
     // the first-name setting changes what an introduction says
     make_profile(&pool, "pa", &[("full_name", txt("Sara Karimi")), ("city", txt("Shiraz")), ("age", Value::Num(29.0))]).await;
-    let card = notify::card_for(&pool, &MmRepository::get_profile(&pool, "pa").await.unwrap().unwrap()).await.unwrap();
+    let card = notify::card_for(&pool, &MmRepository::get_profile(&pool, "pa").await.unwrap().unwrap(), Locale::En).await.unwrap();
     assert_eq!(card.title, "Someone");
     assert_eq!(card.lines, vec![("Current city".to_string(), "Shiraz".to_string())], "only the one shared field appears");
+}
+
+// ------------------------------------------------------------------ Persian
+
+fn has_persian(text: &str) -> bool {
+    text.chars().any(|c| ('\u{0600}'..='\u{06FF}').contains(&c))
+}
+
+fn msg_in(chat: i64, text: &str, language: &str) -> Update {
+    serde_json::from_value(json!({"update_id": 1, "message": {"message_id": 10, "from": {"id": chat, "is_bot": false, "username": "u", "language_code": language}, "chat": {"id": chat, "type": "private"}, "text": text}})).unwrap()
+}
+
+#[tokio::test]
+async fn telegram_language_selects_the_notice_and_can_be_switched() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[("full_name", txt("Sara Karimi"))]).await;
+    let invite = repo::create_invite(&pool, "p1").await.unwrap();
+    let r = handle_update(&pool, msg_in(100, &format!("/start {}", invite.code), "fa")).await.unwrap();
+    assert!(has_persian(&texts(&r)) && !texts(&r).contains("Do you agree"), "{}", texts(&r));
+    assert_eq!(repo::link_by_chat(&pool, 100).await.unwrap().unwrap().locale, Locale::Fa);
+
+    let r = press(&pool, 100, "lang:en").await;
+    assert!(texts(&r).contains("Language set to English"));
+    assert!(texts(&r).contains("Do you agree"), "consent is asked again in the new language");
+    assert_eq!(repo::link_by_chat(&pool, 100).await.unwrap().unwrap().locale, Locale::En);
+
+    press(&pool, 100, "consent:y").await;
+    let r = say(&pool, 100, "/language").await;
+    let kb = first_keyboard(&r).unwrap();
+    assert!(kb.iter().flatten().any(|b| b.callback_data == "lang:fa"));
+    let r = press(&pool, 100, "lang:fa").await;
+    assert!(has_persian(&texts(&r)));
+    assert!(!texts(&r).contains("Do you agree"));
+    assert!(has_persian(&texts(&say(&pool, 100, "/help").await)));
+    assert!(texts(&press(&pool, 100, "lang:xx").await).contains("معتبر نیست"));
+}
+
+#[tokio::test]
+async fn persian_input_and_sensitive_values() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[("full_name", txt("Sara Karimi")), ("religion", txt("Secretive"))]).await;
+    link(&pool, "p1", 100).await;
+    press(&pool, 100, "lang:fa").await;
+
+    let r = texts(&say(&pool, 100, "/profile").await);
+    assert!(has_persian(&r) && !r.contains("Secretive"), "{r}");
+
+    press(&pool, 100, "pref:add").await;
+    press(&pool, 100, "pref:f:age").await;
+    assert!(texts(&say(&pool, 100, "موز").await).contains("لطفاً یک عدد بفرستید"));
+    say(&pool, 100, "۲۵").await;
+    let r = say(&pool, 100, "رد").await;
+    assert!(first_keyboard(&r).is_some());
+    press(&pool, 100, "pref:s:preferred").await;
+    let prefs = MmRepository::get_preferences(&pool, "p1").await.unwrap();
+    assert_eq!(prefs.len(), 1);
+    assert_eq!(prefs[0].condition.value, Some(Value::Num(25.0)));
+    assert!(prefs[0].condition.op == ConditionOp::Ge);
+
+    let r = texts(&say(&pool, 100, "/preferences").await);
+    assert!(r.contains('۱') && has_persian(&r), "{r}");
+}
+
+#[tokio::test]
+async fn introductions_are_written_in_each_recipients_language() {
+    let pool = test_pool().await;
+    make_profile(&pool, "pa", &[("full_name", txt("Sara Karimi")), ("city", txt("Shiraz")), ("phone", txt("+989111"))]).await;
+    make_profile(&pool, "pb", &[("full_name", txt("Ali Rezaei")), ("city", txt("Shiraz"))]).await;
+    link(&pool, "pa", 100).await;
+    link(&pool, "pb", 200).await;
+    press(&pool, 100, "lang:fa").await;
+    let m = new_match(&pool, "pa", "pb").await;
+    propose(&pool, &m).await;
+
+    let to_a = outbox(&pool, "pa").await;
+    let to_b = outbox(&pool, "pb").await;
+    assert!(has_persian(&to_a[0].text), "{}", to_a[0].text);
+    assert!(!has_persian(&to_b[0].text), "{}", to_b[0].text);
+    assert!(to_a[0].text.contains("Ali") && !to_a[0].text.contains("Rezaei") && !to_a[0].text.contains("+989"));
+    assert!(to_a[0].keyboard.as_ref().unwrap()[0][0].text.contains("علاقه‌مندم"));
+    assert_eq!(to_a[0].keyboard.as_ref().unwrap()[0][0].callback_data, format!("intro:y:{m}"));
+}
+
+#[tokio::test]
+async fn validation_messages_follow_the_language() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[("full_name", txt("Sara"))]).await;
+    link(&pool, "p1", 100).await;
+    press(&pool, 100, "lang:fa").await;
+    let reg = MmRepository::registry(&pool).await.unwrap();
+    let error = reg.validate_value_for("age", &txt("x"), Locale::Fa).unwrap_err();
+    assert!(has_persian(&error), "{error}");
+    assert!(reg.validate_value("age", &txt("x")).unwrap_err().starts_with("expected"));
 }

@@ -74,7 +74,7 @@ export function ConsoleToggle() {
           disabled={isLoading}
         />
       </div>
-      <div className="flex space-x-2">
+      <div className="flex space-x-2 rtl:space-x-reverse">
         <Button
           variant="outline"
           size="sm"

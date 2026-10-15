@@ -2,6 +2,7 @@
 
 import { Section as SectionType, Block } from '@/types';
 import { BlockComponent } from './Block';
+import { useI18n } from '@/i18n';
 import { EditableTitle } from '../EditableTitle';
 import { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
@@ -56,6 +57,8 @@ export const Section: React.FC<SectionProps> = ({
     }
   };
 
+  const { t, dir } = useI18n();
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -77,7 +80,7 @@ export const Section: React.FC<SectionProps> = ({
             onClick={() => onSectionDelete(sectionKey)}
             className="text-gray-400 hover:text-gray-600"
           >
-            Delete
+            {t('common.delete')}
           </button>
         )}
       </div>
@@ -89,7 +92,7 @@ export const Section: React.FC<SectionProps> = ({
         {(section.blocks || []).map((block, index) => (
           <motion.div
             key={block.id}
-            initial={{ opacity: 0, x: -20 }}
+            initial={{ opacity: 0, x: dir === 'rtl' ? 20 : -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.3, delay: index * 0.1 }}
           >

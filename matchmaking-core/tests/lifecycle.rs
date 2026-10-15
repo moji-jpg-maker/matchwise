@@ -107,3 +107,14 @@ fn outcomes_text_limits_and_serialization() {
     assert_eq!("not_interested".parse::<Interest>().unwrap(), Interest::NotInterested);
 }
 const MAX_TEXT_FOR_TEST: usize = 2000;
+
+#[test]
+fn refusals_follow_the_locale() {
+    use matchmaking_core::{validate_transition_for, Locale, TransitionRequest};
+    let finished = ctx(Closed, true);
+    let en = validate_transition_for(&finished, Approved, &TransitionRequest::default(), Locale::En).unwrap_err();
+    let fa = validate_transition_for(&finished, Approved, &TransitionRequest::default(), Locale::Fa).unwrap_err();
+    assert!(en.contains("cannot move"));
+    assert!(fa.contains("«بسته‌شده»") && fa.contains("پایان یافته"));
+    assert_eq!(validate_transition(&finished, Approved, &TransitionRequest::default()).unwrap_err(), en);
+}

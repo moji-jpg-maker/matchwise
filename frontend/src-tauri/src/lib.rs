@@ -55,6 +55,7 @@ pub mod parakeet_engine;
 pub mod state;
 pub mod summary;
 pub mod tray;
+pub mod ui_locale;
 pub mod utils;
 pub mod whisper_engine;
 
@@ -730,6 +731,7 @@ pub fn run() {
             set_language_preference,
             // Notification system commands
             notifications::commands::get_notification_settings,
+            ui_locale::set_ui_locale,
             notifications::commands::set_notification_settings,
             // System audio capture commands
             // Screen Recording permission commands

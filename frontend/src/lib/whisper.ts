@@ -1,3 +1,7 @@
+import type { MessageKey } from '@/i18n/types';
+
+export type WhisperTranslate = (key: MessageKey, params?: Record<string, string | number>) => string;
+
 // Types for whisper-rs integration
 export interface ModelInfo {
   name: string;
@@ -149,11 +153,16 @@ export function getStatusColor(status: ModelStatus): string {
   return 'gray';
 }
 
-export function formatFileSize(sizeMb: number): string {
+export function formatFileSize(
+  sizeMb: number,
+  t: WhisperTranslate,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string
+): string {
   if (sizeMb >= 1000) {
-    return `${(sizeMb / 1000).toFixed(1)}GB`;
+    const value = formatNumber(sizeMb / 1000, { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+    return t('modelMgr.sizeGb', { value });
   }
-  return `${sizeMb}MB`;
+  return t('modelMgr.sizeMb', { value: formatNumber(sizeMb, { maximumFractionDigits: 1 }) });
 }
 
 // Helper function to get model type (f16, q5_1, q5_0, q4_0)
@@ -175,24 +184,29 @@ export function isQuantizedModel(modelName: string): boolean {
 }
 
 // Helper function to get model performance badge
-export function getModelPerformanceBadge(modelName: string): { label: string; color: string } {
+export function getModelPerformanceBadge(modelName: string): { labelKey: MessageKey; color: string } {
   const type = getModelType(modelName);
   switch (type) {
     case 'f16':
-      return { label: 'Full Precision', color: 'blue' };
+      return { labelKey: 'whisperMgr.badgeFull', color: 'blue' };
     case 'q5_1':
-      return { label: 'Balanced+', color: 'green' };
+      return { labelKey: 'whisperMgr.badgeBalancedPlus', color: 'green' };
     case 'q5_0':
-      return { label: 'Balanced', color: 'green' };
+      return { labelKey: 'whisperMgr.badgeBalanced', color: 'green' };
     case 'q4_0':
-      return { label: 'Fast', color: 'orange' };
+      return { labelKey: 'whisperMgr.badgeFast', color: 'orange' };
     default:
-      return { label: 'Standard', color: 'gray' };
+      return { labelKey: 'whisperMgr.badgeStandard', color: 'gray' };
   }
 }
 
 // Helper function to get concise tagline for model (similar to Parakeet style)
-export function getModelTagline(modelName: string, speed: ProcessingSpeed, accuracy: ModelAccuracy): string {
+export function getModelTagline(
+  modelName: string,
+  speed: ProcessingSpeed,
+  accuracy: ModelAccuracy,
+  t: WhisperTranslate
+): string {
   const isQuantized = isQuantizedModel(modelName);
   const baseName = getModelBaseName(modelName);
 
@@ -200,46 +214,46 @@ export function getModelTagline(modelName: string, speed: ProcessingSpeed, accur
   let speedText = '';
   switch (speed) {
     case 'Very Fast':
-      speedText = 'Real time';
+      speedText = t('whisperMgr.tagRealtime');
       break;
     case 'Fast':
-      speedText = 'Fast processing';
+      speedText = t('whisperMgr.tagFast');
       break;
     case 'Medium':
-      speedText = 'Moderate speed';
+      speedText = t('whisperMgr.tagModerate');
       break;
     case 'Slow':
-      speedText = 'Slower processing';
+      speedText = t('whisperMgr.tagSlow');
       break;
   }
 
   // Key feature based on model and accuracy
   let featureText = '';
   if (baseName === 'large-v3') {
-    featureText = 'Most accurate';
+    featureText = t('whisperMgr.featMostAccurate');
   } else if (baseName === 'large-v3-turbo') {
-    featureText = 'Best accuracy with speed';
+    featureText = t('whisperMgr.featBestWithSpeed');
   } else if (baseName === 'medium') {
-    featureText = accuracy === 'High' ? 'Professional quality' : 'Balanced quality';
+    featureText = accuracy === 'High' ? t('whisperMgr.featProfessional') : t('whisperMgr.featBalanced');
   } else if (baseName === 'small') {
-    featureText = 'Good accuracy';
+    featureText = t('whisperMgr.featGood');
   } else if (baseName === 'base') {
-    featureText = 'Balanced quality';
+    featureText = t('whisperMgr.featBalanced');
   } else if (baseName === 'tiny') {
-    featureText = 'Fastest option';
+    featureText = t('whisperMgr.featFastest');
   }
 
   // Add quantization note if applicable
   if (isQuantized) {
     const quantType = getModelType(modelName);
     if (quantType === 'q5_0') {
-      featureText += ', optimized';
+      featureText = t('whisperMgr.featOptimized', { feature: featureText });
     } else if (quantType === 'q4_0') {
-      featureText += ', ultra fast';
+      featureText = t('whisperMgr.featUltraFast', { feature: featureText });
     }
   }
 
-  return `${speedText} • ${featureText}`;
+  return t('whisperMgr.tagline', { speed: speedText, feature: featureText });
 }
 
 // Group models by their base name for better UI organization

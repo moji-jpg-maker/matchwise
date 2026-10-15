@@ -16,8 +16,8 @@ use crate::questionnaires::{repo as qrepo, service as qservice};
 use crate::mm::match_repo::{MatchRepo, MatchRow};
 use crate::mm::repository::{MmRepository, StoredProfile};
 use matchmaking_core::{
-    describe_preference, first_name, validate_preference, Condition, ConditionOp, FieldDef, FieldKind, FieldRegistry, Interest, MatchStatus,
-    Preference, Provenance, Strength, Value,
+    describe_preference_for, first_name_for, first_name_opt, localize_digits, validate_preference_for, Condition, ConditionOp, FieldDef, FieldKind,
+    FieldRegistry, Interest, Locale, MatchStatus, Preference, Profile, Provenance, Strength, Value,
 };
 use serde_json::{json, Value as Json};
 use sqlx::SqlitePool;
@@ -60,6 +60,47 @@ fn pretty(s: &str) -> String {
     s.replace('_', " ")
 }
 
+fn num(loc: Locale, value: impl std::fmt::Display) -> String {
+    localize_digits(loc, &value.to_string())
+}
+
+fn greeting_name(profile: &Profile, loc: Locale) -> String {
+    first_name_opt(profile, true).unwrap_or_else(|| loc.pick("there", "دوست عزیز").to_string())
+}
+
+fn normalize_digits(text: &str) -> String {
+    text.chars()
+        .filter_map(|ch| match ch {
+            '۰'..='۹' => char::from_digit(ch as u32 - '۰' as u32, 10),
+            '٠'..='٩' => char::from_digit(ch as u32 - '٠' as u32, 10),
+            '٫' | ',' => Some('.'),
+            '٬' => None,
+            other => Some(other),
+        })
+        .collect()
+}
+
+fn parse_number(text: &str) -> Option<f64> {
+    normalize_digits(text.trim()).parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+fn is_skip_word(text: &str) -> bool {
+    let word = text.trim();
+    word.eq_ignore_ascii_case("skip") || word == "رد"
+}
+
+fn parse_bool_word(text: &str) -> Option<bool> {
+    match text.trim().to_lowercase().as_str() {
+        "yes" | "y" | "true" | "1" | "۱" | "بله" | "بلی" | "آره" | "اره" => Some(true),
+        "no" | "n" | "false" | "0" | "۰" | "خیر" | "نه" => Some(false),
+        _ => None,
+    }
+}
+
+fn language_keyboard() -> Keyboard {
+    vec![vec![button("English", "lang:en"), button("فارسی", "lang:fa")]]
+}
+
 // ------------------------------------------------------------------ messages
 
 async fn handle_message(pool: &SqlitePool, msg: Message) -> R {
@@ -71,45 +112,60 @@ async fn handle_message(pool: &SqlitePool, msg: Message) -> R {
         Some(u) if !u.is_bot && u.id == chat_id => u.clone(),
         _ => return Ok(vec![]),
     };
+    let existing = repo::link_by_chat(pool, chat_id).await.map_err(err)?;
+    let loc = existing.as_ref().map_or_else(|| Locale::parse_or_default(from.language_code.as_deref().unwrap_or("")), |link| link.locale);
     let Some(text) = msg.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
-        return Ok(vec![Reply::text(chat_id, "I can only read text messages for now.")]);
+        return Ok(vec![Reply::text(chat_id, loc.pick("I can only read text messages for now.", "فعلاً فقط پیام‌های متنی را می‌توانم بخوانم."))]);
     };
     if text.chars().count() > MAX_TEXT_CHARS {
-        return Ok(vec![Reply::text(chat_id, "That message is too long. Please keep it under 2000 characters.")]);
+        return Ok(vec![Reply::text(
+            chat_id,
+            loc.pick("That message is too long. Please keep it under 2000 characters.", "این پیام خیلی طولانی است. لطفاً آن را زیر ۲۰۰۰ نویسه نگه دارید."),
+        )]);
     }
-    match repo::link_by_chat(pool, chat_id).await.map_err(err)? {
-        None => unlinked(pool, chat_id, from.id, from.username.as_deref(), text).await,
+    match existing {
+        None => unlinked(pool, chat_id, from.id, from.username.as_deref(), loc, text).await,
         Some(link) if !link.consented => awaiting_consent(pool, &link, text).await,
         Some(link) => linked(pool, &link, text).await,
     }
 }
 
-fn consent_prompt(chat_id: i64) -> Reply {
-    Reply::with_keyboard(chat_id, render::consent_text(), vec![vec![button("I agree", "consent:y"), button("No thanks", "consent:n")]])
+fn consent_prompt(chat_id: i64, loc: Locale) -> Reply {
+    Reply::with_keyboard(
+        chat_id,
+        render::consent_text(loc),
+        vec![vec![button(loc.pick("I agree", "موافقم"), "consent:y"), button(loc.pick("No thanks", "نه، ممنون"), "consent:n")]],
+    )
 }
 
-async fn unlinked(pool: &SqlitePool, chat_id: i64, user_id: i64, username: Option<&str>, text: &str) -> R {
+async fn unlinked(pool: &SqlitePool, chat_id: i64, user_id: i64, username: Option<&str>, loc: Locale, text: &str) -> R {
     match parse_command(text) {
         Some((cmd, arg)) if cmd == "start" && !arg.is_empty() => {
             if repo::failed_attempts_last_hour(pool, chat_id).await.map_err(err)? >= MAX_FAILED_CODES {
-                return Ok(vec![Reply::text(chat_id, render::too_many_attempts_text())]);
+                return Ok(vec![Reply::text(chat_id, render::too_many_attempts_text(loc))]);
             }
             match repo::redeem_invite(pool, &arg).await.map_err(err)? {
                 Err(_) => {
                     // The same message for every failure: do not reveal whether a code exists or was used.
                     repo::record_failed_attempt(pool, chat_id).await.map_err(err)?;
-                    Ok(vec![Reply::text(chat_id, render::invalid_code_text())])
+                    Ok(vec![Reply::text(chat_id, render::invalid_code_text(loc))])
                 }
-                Ok(profile_id) => match repo::create_link(pool, &profile_id, chat_id, user_id, username).await {
-                    Ok(()) => Ok(vec![consent_prompt(chat_id)]),
-                    Err(LinkError::ProfileHasChat) => Ok(vec![Reply::text(chat_id, "This profile is already linked to a Telegram account. Please ask your matchmaker for help.")]),
-                    Err(LinkError::ChatHasProfile) => Ok(vec![Reply::text(chat_id, "This chat is already linked to a profile.")]),
+                Ok(profile_id) => match repo::create_link(pool, &profile_id, chat_id, user_id, username, loc).await {
+                    Ok(()) => Ok(vec![consent_prompt(chat_id, loc)]),
+                    Err(LinkError::ProfileHasChat) => Ok(vec![Reply::text(
+                        chat_id,
+                        loc.pick(
+                            "This profile is already linked to a Telegram account. Please ask your matchmaker for help.",
+                            "این پروفایل از قبل به یک حساب تلگرام متصل شده است. لطفاً از مشاور خود کمک بخواهید.",
+                        ),
+                    )]),
+                    Err(LinkError::ChatHasProfile) => Ok(vec![Reply::text(chat_id, loc.pick("This chat is already linked to a profile.", "این گفتگو از قبل به یک پروفایل متصل شده است."))]),
                     Err(LinkError::Db(e)) => Err(e),
                 },
             }
         }
-        Some((cmd, _)) if cmd == "help" => Ok(vec![Reply::text(chat_id, render::help_text())]),
-        _ => Ok(vec![Reply::text(chat_id, render::unlinked_text())]),
+        Some((cmd, _)) if cmd == "help" => Ok(vec![Reply::text(chat_id, render::help_text(loc))]),
+        _ => Ok(vec![Reply::text(chat_id, render::unlinked_text(loc))]),
     }
 }
 
@@ -118,10 +174,13 @@ async fn awaiting_consent(pool: &SqlitePool, link: &Link, text: &str) -> R {
     if let Some((cmd, _)) = parse_command(text) {
         if cmd == "stop" || cmd == "unlink" {
             repo::delete_link(pool, &link.profile_id).await.map_err(err)?;
-            return Ok(vec![Reply::text(chat_id, render::consent_declined_text())]);
+            return Ok(vec![Reply::text(chat_id, render::consent_declined_text(link.locale))]);
+        }
+        if cmd == "language" {
+            return Ok(vec![Reply::with_keyboard(chat_id, render::language_prompt_text(), language_keyboard())]);
         }
     }
-    Ok(vec![consent_prompt(chat_id)])
+    Ok(vec![consent_prompt(chat_id, link.locale)])
 }
 
 async fn load_profile(pool: &SqlitePool, id: &str) -> Result<StoredProfile, String> {
@@ -141,27 +200,27 @@ async fn linked(pool: &SqlitePool, link: &Link, text: &str) -> R {
     }
     // Free text: it goes to the matchmaker.
     repo::add_message(pool, &link.profile_id, "in", text, None).await.map_err(err)?;
-    Ok(vec![Reply::text(chat_id, "Thank you. I have passed your message to your matchmaker.")])
+    Ok(vec![Reply::text(chat_id, link.locale.pick("Thank you. I have passed your message to your matchmaker.", "ممنون. پیام شما را به مشاورتان رساندم."))])
 }
 
 async fn command(pool: &SqlitePool, link: &Link, cmd: &str, arg: &str) -> R {
     let chat_id = link.chat_id;
+    let loc = link.locale;
     match cmd {
         "start" => {
             let p = load_profile(pool, &link.profile_id).await?;
-            let name = first_name(&p.profile, true);
-            let name = if name == "Someone" { "there".to_string() } else { name };
-            Ok(vec![Reply::text(chat_id, render::welcome_text(&name))])
+            Ok(vec![Reply::text(chat_id, render::welcome_text(loc, &greeting_name(&p.profile, loc)))])
         }
-        "help" => Ok(vec![Reply::text(chat_id, render::help_text())]),
+        "help" => Ok(vec![Reply::text(chat_id, render::help_text(loc))]),
+        "language" => Ok(vec![Reply::with_keyboard(chat_id, render::language_prompt_text(), language_keyboard())]),
         "cancel" => {
             repo::clear_state(pool, chat_id).await.map_err(err)?;
-            Ok(vec![Reply::text(chat_id, "Okay, cancelled.")])
+            Ok(vec![Reply::text(chat_id, loc.pick("Okay, cancelled.", "باشه، لغو شد."))])
         }
         "profile" => {
             let reg = MmRepository::registry(pool).await.map_err(err)?;
             let p = load_profile(pool, &link.profile_id).await?;
-            Ok(vec![Reply::text(chat_id, render::profile_summary(&p.profile, &reg))])
+            Ok(vec![Reply::text(chat_id, render::profile_summary(loc, &p.profile, &reg))])
         }
         "edit" => start_edit(pool, link).await,
         "preferences" => show_preferences(pool, link).await,
@@ -172,37 +231,56 @@ async fn command(pool: &SqlitePool, link: &Link, cmd: &str, arg: &str) -> R {
         "settings" => show_settings(link),
         "stop" => {
             repo::set_notifications(pool, &link.profile_id, false).await.map_err(err)?;
-            Ok(vec![Reply::text(chat_id, "I will not send you notifications any more. Send /resume to turn them back on. You can still use the commands.")])
+            Ok(vec![Reply::text(
+                chat_id,
+                loc.pick(
+                    "I will not send you notifications any more. Send /resume to turn them back on. You can still use the commands.",
+                    "دیگر برایتان اعلان نمی‌فرستم. برای روشن کردن دوباره، /resume را بفرستید. هنوز می‌توانید از دستورها استفاده کنید.",
+                ),
+            )])
         }
         "resume" => {
             repo::set_notifications(pool, &link.profile_id, true).await.map_err(err)?;
-            Ok(vec![Reply::text(chat_id, "Notifications are on again.")])
+            Ok(vec![Reply::text(chat_id, loc.pick("Notifications are on again.", "اعلان‌ها دوباره روشن شد."))])
         }
         "unlink" => Ok(vec![Reply::with_keyboard(
             chat_id,
-            "Unlink this chat from your profile? You will stop receiving messages here. Your profile stays with your matchmaker.",
-            vec![vec![button("Yes, unlink", "unlink:y"), button("Keep", "unlink:n")]],
+            loc.pick(
+                "Unlink this chat from your profile? You will stop receiving messages here. Your profile stays with your matchmaker.",
+                "این گفتگو از پروفایل شما جدا شود؟ دیگر اینجا پیامی دریافت نمی‌کنید. پروفایل شما نزد مشاورتان می‌ماند.",
+            ),
+            vec![vec![button(loc.pick("Yes, unlink", "بله، جدا شود"), "unlink:y"), button(loc.pick("Keep", "نگه دار"), "unlink:n")]],
         )]),
         "forget" => Ok(vec![Reply::with_keyboard(
             chat_id,
-            "Ask your matchmaker to delete all your data? They will be notified of your request and can complete it in the app.",
-            vec![vec![button("Yes, delete my data", "forget:y"), button("Keep", "forget:n")]],
+            loc.pick(
+                "Ask your matchmaker to delete all your data? They will be notified of your request and can complete it in the app.",
+                "از مشاورتان بخواهید همه داده‌های شما را حذف کند؟ درخواست شما به او اطلاع داده می‌شود و می‌تواند آن را در برنامه انجام دهد.",
+            ),
+            vec![vec![button(loc.pick("Yes, delete my data", "بله، داده‌هایم حذف شود"), "forget:y"), button(loc.pick("Keep", "نگه دار"), "forget:n")]],
         )]),
-        _ => Ok(vec![Reply::text(chat_id, "I did not understand that. Send /help to see what I can do.")]),
+        _ => Ok(vec![Reply::text(chat_id, loc.pick("I did not understand that. Send /help to see what I can do.", "متوجه نشدم. برای دیدن کارهایی که می‌توانم انجام دهم، /help را بفرستید."))]),
     }
 }
 
 fn show_settings(link: &Link) -> R {
+    let loc = link.locale;
     let on = link.notifications_enabled;
     let kb = vec![
-        vec![if on { button("Turn notifications off", "set:n:off") } else { button("Turn notifications on", "set:n:on") }],
-        vec![button("Unlink this chat", "set:unlink"), button("Delete my data", "set:forget")],
+        vec![if on {
+            button(loc.pick("Turn notifications off", "خاموش کردن اعلان‌ها"), "set:n:off")
+        } else {
+            button(loc.pick("Turn notifications on", "روشن کردن اعلان‌ها"), "set:n:on")
+        }],
+        vec![button(loc.pick("Language", "زبان"), "set:lang")],
+        vec![button(loc.pick("Unlink this chat", "جدا کردن این گفتگو"), "set:unlink"), button(loc.pick("Delete my data", "حذف داده‌های من"), "set:forget")],
     ];
-    Ok(vec![Reply::with_keyboard(
-        link.chat_id,
-        format!("<b>Settings</b>\nNotifications: {}\n\nMessages here pass through Telegram. Your matchmaker can see everything you send.", if on { "on" } else { "off" }),
-        kb,
-    )])
+    let state = if on { loc.pick("on", "روشن") } else { loc.pick("off", "خاموش") };
+    let text = match loc {
+        Locale::En => format!("<b>Settings</b>\nNotifications: {state}\n\nMessages here pass through Telegram. Your matchmaker can see everything you send."),
+        Locale::Fa => format!("<b>تنظیمات</b>\nاعلان‌ها: {state}\n\nپیام‌های اینجا از طریق تلگرام می‌گذرند. مشاور شما همه آنچه را می‌فرستید می‌بیند."),
+    };
+    Ok(vec![Reply::with_keyboard(link.chat_id, text, kb)])
 }
 
 // ------------------------------------------------------------------ introductions
@@ -233,23 +311,24 @@ fn my_side(m: &MatchRow, me: &str) -> (&'static str, Interest, String) {
     if m.profile_a == me { ("a", m.a_response, m.profile_b.clone()) } else { ("b", m.b_response, m.profile_a.clone()) }
 }
 
-async fn other_name(pool: &SqlitePool, other_id: &str) -> Result<String, String> {
+async fn other_name(pool: &SqlitePool, other_id: &str, loc: Locale) -> Result<String, String> {
     let p = load_profile(pool, other_id).await?;
-    Ok(first_name(&p.profile, repo::show_first_name(pool).await.map_err(err)?))
+    Ok(first_name_for(&p.profile, repo::show_first_name(pool).await.map_err(err)?, loc))
 }
 
 async fn show_matches(pool: &SqlitePool, link: &Link) -> R {
+    let loc = link.locale;
     let ms = visible_matches(pool, &link.profile_id).await?;
     if ms.is_empty() {
-        return Ok(vec![Reply::text(link.chat_id, "You have no introductions at the moment.")]);
+        return Ok(vec![Reply::text(link.chat_id, loc.pick("You have no introductions at the moment.", "فعلاً معرفی‌ای ندارید."))]);
     }
-    let mut text = String::from("<b>Your introductions</b>\n");
+    let mut text = String::from(loc.pick("<b>Your introductions</b>\n", "<b>معرفی‌های شما</b>\n"));
     let mut buttons = vec![];
     for (i, m) in ms.iter().enumerate() {
         let (_, mine, other) = my_side(m, &link.profile_id);
-        let name = other_name(pool, &other).await?;
-        text.push_str(&format!("{}. {} - {}\n", i + 1, render::esc(&name), render::friendly_status(m.status, mine != Interest::Unknown, &name)));
-        buttons.push(button(format!("Open {}", i + 1), format!("match:open:{}", m.id)));
+        let name = other_name(pool, &other, link.locale).await?;
+        text.push_str(&format!("{}. {} - {}\n", num(loc, i + 1), render::user_text(loc, &name), render::friendly_status(loc, m.status, mine != Interest::Unknown, &name)));
+        buttons.push(button(format!("{} {}", loc.pick("Open", "باز کردن"), num(loc, i + 1)), format!("match:open:{}", m.id)));
     }
     Ok(vec![Reply::with_keyboard(link.chat_id, text, rows(buttons, 3))])
 }
@@ -258,105 +337,141 @@ async fn open_match_by_number(pool: &SqlitePool, link: &Link, arg: &str) -> R {
     let ms = visible_matches(pool, &link.profile_id).await?;
     match arg.trim().parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|i| ms.get(i)) {
         Some(m) => open_match(pool, link, m).await,
-        None => Ok(vec![Reply::text(link.chat_id, "Send /matches to see your introductions, then /match followed by a number.")]),
+        None => Ok(vec![Reply::text(
+            link.chat_id,
+            link.locale.pick(
+                "Send /matches to see your introductions, then /match followed by a number.",
+                "برای دیدن معرفی‌هایتان /matches را بفرستید، سپس /match و بعد از آن یک عدد.",
+            ),
+        )]),
     }
 }
 
 async fn open_match(pool: &SqlitePool, link: &Link, m: &MatchRow) -> R {
+    let loc = link.locale;
     let (_, mine, other) = my_side(m, &link.profile_id);
     let other_p = load_profile(pool, &other).await?;
-    let card = notify::card_for(pool, &other_p).await?;
+    let card = notify::card_for(pool, &other_p, loc).await?;
     let awaiting = m.status == MatchStatus::IntroductionProposed && mine == Interest::Unknown;
-    let mut text = render::introduction_text(&card, awaiting);
+    let mut text = render::introduction_text(loc, &card, awaiting);
     if !awaiting {
-        text.push_str(&format!("\nStatus: {}", render::friendly_status(m.status, mine != Interest::Unknown, &card.title)));
+        text.push_str(&format!("\n{}: {}", loc.pick("Status", "وضعیت"), render::friendly_status(loc, m.status, mine != Interest::Unknown, &card.title)));
     }
-    Ok(vec![if awaiting { Reply::with_keyboard(link.chat_id, text, notify::intro_keyboard(&m.id)) } else { Reply::text(link.chat_id, text) }])
+    Ok(vec![if awaiting { Reply::with_keyboard(link.chat_id, text, notify::intro_keyboard(loc, &m.id)) } else { Reply::text(link.chat_id, text) }])
 }
 
 async fn show_status(pool: &SqlitePool, link: &Link) -> R {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let p = load_profile(pool, &link.profile_id).await?;
-    let mut text = String::from("<b>Status</b>\n");
+    let loc = link.locale;
+    let mut text = String::from(loc.pick("<b>Status</b>\n", "<b>وضعیت</b>\n"));
     match p.profile.completeness(&reg) {
-        Some(c) if c < 1.0 => text.push_str(&format!("Profile: {}% complete (send /edit to finish)\n", (c * 100.0).round())),
-        _ => text.push_str("Profile: complete\n"),
+        Some(c) if c < 1.0 => {
+            let percent = num(loc, (c * 100.0).round());
+            text.push_str(&match loc {
+                Locale::En => format!("Profile: {percent}% complete (send /edit to finish)\n"),
+                Locale::Fa => format!("پروفایل: {percent}٪ کامل است (برای تکمیل /edit را بفرستید)\n"),
+            });
+        }
+        _ => text.push_str(loc.pick("Profile: complete\n", "پروفایل: کامل است\n")),
     }
     let ms = visible_matches(pool, &link.profile_id).await?;
     if ms.is_empty() {
-        text.push_str("Introductions: none at the moment\n");
+        text.push_str(loc.pick("Introductions: none at the moment\n", "معرفی‌ها: فعلاً ندارید\n"));
     }
     for (i, m) in ms.iter().enumerate() {
         let (_, mine, other) = my_side(m, &link.profile_id);
-        let name = other_name(pool, &other).await?;
-        text.push_str(&format!("{}. {} - {}\n", i + 1, render::esc(&name), render::friendly_status(m.status, mine != Interest::Unknown, &name)));
+        let name = other_name(pool, &other, link.locale).await?;
+        text.push_str(&format!("{}. {} - {}\n", num(loc, i + 1), render::user_text(loc, &name), render::friendly_status(loc, m.status, mine != Interest::Unknown, &name)));
     }
-    text.push_str(&format!("Notifications: {}", if link.notifications_enabled { "on" } else { "off" }));
+    let state = if link.notifications_enabled { loc.pick("on", "روشن") } else { loc.pick("off", "خاموش") };
+    text.push_str(&format!("{}: {}", loc.pick("Notifications", "اعلان‌ها"), state));
     Ok(vec![Reply::text(link.chat_id, text)])
 }
 
 // ------------------------------------------------------------------ questionnaires
 
 async fn show_questionnaires(pool: &SqlitePool, link: &Link) -> R {
+    let loc = link.locale;
     let open = qrepo::open_responses(pool, &link.profile_id).await.map_err(err)?;
     if open.is_empty() {
-        return Ok(vec![Reply::text(link.chat_id, "You have no questionnaires waiting. Your matchmaker will tell you if there is one.")]);
+        return Ok(vec![Reply::text(
+            link.chat_id,
+            loc.pick(
+                "You have no questionnaires waiting. Your matchmaker will tell you if there is one.",
+                "پرسشنامه‌ای در انتظار شما نیست. اگر پرسشنامه‌ای باشد مشاورتان خبر می‌دهد.",
+            ),
+        )]);
     }
-    let mut text = String::from("<b>Questionnaires</b>\nThere are no right or wrong answers. You can stop at any time and continue later with /questionnaires.\n");
+    let mut text = String::from(loc.pick(
+        "<b>Questionnaires</b>\nThere are no right or wrong answers. You can stop at any time and continue later with /questionnaires.\n",
+        "<b>پرسشنامه‌ها</b>\nپاسخ درست یا غلط وجود ندارد. هر زمان بخواهید می‌توانید متوقف شوید و بعداً با /questionnaires ادامه دهید.\n",
+    ));
     let mut buttons = vec![];
     for r in &open {
         let inst = qservice::instrument_for(pool, r).await?;
-        text.push_str(&format!("• {} ({} of {} answered)\n", render::esc(&inst.name), r.answers.len(), inst.items.len()));
-        buttons.push(button(if r.answers.is_empty() { format!("Start: {}", inst.name) } else { format!("Continue: {}", inst.name) }, format!("q:start:{}", r.id)));
+        let progress = match loc {
+            Locale::En => format!("{} of {} answered", r.answers.len(), inst.items.len()),
+            Locale::Fa => format!("{} از {} پاسخ داده شده", num(loc, r.answers.len()), num(loc, inst.items.len())),
+        };
+        text.push_str(&format!("• {} ({})\n", render::user_text(loc, &inst.name), progress));
+        let verb = if r.answers.is_empty() { loc.pick("Start", "شروع") } else { loc.pick("Continue", "ادامه") };
+        buttons.push(button(format!("{}: {}", verb, inst.name), format!("q:start:{}", r.id)));
     }
     Ok(vec![Reply::with_keyboard(link.chat_id, text, buttons.into_iter().map(|b| vec![b]).collect())])
 }
 
 /// The next unanswered question as a message with one button per scale point.
-async fn ask_question(pool: &SqlitePool, chat_id: i64, r: &qrepo::ResponseRow) -> R {
+async fn ask_question(pool: &SqlitePool, chat_id: i64, loc: Locale, r: &qrepo::ResponseRow) -> R {
     let inst = qservice::instrument_for(pool, r).await?;
     let Some((idx, item)) = matchmaking_core::next_item(&inst, &r.answers) else {
-        return Ok(vec![Reply::text(chat_id, "You have answered every question. Thank you!")]);
+        return Ok(vec![Reply::text(chat_id, loc.pick("You have answered every question. Thank you!", "به همه پرسش‌ها پاسخ دادید. ممنون!"))]);
     };
-    let mut text = format!("<b>{}</b>\nQuestion {} of {}\n\n{}\n\n", render::esc(&inst.name), idx + 1, inst.items.len(), render::esc(&item.text));
+    let position = match loc {
+        Locale::En => format!("Question {} of {}", idx + 1, inst.items.len()),
+        Locale::Fa => format!("پرسش {} از {}", num(loc, idx + 1), num(loc, inst.items.len())),
+    };
+    let mut text = format!("<b>{}</b>\n{}\n\n{}\n\n", render::user_text(loc, &inst.name), position, render::user_text(loc, &item.text));
     for (n, label) in inst.scale.labels.iter().enumerate() {
-        text.push_str(&format!("{} = {}\n", inst.scale.min + n as i32, render::esc(label)));
+        text.push_str(&format!("{} = {}\n", num(loc, inst.scale.min + n as i32), render::user_text(loc, label)));
     }
-    let buttons: Vec<InlineButton> = (inst.scale.min..=inst.scale.max).map(|v| button(v.to_string(), format!("q:a:{}:{}:{}", r.id, idx, v))).collect();
+    let buttons: Vec<InlineButton> = (inst.scale.min..=inst.scale.max).map(|v| button(num(loc, v), format!("q:a:{}:{}:{}", r.id, idx, v))).collect();
     Ok(vec![Reply::with_keyboard(chat_id, text, vec![buttons])])
 }
 
 async fn questionnaire_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, message_id: Option<i64>) -> R {
     let chat_id = link.chat_id;
+    let loc = link.locale;
+    let invalid = loc.pick("This button is no longer valid.", "این دکمه دیگر معتبر نیست.");
     let mut parts = rest.split(':');
     let (kind, id) = (parts.next().unwrap_or(""), parts.next().and_then(|v| v.parse::<i64>().ok()));
-    let Some(id) = id else { return Ok(vec![toast(cb_id, "This button is no longer valid.")]) };
+    let Some(id) = id else { return Ok(vec![toast(cb_id, invalid)]) };
     // Never trust the button: the response must exist, belong to this person and still be open.
     let Some(r) = qrepo::get_response(pool, id).await.map_err(err)?.filter(|r| r.profile_id == link.profile_id && r.status != "complete") else {
-        return Ok(vec![toast(cb_id, "This questionnaire is no longer open.")]);
+        return Ok(vec![toast(cb_id, loc.pick("This questionnaire is no longer open.", "این پرسشنامه دیگر باز نیست."))]);
     };
     let clear = message_id.map(|mid| Reply::EditMarkup { chat_id, message_id: mid, keyboard: None });
     match kind {
         "start" => {
             let mut out = vec![done(cb_id)];
-            out.extend(ask_question(pool, chat_id, &r).await?);
+            out.extend(ask_question(pool, chat_id, loc, &r).await?);
             Ok(out)
         }
         "a" => {
             let (Some(idx), Some(val)) = (parts.next().and_then(|v| v.parse::<usize>().ok()), parts.next().and_then(|v| v.parse::<i32>().ok())) else {
-                return Ok(vec![toast(cb_id, "This button is no longer valid.")]);
+                return Ok(vec![toast(cb_id, invalid)]);
             };
             let inst = qservice::instrument_for(pool, &r).await?;
             // The tapped question must be the one currently waiting: a second tap or an old message changes nothing.
             let current = matchmaking_core::next_item(&inst, &r.answers);
             let Some((cur_idx, item)) = current.filter(|(i, _)| *i == idx) else {
-                let mut out = vec![toast(cb_id, "That question has already been answered.")];
+                let mut out = vec![toast(cb_id, loc.pick("That question has already been answered.", "به این پرسش قبلاً پاسخ داده شده است."))];
                 out.extend(clear);
                 return Ok(out);
             };
             let item_id = item.id.clone();
             let _ = cur_idx;
-            let outcome = match qservice::record_answer(pool, id, &item_id, val).await {
+            let outcome = match qservice::record_answer_for(pool, id, &item_id, val, loc).await {
                 Ok(o) => o,
                 Err(e) => return Ok(vec![toast(cb_id, &e)]),
             };
@@ -364,14 +479,20 @@ async fn questionnaire_callback(pool: &SqlitePool, link: &Link, cb_id: &str, res
             out.extend(clear);
             if outcome.completed {
                 // Scores are not shown here: they are for the matchmaker, who can put them in context.
-                out.push(Reply::text(chat_id, "Thank you, you have finished this questionnaire. Your matchmaker will go through the results with you."));
+                out.push(Reply::text(
+                    chat_id,
+                    loc.pick(
+                        "Thank you, you have finished this questionnaire. Your matchmaker will go through the results with you.",
+                        "ممنون، این پرسشنامه را تمام کردید. مشاورتان نتایج را همراه شما مرور می‌کند.",
+                    ),
+                ));
             } else {
                 let fresh = qrepo::get_response(pool, id).await.map_err(err)?.ok_or("Response not found")?;
-                out.extend(ask_question(pool, chat_id, &fresh).await?);
+                out.extend(ask_question(pool, chat_id, loc, &fresh).await?);
             }
             Ok(out)
         }
-        _ => Ok(vec![toast(cb_id, "This button is no longer valid.")]),
+        _ => Ok(vec![toast(cb_id, invalid)]),
     }
 }
 
@@ -387,30 +508,43 @@ async fn start_edit(pool: &SqlitePool, link: &Link) -> R {
     let queue: Vec<String> = p.profile.missing_required(&reg).into_iter().filter(|k| reg.get(k).map_or(false, editable)).collect();
     if let Some(first) = queue.first().cloned() {
         repo::set_state(pool, link.chat_id, &json!({"flow": "edit", "queue": queue, "current": first, "multi": []})).await.map_err(err)?;
-        let mut out = vec![Reply::text(link.chat_id, "Let's complete your profile. You can skip any question, or send /cancel to stop.")];
-        out.push(ask_field(link.chat_id, reg.get(&first).ok_or("field missing")?, &[]));
+        let mut out = vec![Reply::text(
+            link.chat_id,
+            link.locale.pick(
+                "Let's complete your profile. You can skip any question, or send /cancel to stop.",
+                "بیایید پروفایل شما را کامل کنیم. می‌توانید هر پرسشی را رد کنید یا برای توقف /cancel را بفرستید.",
+            ),
+        )];
+        out.push(ask_field(link.chat_id, link.locale, reg.get(&first).ok_or("field missing")?, &[]));
         return Ok(out);
     }
     // everything required is filled: offer to change anything
-    let buttons: Vec<InlineButton> = reg.defs().filter(|d| editable(d)).take(30).map(|d| button(d.label.clone(), format!("edit:f:{}", d.key))).collect();
-    Ok(vec![Reply::with_keyboard(link.chat_id, "Your profile is complete. What would you like to change?", rows(buttons, 2))])
+    let buttons: Vec<InlineButton> = reg.defs().filter(|d| editable(d)).take(30).map(|d| button(d.label_for(link.locale).to_string(), format!("edit:f:{}", d.key))).collect();
+    Ok(vec![Reply::with_keyboard(
+        link.chat_id,
+        link.locale.pick("Your profile is complete. What would you like to change?", "پروفایل شما کامل است. چه چیزی را می‌خواهید تغییر دهید؟"),
+        rows(buttons, 2),
+    )])
 }
 
-fn ask_field(chat_id: i64, def: &FieldDef, selected: &[String]) -> Reply {
-    let mut text = format!("<b>{}</b>\n", render::esc(&def.label));
+fn ask_field(chat_id: i64, loc: Locale, def: &FieldDef, selected: &[String]) -> Reply {
+    let mut text = format!("<b>{}</b>\n", render::esc(def.label_for(loc)));
     if def.sensitive {
-        text.push_str("This is sensitive information and Telegram will carry it. Skip it if you prefer to tell your matchmaker in person.\n");
+        text.push_str(loc.pick(
+            "This is sensitive information and Telegram will carry it. Skip it if you prefer to tell your matchmaker in person.\n",
+            "این اطلاعات حساس است و از طریق تلگرام منتقل می‌شود. اگر ترجیح می‌دهید حضوری به مشاورتان بگویید، آن را رد کنید.\n",
+        ));
     }
-    let skip = button("Skip", "edit:skip");
+    let skip = button(loc.pick("Skip", "رد کردن"), "edit:skip");
     match &def.kind {
         FieldKind::Choice(opts) => {
-            text.push_str("Choose one:");
+            text.push_str(loc.pick("Choose one:", "یکی را انتخاب کنید:"));
             let mut kb = rows(opts.iter().enumerate().map(|(i, o)| button(pretty(o), format!("edit:c:{i}"))).collect(), 2);
             kb.push(vec![skip]);
             Reply::with_keyboard(chat_id, text, kb)
         }
         FieldKind::MultiChoice(opts) => {
-            text.push_str("Choose all that apply, then tap Done:");
+            text.push_str(loc.pick("Choose all that apply, then tap Done:", "همه موارد مناسب را انتخاب کنید، سپس «انجام شد» را بزنید:"));
             let mut kb = rows(
                 opts.iter()
                     .enumerate()
@@ -418,19 +552,19 @@ fn ask_field(chat_id: i64, def: &FieldDef, selected: &[String]) -> Reply {
                     .collect(),
                 2,
             );
-            kb.push(vec![button("Done", "edit:done"), skip]);
+            kb.push(vec![button(loc.pick("Done", "انجام شد"), "edit:done"), skip]);
             Reply::with_keyboard(chat_id, text, kb)
         }
         FieldKind::Bool => {
-            text.push_str("Yes or no?");
-            Reply::with_keyboard(chat_id, text, vec![vec![button("Yes", "edit:b:1"), button("No", "edit:b:0")], vec![skip]])
+            text.push_str(loc.pick("Yes or no?", "بله یا خیر؟"));
+            Reply::with_keyboard(chat_id, text, vec![vec![button(loc.pick("Yes", "بله"), "edit:b:1"), button(loc.pick("No", "خیر"), "edit:b:0")], vec![skip]])
         }
         FieldKind::Number => {
-            text.push_str("Send a number.");
+            text.push_str(loc.pick("Send a number.", "یک عدد بفرستید."));
             Reply::with_keyboard(chat_id, text, vec![vec![skip]])
         }
         _ => {
-            text.push_str("Type your answer.");
+            text.push_str(loc.pick("Type your answer.", "پاسخ خود را بنویسید."));
             Reply::with_keyboard(chat_id, text, vec![vec![skip]])
         }
     }
@@ -439,17 +573,13 @@ fn ask_field(chat_id: i64, def: &FieldDef, selected: &[String]) -> Reply {
 fn parse_typed(def: &FieldDef, text: &str) -> Option<Value> {
     let t = text.trim();
     match &def.kind {
-        FieldKind::Number => t.replace(',', ".").parse::<f64>().ok().filter(|n| n.is_finite()).map(Value::Num),
+        FieldKind::Number => parse_number(t).map(Value::Num),
         FieldKind::Text => (t.chars().count() <= 500).then(|| Value::Text(t.to_string())),
-        FieldKind::Bool => match t.to_lowercase().as_str() {
-            "yes" | "y" | "true" | "1" => Some(Value::Bool(true)),
-            "no" | "n" | "false" | "0" => Some(Value::Bool(false)),
-            _ => None,
-        },
+        FieldKind::Bool => parse_bool_word(t).map(Value::Bool),
         FieldKind::Choice(opts) => opts.iter().find(|o| pretty(o).eq_ignore_ascii_case(t) || o.eq_ignore_ascii_case(t)).map(|o| Value::Text(o.clone())),
         FieldKind::MultiChoice(opts) => {
             let picked: Option<Vec<String>> = t
-                .split(',')
+                .split([',', '،'])
                 .map(|p| p.trim())
                 .filter(|p| !p.is_empty())
                 .map(|p| opts.iter().find(|o| pretty(o).eq_ignore_ascii_case(p) || o.eq_ignore_ascii_case(p)).cloned())
@@ -470,16 +600,22 @@ fn state_list(st: &Json, key: &str) -> Vec<String> {
 
 /// Save one answer. Returns a short message for the person (never the stored value).
 async fn save_answer(pool: &SqlitePool, link: &Link, reg: &FieldRegistry, key: &str, value: Value) -> Result<Result<String, String>, String> {
-    if let Err(e) = reg.validate_value(key, &value) {
+    if let Err(e) = reg.validate_value_for(key, &value, link.locale) {
         return Ok(Err(e));
     }
     let mut p = load_profile(pool, &link.profile_id).await?;
     if !p.profile.set(key, value, Provenance::User) {
-        return Ok(Ok("Your matchmaker has already filled this in, so only they can change it. I kept it as it is.".to_string()));
+        return Ok(Ok(link
+            .locale
+            .pick(
+                "Your matchmaker has already filled this in, so only they can change it. I kept it as it is.",
+                "مشاورتان قبلاً این را پر کرده است، پس فقط او می‌تواند آن را تغییر دهد. آن را همان‌طور نگه داشتم.",
+            )
+            .to_string()));
     }
     MmRepository::update_profile_data(pool, &p.profile).await.map_err(err)?;
     MmRepository::audit(pool, "update", "profile", &link.profile_id, Some(key)).await;
-    Ok(Ok("Saved.".to_string()))
+    Ok(Ok(link.locale.pick("Saved.", "ذخیره شد.").to_string()))
 }
 
 /// Move to the next question, or finish.
@@ -490,16 +626,23 @@ async fn advance_edit(pool: &SqlitePool, link: &Link, reg: &FieldRegistry, st: &
     }
     if let Some(next) = queue.first().cloned() {
         repo::set_state(pool, link.chat_id, &json!({"flow": "edit", "queue": queue, "current": next, "multi": []})).await.map_err(err)?;
-        out.push(ask_field(link.chat_id, reg.get(&next).ok_or("field missing")?, &[]));
+        out.push(ask_field(link.chat_id, link.locale, reg.get(&next).ok_or("field missing")?, &[]));
         return Ok(out);
     }
     repo::clear_state(pool, link.chat_id).await.map_err(err)?;
     let p = load_profile(pool, &link.profile_id).await?;
+    let loc = link.locale;
     out.push(Reply::text(
         link.chat_id,
         match p.profile.completeness(reg) {
-            Some(c) if c < 1.0 => format!("Thank you. Your profile is {}% complete; send /edit when you are ready to add the rest.", (c * 100.0).round()),
-            _ => "Thank you. Your profile is complete.".to_string(),
+            Some(c) if c < 1.0 => {
+                let percent = num(loc, (c * 100.0).round());
+                match loc {
+                    Locale::En => format!("Thank you. Your profile is {percent}% complete; send /edit when you are ready to add the rest."),
+                    Locale::Fa => format!("ممنون. پروفایل شما {percent}٪ کامل است؛ هر وقت آماده بودید برای افزودن بقیه /edit را بفرستید."),
+                }
+            }
+            _ => loc.pick("Thank you. Your profile is complete.", "ممنون. پروفایل شما کامل است.").to_string(),
         },
     ));
     Ok(out)
@@ -507,16 +650,17 @@ async fn advance_edit(pool: &SqlitePool, link: &Link, reg: &FieldRegistry, st: &
 
 async fn flow_text(pool: &SqlitePool, link: &Link, st: Json, text: &str) -> R {
     let chat_id = link.chat_id;
+    let loc = link.locale;
     match state_str(&st, "flow").as_deref() {
         Some("edit") => {
             let reg = MmRepository::registry(pool).await.map_err(err)?;
             let Some(key) = state_str(&st, "current") else { return Ok(vec![]) };
             let def = reg.get(&key).ok_or("field missing")?.clone();
             let Some(value) = parse_typed(&def, text) else {
-                return Ok(vec![Reply::text(chat_id, "I could not read that."), ask_field(chat_id, &def, &state_list(&st, "multi"))]);
+                return Ok(vec![Reply::text(chat_id, loc.pick("I could not read that.", "نتوانستم این را بخوانم.")), ask_field(chat_id, loc, &def, &state_list(&st, "multi"))]);
             };
             match save_answer(pool, link, &reg, &key, value).await? {
-                Err(msg) => Ok(vec![Reply::text(chat_id, format!("That does not look right: {}", render::esc(&msg))), ask_field(chat_id, &def, &[])]),
+                Err(msg) => Ok(vec![Reply::text(chat_id, format!("{} {}", loc.pick("That does not look right:", "این درست به نظر نمی‌رسد:"), render::esc(&msg))), ask_field(chat_id, loc, &def, &[])]),
                 Ok(msg) => advance_edit(pool, link, &reg, &st, vec![Reply::text(chat_id, msg)]).await,
             }
         }
@@ -525,12 +669,12 @@ async fn flow_text(pool: &SqlitePool, link: &Link, st: Json, text: &str) -> R {
             let match_id = state_str(&st, "match_id");
             repo::add_message(pool, &link.profile_id, "in", text, match_id.as_deref()).await.map_err(err)?;
             repo::clear_state(pool, chat_id).await.map_err(err)?;
-            Ok(vec![Reply::text(chat_id, "Thank you, I have passed that to your matchmaker.")])
+            Ok(vec![Reply::text(chat_id, loc.pick("Thank you, I have passed that to your matchmaker.", "ممنون، این را به مشاورتان رساندم."))])
         }
         _ => {
             repo::clear_state(pool, chat_id).await.map_err(err)?;
             repo::add_message(pool, &link.profile_id, "in", text, None).await.map_err(err)?;
-            Ok(vec![Reply::text(chat_id, "Thank you. I have passed your message to your matchmaker.")])
+            Ok(vec![Reply::text(chat_id, loc.pick("Thank you. I have passed your message to your matchmaker.", "ممنون. پیام شما را به مشاورتان رساندم."))])
         }
     }
 }
@@ -544,28 +688,30 @@ fn pref_fields(reg: &FieldRegistry) -> Vec<&FieldDef> {
 async fn show_preferences(pool: &SqlitePool, link: &Link) -> R {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let prefs = MmRepository::get_preferences(pool, &link.profile_id).await.map_err(err)?;
-    let mut text = String::from("<b>What you are looking for</b>\n");
+    let loc = link.locale;
+    let mut text = format!("<b>{}</b>\n", loc.pick("What you are looking for", "آنچه به دنبالش هستید"));
     if prefs.is_empty() {
-        text.push_str("Nothing set yet.\n");
+        text.push_str(loc.pick("Nothing set yet.\n", "هنوز چیزی تنظیم نشده است.\n"));
     }
     let mut kb: Keyboard = vec![];
     for (i, p) in prefs.iter().enumerate() {
-        text.push_str(&format!("{}. {}\n", i + 1, render::esc(&describe_preference(p, &reg))));
-        kb.push(vec![button(format!("Remove {}", i + 1), format!("pref:del:{}", p.id))]);
+        text.push_str(&format!("{}. {}\n", num(loc, i + 1), render::user_text(loc, &describe_preference_for(p, &reg, loc))));
+        kb.push(vec![button(format!("{} {}", loc.pick("Remove", "حذف"), num(loc, i + 1)), format!("pref:del:{}", p.id))]);
     }
-    kb.push(vec![button("Add something", "pref:add")]);
+    kb.push(vec![button(loc.pick("Add something", "افزودن مورد"), "pref:add")]);
     Ok(vec![Reply::with_keyboard(link.chat_id, text, kb)])
 }
 
-fn strength_keyboard() -> Keyboard {
+fn strength_keyboard(loc: Locale) -> Keyboard {
     vec![
-        vec![button("Must have", "pref:s:required"), button("Deal-breaker", "pref:s:deal_breaker")],
-        vec![button("Preferred", "pref:s:preferred"), button("Nice to have", "pref:s:flexible")],
+        vec![button(loc.pick("Must have", "حتماً باشد"), "pref:s:required"), button(loc.pick("Deal-breaker", "غیرقابل‌قبول"), "pref:s:deal_breaker")],
+        vec![button(loc.pick("Preferred", "ترجیحاً"), "pref:s:preferred"), button(loc.pick("Nice to have", "خوب است باشد"), "pref:s:flexible")],
     ]
 }
 
 async fn finish_preference(pool: &SqlitePool, link: &Link, st: &Json, strength: Strength) -> R {
     let chat_id = link.chat_id;
+    let loc = link.locale;
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let field = state_str(st, "field").ok_or("state lost")?;
     let def = reg.get(&field).ok_or("field missing")?;
@@ -581,50 +727,51 @@ async fn finish_preference(pool: &SqlitePool, link: &Link, st: &Json, strength: 
                 (None, Some(h)) => (ConditionOp::Le, Some(Value::Num(h)), None),
                 (None, None) => {
                     repo::clear_state(pool, chat_id).await.map_err(err)?;
-                    return Ok(vec![Reply::text(chat_id, "Nothing was set, so I did not add anything.")]);
+                    return Ok(vec![Reply::text(chat_id, loc.pick("Nothing was set, so I did not add anything.", "چیزی تنظیم نشد، پس چیزی اضافه نکردم."))]);
                 }
             };
             Condition { field: field.clone(), op, value, value2, value_rel: None, value2_rel: None }
         }
     };
     let pref = Preference { id: uuid::Uuid::new_v4().to_string(), condition: cond, strength, importance: 3, note: None };
-    if let Err(e) = validate_preference(&pref, &reg) {
+    if let Err(e) = validate_preference_for(&pref, &reg, loc) {
         repo::clear_state(pool, chat_id).await.map_err(err)?;
-        return Ok(vec![Reply::text(chat_id, format!("I could not add that: {}", render::esc(&e)))]);
+        return Ok(vec![Reply::text(chat_id, format!("{} {}", loc.pick("I could not add that:", "نتوانستم این را اضافه کنم:"), render::esc(&e)))]);
     }
     let mut prefs = MmRepository::get_preferences(pool, &link.profile_id).await.map_err(err)?;
     if prefs.len() >= MAX_PREFERENCES {
         repo::clear_state(pool, chat_id).await.map_err(err)?;
-        return Ok(vec![Reply::text(chat_id, "You already have the maximum number of preferences.")]);
+        return Ok(vec![Reply::text(chat_id, loc.pick("You already have the maximum number of preferences.", "شما به حداکثر تعداد ترجیح‌ها رسیده‌اید."))]);
     }
-    let described = describe_preference(&pref, &reg);
+    let described = describe_preference_for(&pref, &reg, loc);
     prefs.push(pref);
     MmRepository::save_preferences(pool, &link.profile_id, &prefs).await.map_err(err)?;
     MmRepository::audit(pool, "update_preferences", "profile", &link.profile_id, Some(&format!("{} items", prefs.len()))).await;
     repo::clear_state(pool, chat_id).await.map_err(err)?;
-    Ok(vec![Reply::text(chat_id, format!("Added: {}\nSend /preferences to review.", render::esc(&described)))])
+    Ok(vec![Reply::text(chat_id, format!("{} {}\n{}", loc.pick("Added:", "اضافه شد:"), render::user_text(loc, &described), loc.pick("Send /preferences to review.", "برای مرور /preferences را بفرستید.")))])
 }
 
 async fn pref_text(pool: &SqlitePool, link: &Link, mut st: Json, text: &str) -> R {
     let chat_id = link.chat_id;
+    let loc = link.locale;
     let step = state_str(&st, "step").unwrap_or_default();
     if step != "lo" && step != "hi" {
-        return Ok(vec![Reply::text(chat_id, "Please use the buttons, or send /cancel.")]);
+        return Ok(vec![Reply::text(chat_id, loc.pick("Please use the buttons, or send /cancel.", "لطفاً از دکمه‌ها استفاده کنید یا /cancel را بفرستید."))]);
     }
     let t = text.trim();
-    let value = if t.eq_ignore_ascii_case("skip") { Some(Json::Null) } else { t.replace(',', ".").parse::<f64>().ok().filter(|n| n.is_finite()).map(|n| json!(n)) };
+    let value = if is_skip_word(t) { Some(Json::Null) } else { parse_number(t).filter(|n| n.is_finite()).map(|n| json!(n)) };
     let Some(value) = value else {
-        return Ok(vec![Reply::text(chat_id, "Please send a number, or the word skip.")]);
+        return Ok(vec![Reply::text(chat_id, loc.pick("Please send a number, or the word skip.", "لطفاً یک عدد بفرستید یا بنویسید «رد»."))]);
     };
     st[&step] = value;
     if step == "lo" {
         st["step"] = json!("hi");
         repo::set_state(pool, chat_id, &st).await.map_err(err)?;
-        return Ok(vec![Reply::text(chat_id, "And the highest? Send a number, or the word skip.")]);
+        return Ok(vec![Reply::text(chat_id, loc.pick("And the highest? Send a number, or the word skip.", "و بیشترین مقدار؟ یک عدد بفرستید یا بنویسید «رد»."))]);
     }
     st["step"] = json!("strength");
     repo::set_state(pool, chat_id, &st).await.map_err(err)?;
-    Ok(vec![Reply::with_keyboard(chat_id, "How important is this?", strength_keyboard())])
+    Ok(vec![Reply::with_keyboard(chat_id, loc.pick("How important is this?", "این چقدر مهم است؟"), strength_keyboard(loc))])
 }
 
 // ------------------------------------------------------------------ buttons
@@ -657,16 +804,32 @@ async fn handle_callback(pool: &SqlitePool, cb: CallbackQuery) -> R {
         return Ok(vec![done(&cb.id)]);
     }
     let Some(link) = repo::link_by_chat(pool, chat_id).await.map_err(err)? else {
-        return Ok(vec![toast(&cb.id, "This chat is not linked to a profile.")]);
+        let guessed = Locale::parse_or_default(cb.from.language_code.as_deref().unwrap_or(""));
+        return Ok(vec![toast(&cb.id, guessed.pick("This chat is not linked to a profile.", "این گفتگو به هیچ پروفایلی وصل نیست."))]);
     };
+    let loc = link.locale;
+    let invalid = loc.pick("This button is no longer valid.", "این دکمه دیگر معتبر نیست.");
+    let unavailable = loc.pick("This introduction is no longer available.", "این معرفی دیگر در دسترس نیست.");
     let data = cb.data.clone().unwrap_or_default();
     let (verb, rest) = data.split_once(':').unwrap_or((data.as_str(), ""));
     let clear = |kb: Option<Keyboard>| message_id.map(|mid| Reply::EditMarkup { chat_id, message_id: mid, keyboard: kb });
     let mut out: Vec<Reply> = vec![];
 
+    if verb == "lang" {
+        let Some(chosen) = Locale::parse(rest) else { return Ok(vec![toast(&cb.id, invalid)]) };
+        repo::set_language(pool, &link.profile_id, chosen).await.map_err(err)?;
+        out.push(done(&cb.id));
+        out.extend(clear(None));
+        out.push(Reply::text(chat_id, render::language_changed_text(chosen)));
+        if !link.consented {
+            out.push(consent_prompt(chat_id, chosen));
+        }
+        return Ok(out);
+    }
+
     if verb == "consent" {
         if link.consented {
-            return Ok(vec![toast(&cb.id, "Already answered.")]);
+            return Ok(vec![toast(&cb.id, loc.pick("Already answered.", "قبلاً پاسخ داده شده است."))]);
         }
         out.push(done(&cb.id));
         out.extend(clear(None));
@@ -674,57 +837,59 @@ async fn handle_callback(pool: &SqlitePool, cb: CallbackQuery) -> R {
             repo::set_consent(pool, &link.profile_id).await.map_err(err)?;
             MmRepository::audit(pool, "telegram_consent", "profile", &link.profile_id, Some(&format!("v{}", repo::CONSENT_VERSION))).await;
             let p = load_profile(pool, &link.profile_id).await?;
-            let name = first_name(&p.profile, true);
-            out.push(Reply::text(chat_id, render::welcome_text(&if name == "Someone" { "there".to_string() } else { name })));
+            out.push(Reply::text(chat_id, render::welcome_text(loc, &greeting_name(&p.profile, loc))));
         } else {
             repo::delete_link(pool, &link.profile_id).await.map_err(err)?;
-            out.push(Reply::text(chat_id, render::consent_declined_text()));
+            out.push(Reply::text(chat_id, render::consent_declined_text(loc)));
         }
         return Ok(out);
     }
     if !link.consented {
-        return Ok(vec![toast(&cb.id, "Please answer the privacy notice first.")]);
+        return Ok(vec![toast(&cb.id, loc.pick("Please answer the privacy notice first.", "لطفاً ابتدا به اعلان حریم خصوصی پاسخ دهید."))]);
     }
 
     match verb {
         "intro" => {
-            let Some((answer, match_id)) = rest.split_once(':') else { return Ok(vec![toast(&cb.id, "This button is no longer valid.")]) };
-            let Some(m) = MatchRepo::get(pool, match_id).await.map_err(err)? else { return Ok(vec![toast(&cb.id, "This introduction is no longer available.")]) };
+            let Some((answer, match_id)) = rest.split_once(':') else { return Ok(vec![toast(&cb.id, invalid)]) };
+            let Some(m) = MatchRepo::get(pool, match_id).await.map_err(err)? else { return Ok(vec![toast(&cb.id, unavailable)]) };
             if m.profile_a != link.profile_id && m.profile_b != link.profile_id {
                 // Someone pressed a button for a match that is not theirs: refuse without saying anything about it.
-                return Ok(vec![toast(&cb.id, "This button is no longer valid.")]);
+                return Ok(vec![toast(&cb.id, invalid)]);
             }
             let (side, mine, other) = my_side(&m, &link.profile_id);
             if !matchmaking_core::can_record_responses(m.status) {
-                out.push(toast(&cb.id, "This introduction is no longer open."));
+                out.push(toast(&cb.id, loc.pick("This introduction is no longer open.", "این معرفی دیگر باز نیست.")));
                 out.extend(clear(None));
                 return Ok(out);
             }
             let response = match answer {
                 "y" => Interest::Interested,
                 "n" => Interest::NotInterested,
-                _ => return Ok(vec![toast(&cb.id, "This button is no longer valid.")]),
+                _ => return Ok(vec![toast(&cb.id, invalid)]),
             };
             if mine == response {
-                return Ok(vec![toast(&cb.id, "Already recorded.")]);
+                return Ok(vec![toast(&cb.id, loc.pick("Already recorded.", "قبلاً ثبت شده است."))]);
             }
-            let (_, new_status) = set_response_inner(pool, &m.id, side, response).await?;
+            let (_, new_status) = set_response_inner(pool, &m.id, side, response, loc).await?;
             out.push(done(&cb.id));
             out.extend(clear(None));
             match (response, new_status) {
                 // both-interested and declined notices come from the notification layer, to avoid saying things twice
                 (Interest::Interested, MatchStatus::BothInterested) => {}
-                (Interest::NotInterested, _) => out.push(Reply::text(chat_id, "Understood, thank you. I have noted that you are not interested. Nothing more will be shared.")),
+                (Interest::NotInterested, _) => out.push(Reply::text(chat_id, loc.pick("Understood, thank you. I have noted that you are not interested. Nothing more will be shared.", "متوجه شدم، ممنون. ثبت کردم که علاقه‌ای ندارید. چیز دیگری به اشتراک گذاشته نمی‌شود."))),
                 (Interest::Interested, _) => {
-                    let name = other_name(pool, &other).await?;
-                    out.push(Reply::text(chat_id, format!("Thank you! I will let you know when {} has answered.", render::esc(&name))));
+                    let name = other_name(pool, &other, link.locale).await?;
+                    out.push(Reply::text(chat_id, match loc {
+                        Locale::En => format!("Thank you! I will let you know when {} has answered.", render::esc(&name)),
+                        Locale::Fa => format!("ممنون! وقتی {} پاسخ داد به شما خبر می‌دهم.", render::user_text(loc, &name)),
+                    }));
                 }
                 _ => {}
             }
             Ok(out)
         }
         "match" => {
-            let Some(match_id) = rest.strip_prefix("open:") else { return Ok(vec![toast(&cb.id, "This button is no longer valid.")]) };
+            let Some(match_id) = rest.strip_prefix("open:") else { return Ok(vec![toast(&cb.id, invalid)]) };
             let ms = visible_matches(pool, &link.profile_id).await?;
             match ms.iter().find(|m| m.id == match_id) {
                 Some(m) => {
@@ -732,21 +897,22 @@ async fn handle_callback(pool: &SqlitePool, cb: CallbackQuery) -> R {
                     out.extend(open_match(pool, &link, m).await?);
                     Ok(out)
                 }
-                None => Ok(vec![toast(&cb.id, "This introduction is no longer available.")]),
+                None => Ok(vec![toast(&cb.id, unavailable)]),
             }
         }
         "set" => match rest {
             "n:on" | "n:off" => {
                 repo::set_notifications(pool, &link.profile_id, rest == "n:on").await.map_err(err)?;
-                out.push(toast(&cb.id, if rest == "n:on" { "Notifications on" } else { "Notifications off" }));
+                out.push(toast(&cb.id, if rest == "n:on" { loc.pick("Notifications on", "اعلان‌ها روشن شد") } else { loc.pick("Notifications off", "اعلان‌ها خاموش شد") }));
                 let refreshed = Link { notifications_enabled: rest == "n:on", ..link.clone() };
                 out.extend(clear(None));
                 out.extend(show_settings(&refreshed)?);
                 Ok(out)
             }
-            "unlink" => Ok(vec![done(&cb.id), Reply::with_keyboard(chat_id, "Unlink this chat from your profile?", vec![vec![button("Yes, unlink", "unlink:y"), button("Keep", "unlink:n")]])]),
-            "forget" => Ok(vec![done(&cb.id), Reply::with_keyboard(chat_id, "Ask your matchmaker to delete all your data?", vec![vec![button("Yes, delete my data", "forget:y"), button("Keep", "forget:n")]])]),
-            _ => Ok(vec![toast(&cb.id, "This button is no longer valid.")]),
+            "lang" => Ok(vec![done(&cb.id), Reply::with_keyboard(chat_id, render::language_prompt_text(), language_keyboard())]),
+            "unlink" => Ok(vec![done(&cb.id), Reply::with_keyboard(chat_id, loc.pick("Unlink this chat from your profile?", "این گفتگو از پروفایل شما جدا شود؟"), vec![vec![button(loc.pick("Yes, unlink", "بله، جدا شود"), "unlink:y"), button(loc.pick("Keep", "نگه داشتن"), "unlink:n")]])]),
+            "forget" => Ok(vec![done(&cb.id), Reply::with_keyboard(chat_id, loc.pick("Ask your matchmaker to delete all your data?", "از مچ‌میکر بخواهید همه داده‌های شما را حذف کند؟"), vec![vec![button(loc.pick("Yes, delete my data", "بله، داده‌هایم حذف شود"), "forget:y"), button(loc.pick("Keep", "نگه داشتن"), "forget:n")]])]),
+            _ => Ok(vec![toast(&cb.id, invalid)]),
         },
         "unlink" => {
             out.push(done(&cb.id));
@@ -754,9 +920,9 @@ async fn handle_callback(pool: &SqlitePool, cb: CallbackQuery) -> R {
             if rest == "y" {
                 repo::delete_link(pool, &link.profile_id).await.map_err(err)?;
                 MmRepository::audit(pool, "telegram_unlink", "profile", &link.profile_id, None).await;
-                out.push(Reply::text(chat_id, "Done. This chat is no longer linked. Your matchmaker can send a new invitation if you want to reconnect."));
+                out.push(Reply::text(chat_id, loc.pick("Done. This chat is no longer linked. Your matchmaker can send a new invitation if you want to reconnect.", "انجام شد. این گفتگو دیگر وصل نیست. اگر خواستید دوباره وصل شوید، مچ‌میکر می‌تواند دعوت‌نامه جدیدی بفرستد.")));
             } else {
-                out.push(Reply::text(chat_id, "Okay, nothing changed."));
+                out.push(Reply::text(chat_id, loc.pick("Okay, nothing changed.", "باشه، چیزی تغییر نکرد.")));
             }
             Ok(out)
         }
@@ -768,35 +934,38 @@ async fn handle_callback(pool: &SqlitePool, cb: CallbackQuery) -> R {
                 if created {
                     MmRepository::audit(pool, "data_deletion_requested", "profile", &link.profile_id, None).await;
                 }
-                out.push(Reply::text(chat_id, "I have asked your matchmaker to delete your data. They will confirm once it is done."));
+                out.push(Reply::text(chat_id, loc.pick("I have asked your matchmaker to delete your data. They will confirm once it is done.", "از مچ‌میکر خواستم داده‌های شما را حذف کند. پس از انجام، تأیید خواهد کرد.")));
             } else {
-                out.push(Reply::text(chat_id, "Okay, nothing changed."));
+                out.push(Reply::text(chat_id, loc.pick("Okay, nothing changed.", "باشه، چیزی تغییر نکرد.")));
             }
             Ok(out)
         }
         "q" => questionnaire_callback(pool, &link, &cb.id, rest, message_id).await,
         "edit" => Ok(with_message_id(edit_callback(pool, &link, &cb.id, rest, out).await?, chat_id, message_id)),
         "pref" => Ok(with_message_id(pref_callback(pool, &link, &cb.id, rest, out).await?, chat_id, message_id)),
-        _ => Ok(vec![toast(&cb.id, "This button is no longer valid.")]),
+        _ => Ok(vec![toast(&cb.id, invalid)]),
     }
 }
 
 async fn edit_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, mut out: Vec<Reply>) -> R {
     let chat_id = link.chat_id;
+    let loc = link.locale;
+    let invalid = loc.pick("This button is no longer valid.", "این دکمه دیگر معتبر نیست.");
+    let closed = loc.pick("This question is no longer open.", "این پرسش دیگر باز نیست.");
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     out.push(done(cb_id));
 
     // "edit:f:<key>" starts a single-field edit from the menu
     if let Some(key) = rest.strip_prefix("f:") {
-        let Some(def) = reg.get(key).filter(|d| editable(d)) else { return Ok(vec![toast(cb_id, "This button is no longer valid.")]) };
+        let Some(def) = reg.get(key).filter(|d| editable(d)) else { return Ok(vec![toast(cb_id, invalid)]) };
         repo::set_state(pool, chat_id, &json!({"flow": "edit", "queue": [key], "current": key, "multi": []})).await.map_err(err)?;
-        out.push(ask_field(chat_id, def, &[]));
+        out.push(ask_field(chat_id, loc, def, &[]));
         return Ok(out);
     }
     let Some(st) = repo::get_state(pool, chat_id).await.map_err(err)?.filter(|s| state_str(s, "flow").as_deref() == Some("edit")) else {
-        return Ok(vec![toast(cb_id, "This question is no longer open. Send /edit to start again.")]);
+        return Ok(vec![toast(cb_id, loc.pick("This question is no longer open. Send /edit to start again.", "این پرسش دیگر باز نیست. برای شروع دوباره /edit را بفرستید."))]);
     };
-    let Some(key) = state_str(&st, "current") else { return Ok(vec![toast(cb_id, "This question is no longer open.")]) };
+    let Some(key) = state_str(&st, "current") else { return Ok(vec![toast(cb_id, closed)]) };
     let def = reg.get(&key).ok_or("field missing")?.clone();
 
     if rest == "skip" {
@@ -807,7 +976,7 @@ async fn edit_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, 
         (Some(("b", v)), FieldKind::Bool) => Some(Value::Bool(v == "1")),
         (Some(("m", i)), FieldKind::MultiChoice(opts)) => {
             // toggle one option and redraw the buttons
-            let Some(opt) = i.parse::<usize>().ok().and_then(|i| opts.get(i)).cloned() else { return Ok(vec![toast(cb_id, "This button is no longer valid.")]) };
+            let Some(opt) = i.parse::<usize>().ok().and_then(|i| opts.get(i)).cloned() else { return Ok(vec![toast(cb_id, invalid)]) };
             let mut sel = state_list(&st, "multi");
             if let Some(pos) = sel.iter().position(|s| *s == opt) { sel.remove(pos); } else { sel.push(opt); }
             let mut st2 = st.clone();
@@ -815,7 +984,7 @@ async fn edit_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, 
             repo::set_state(pool, chat_id, &st2).await.map_err(err)?;
             out.pop();
             out.push(done(cb_id));
-            if let Reply::Send { keyboard, .. } = ask_field(chat_id, &def, &sel) {
+            if let Reply::Send { keyboard, .. } = ask_field(chat_id, loc, &def, &sel) {
                 out.push(Reply::EditMarkup { chat_id, message_id: 0, keyboard }); // caller fills in the message id
             }
             return Ok(out);
@@ -826,10 +995,10 @@ async fn edit_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, 
         }
         _ => None,
     };
-    let Some(value) = value else { return Ok(vec![toast(cb_id, "Please choose at least one option, or Skip.")]) };
+    let Some(value) = value else { return Ok(vec![toast(cb_id, loc.pick("Please choose at least one option, or Skip.", "لطفاً دست‌کم یک گزینه انتخاب کنید یا رد کنید."))]) };
     match save_answer(pool, link, &reg, &key, value).await? {
         Err(msg) => {
-            out.push(Reply::text(chat_id, format!("That does not look right: {}", render::esc(&msg))));
+            out.push(Reply::text(chat_id, format!("{} {}", loc.pick("That does not look right:", "این درست به نظر نمی‌رسد:"), render::esc(&msg))));
             Ok(out)
         }
         Ok(msg) => {
@@ -841,13 +1010,17 @@ async fn edit_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, 
 
 async fn pref_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, mut out: Vec<Reply>) -> R {
     let chat_id = link.chat_id;
+    let loc = link.locale;
+    let invalid = loc.pick("This button is no longer valid.", "این دکمه دیگر معتبر نیست.");
+    let closed = loc.pick("This question is no longer open.", "این پرسش دیگر باز نیست.");
+    let done_label = loc.pick("Done", "تمام");
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     out.push(done(cb_id));
 
     if rest == "add" {
-        let buttons: Vec<InlineButton> = pref_fields(&reg).into_iter().map(|d| button(d.label.clone(), format!("pref:f:{}", d.key))).collect();
+        let buttons: Vec<InlineButton> = pref_fields(&reg).into_iter().map(|d| button(d.label_for(loc).to_string(), format!("pref:f:{}", d.key))).collect();
         repo::set_state(pool, chat_id, &json!({"flow": "pref", "step": "field"})).await.map_err(err)?;
-        out.push(Reply::with_keyboard(chat_id, "What is it about?", rows(buttons, 2)));
+        out.push(Reply::with_keyboard(chat_id, loc.pick("What is it about?", "درباره چیست؟"), rows(buttons, 2)));
         return Ok(out);
     }
     if let Some(id) = rest.strip_prefix("del:") {
@@ -855,7 +1028,7 @@ async fn pref_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, 
         let before = prefs.len();
         prefs.retain(|p| p.id != id);
         if prefs.len() == before {
-            return Ok(vec![toast(cb_id, "That was already removed.")]);
+            return Ok(vec![toast(cb_id, loc.pick("That was already removed.", "این قبلاً حذف شده است."))]);
         }
         MmRepository::save_preferences(pool, &link.profile_id, &prefs).await.map_err(err)?;
         MmRepository::audit(pool, "update_preferences", "profile", &link.profile_id, Some(&format!("{} items", prefs.len()))).await;
@@ -863,75 +1036,75 @@ async fn pref_callback(pool: &SqlitePool, link: &Link, cb_id: &str, rest: &str, 
         return Ok(out);
     }
     let Some(mut st) = repo::get_state(pool, chat_id).await.map_err(err)?.filter(|s| state_str(s, "flow").as_deref() == Some("pref")) else {
-        return Ok(vec![toast(cb_id, "This question is no longer open. Send /preferences to start again.")]);
+        return Ok(vec![toast(cb_id, loc.pick("This question is no longer open. Send /preferences to start again.", "این پرسش دیگر باز نیست. برای شروع دوباره /preferences را بفرستید."))]);
     };
 
     if let Some(key) = rest.strip_prefix("f:") {
-        let Some(def) = pref_fields(&reg).into_iter().find(|d| d.key == key).cloned() else { return Ok(vec![toast(cb_id, "This button is no longer valid.")]) };
+        let Some(def) = pref_fields(&reg).into_iter().find(|d| d.key == key).cloned() else { return Ok(vec![toast(cb_id, invalid)]) };
         st = json!({"flow": "pref", "step": "value", "field": key, "values": []});
         match &def.kind {
             FieldKind::Choice(opts) | FieldKind::MultiChoice(opts) => {
                 repo::set_state(pool, chat_id, &st).await.map_err(err)?;
                 let mut kb = rows(opts.iter().enumerate().map(|(i, o)| button(pretty(o), format!("pref:m:{i}"))).collect(), 2);
-                kb.push(vec![button("Done", "pref:done")]);
-                out.push(Reply::with_keyboard(chat_id, format!("<b>{}</b>\nTap every option you mean, then Done:", render::esc(&def.label)), kb));
+                kb.push(vec![button(done_label, "pref:done")]);
+                out.push(Reply::with_keyboard(chat_id, format!("<b>{}</b>\n{}", render::esc(def.label_for(loc)), loc.pick("Tap every option you mean, then Done:", "هر گزینه‌ای که منظورتان است را بزنید، سپس «تمام»:")), kb));
             }
             FieldKind::Bool => {
                 repo::set_state(pool, chat_id, &st).await.map_err(err)?;
-                out.push(Reply::with_keyboard(chat_id, format!("<b>{}</b>", render::esc(&def.label)), vec![vec![button("Yes", "pref:b:1"), button("No", "pref:b:0")]]));
+                out.push(Reply::with_keyboard(chat_id, format!("<b>{}</b>", render::esc(def.label_for(loc))), vec![vec![button(loc.pick("Yes", "بله"), "pref:b:1"), button(loc.pick("No", "خیر"), "pref:b:0")]]));
             }
             _ => {
                 st["step"] = json!("lo");
                 repo::set_state(pool, chat_id, &st).await.map_err(err)?;
-                out.push(Reply::text(chat_id, format!("<b>{}</b>\nWhat is the lowest you would accept? Send a number, or the word skip.", render::esc(&def.label))));
+                out.push(Reply::text(chat_id, format!("<b>{}</b>\n{}", render::esc(def.label_for(loc)), loc.pick("What is the lowest you would accept? Send a number, or the word skip.", "کمترین مقداری که می‌پذیرید چیست؟ یک عدد بفرستید یا بنویسید «رد».")) ));
             }
         }
         return Ok(out);
     }
     let field = state_str(&st, "field").unwrap_or_default();
-    let Some(def) = reg.get(&field).cloned() else { return Ok(vec![toast(cb_id, "This question is no longer open.")]) };
+    let Some(def) = reg.get(&field).cloned() else { return Ok(vec![toast(cb_id, closed)]) };
 
     if let Some(i) = rest.strip_prefix("m:") {
-        let (FieldKind::Choice(opts) | FieldKind::MultiChoice(opts)) = &def.kind else { return Ok(vec![toast(cb_id, "This button is no longer valid.")] ) };
-        let Some(opt) = i.parse::<usize>().ok().and_then(|i| opts.get(i)).cloned() else { return Ok(vec![toast(cb_id, "This button is no longer valid.")]) };
+        let (FieldKind::Choice(opts) | FieldKind::MultiChoice(opts)) = &def.kind else { return Ok(vec![toast(cb_id, invalid)] ) };
+        let Some(opt) = i.parse::<usize>().ok().and_then(|i| opts.get(i)).cloned() else { return Ok(vec![toast(cb_id, invalid)]) };
         let mut vals = state_list(&st, "values");
         if let Some(pos) = vals.iter().position(|s| *s == opt) { vals.remove(pos); } else { vals.push(opt); }
         st["values"] = json!(vals);
         repo::set_state(pool, chat_id, &st).await.map_err(err)?;
         let mut kb = rows(opts.iter().enumerate().map(|(i, o)| button(format!("{}{}", if vals.contains(o) { "✓ " } else { "" }, pretty(o)), format!("pref:m:{i}"))).collect(), 2);
-        kb.push(vec![button("Done", "pref:done")]);
+        kb.push(vec![button(done_label, "pref:done")]);
         out.push(Reply::EditMarkup { chat_id, message_id: 0, keyboard: Some(kb) }); // caller fills in the message id
         return Ok(out);
     }
     if rest == "done" {
         if state_list(&st, "values").is_empty() {
-            return Ok(vec![toast(cb_id, "Choose at least one option first.")]);
+            return Ok(vec![toast(cb_id, loc.pick("Choose at least one option first.", "ابتدا دست‌کم یک گزینه انتخاب کنید."))]);
         }
         st["step"] = json!("strength");
         repo::set_state(pool, chat_id, &st).await.map_err(err)?;
-        out.push(Reply::with_keyboard(chat_id, "How important is this?", strength_keyboard()));
+        out.push(Reply::with_keyboard(chat_id, loc.pick("How important is this?", "این چقدر مهم است؟"), strength_keyboard(loc)));
         return Ok(out);
     }
     if let Some(v) = rest.strip_prefix("b:") {
         st["bool"] = json!(v == "1");
         st["step"] = json!("strength");
         repo::set_state(pool, chat_id, &st).await.map_err(err)?;
-        out.push(Reply::with_keyboard(chat_id, "How important is this?", strength_keyboard()));
+        out.push(Reply::with_keyboard(chat_id, loc.pick("How important is this?", "این چقدر مهم است؟"), strength_keyboard(loc)));
         return Ok(out);
     }
     if let Some(s) = rest.strip_prefix("s:") {
         if state_str(&st, "step").as_deref() != Some("strength") {
-            return Ok(vec![toast(cb_id, "Please answer the earlier question first.")]);
+            return Ok(vec![toast(cb_id, loc.pick("Please answer the earlier question first.", "لطفاً ابتدا به پرسش قبلی پاسخ دهید."))]);
         }
         let strength = match s {
             "required" => Strength::Required,
             "deal_breaker" => Strength::DealBreaker,
             "preferred" => Strength::Preferred,
             "flexible" => Strength::Flexible,
-            _ => return Ok(vec![toast(cb_id, "This button is no longer valid.")]),
+            _ => return Ok(vec![toast(cb_id, invalid)]),
         };
         out.extend(finish_preference(pool, link, &st, strength).await?);
         return Ok(out);
     }
-    Ok(vec![toast(cb_id, "This button is no longer valid.")])
+    Ok(vec![toast(cb_id, invalid)])
 }

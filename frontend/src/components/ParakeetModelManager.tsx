@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import { useI18n } from '@/i18n';
 import {
   ModelStatus,
   ParakeetAPI,
@@ -26,6 +27,9 @@ export function ParakeetModelManager({
   className = '',
   autoSave = false
 }: ParakeetModelManagerProps) {
+  const { t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [models, setModels] = useState<ParakeetModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,9 +75,9 @@ export function ParakeetModelManager({
         setInitialized(true);
       } catch (err) {
         console.error('Failed to initialize Parakeet:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load models');
-        toast.error('Failed to load transcription models', {
-          description: err instanceof Error ? err.message : 'Unknown error',
+        setError(err instanceof Error ? err.message : tRef.current('modelMgr.loadFail'));
+        toast.error(tRef.current('modelMgr.loadListFail'), {
+          description: err instanceof Error ? err.message : tRef.current('modelMgr.unknownError'),
           duration: 5000
         });
       } finally {
@@ -113,7 +117,7 @@ export function ParakeetModelManager({
                     : model
                 )
               );
-              toast.info(`${getModelDisplayName(modelName)} download cancelled`, {
+              toast.info(tRef.current('modelMgr.downloadCancelled', { name: getModelDisplayName(modelName, tRef.current) }), {
                 duration: 3000
               });
               return;
@@ -148,7 +152,7 @@ export function ParakeetModelManager({
           (event) => {
             const { modelName } = event.payload;
             const displayInfo = getModelDisplayInfo(modelName);
-            const displayName = displayInfo?.friendlyName || modelName;
+            const displayName = displayInfo ? tRef.current(displayInfo.nameKey) : modelName;
             latestStatusByModelRef.current.set(modelName, 'Available');
             clearCancellingModel(modelName);
 
@@ -169,8 +173,8 @@ export function ParakeetModelManager({
             // Clean up throttle data
             progressThrottleRef.current.delete(modelName);
 
-            toast.success(`${displayInfo?.icon || '✓'} ${displayName} ready!`, {
-              description: 'Model downloaded and ready to use',
+            toast.success(`${displayInfo?.icon || '✓'} ${tRef.current('modelMgr.toastReady', { name: displayName })}`, {
+              description: tRef.current('modelMgr.toastReadyDesc'),
               duration: 4000
             });
 
@@ -188,7 +192,7 @@ export function ParakeetModelManager({
           (event) => {
             const { modelName, error } = event.payload;
             const displayInfo = getModelDisplayInfo(modelName);
-            const displayName = displayInfo?.friendlyName || modelName;
+            const displayName = displayInfo ? tRef.current(displayInfo.nameKey) : modelName;
             latestStatusByModelRef.current.set(modelName, { Error: error });
             clearCancellingModel(modelName);
 
@@ -209,11 +213,11 @@ export function ParakeetModelManager({
             // Clean up throttle data
             progressThrottleRef.current.delete(modelName);
 
-            toast.error(`Failed to download ${displayName}`, {
+            toast.error(tRef.current('modelMgr.downloadFail', { name: displayName }), {
               description: error,
               duration: 6000,
               action: {
-                label: 'Retry',
+                label: tRef.current('modelMgr.retry'),
                 onClick: () => downloadModel(modelName)
               }
             });
@@ -235,7 +239,7 @@ export function ParakeetModelManager({
             ? failedRegistration.reason.message
             : typeof failedRegistration.reason === 'string'
               ? failedRegistration.reason
-              : 'Failed to listen for Parakeet model updates';
+              : tRef.current('parakeetMgr.listenFail');
           setError(message);
           setLoading(false);
         }
@@ -269,22 +273,22 @@ export function ParakeetModelManager({
 
   const cancelDownload = async (modelName: string) => {
     const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
+    const displayName = displayInfo ? tRef.current(displayInfo.nameKey) : modelName;
 
     setCancellingModels(prev => new Set([...prev, modelName]));
     try {
       const outcome = await ParakeetAPI.cancelDownload(modelName);
       if (outcome === 'pending') {
-        toast.info(`Cancelling ${displayName}...`, {
-          description: 'The download is still shutting down. Retry will be available when cleanup completes.',
+        toast.info(tRef.current('modelMgr.cancelling', { name: displayName }), {
+          description: tRef.current('modelMgr.cancellingDesc'),
           duration: 4000
         });
       }
     } catch (err) {
       clearCancellingModel(modelName);
       console.error('Failed to cancel download:', err);
-      toast.error('Failed to cancel download', {
-        description: err instanceof Error ? err.message : 'Unknown error',
+      toast.error(tRef.current('modelMgr.cancelFail'), {
+        description: err instanceof Error ? err.message : tRef.current('modelMgr.unknownError'),
         duration: 4000
       });
     }
@@ -295,7 +299,7 @@ export function ParakeetModelManager({
     clearCancellingModel(modelName);
 
     const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
+    const displayName = displayInfo ? tRef.current(displayInfo.nameKey) : modelName;
 
     try {
       setDownloadingModels(prev => new Set([...prev, modelName]));
@@ -308,8 +312,8 @@ export function ParakeetModelManager({
         )
       );
 
-      toast.info(`Downloading ${displayName}...`, {
-        description: 'This may take a few minutes',
+      toast.info(tRef.current('modelMgr.downloading', { name: displayName }), {
+        description: tRef.current('modelMgr.downloadingDesc'),
         duration: 5000  // Auto-dismiss after 5 seconds
       });
 
@@ -322,7 +326,7 @@ export function ParakeetModelManager({
         return newSet;
       });
 
-      const errorMessage = err instanceof Error ? err.message : 'Download failed';
+      const errorMessage = err instanceof Error ? err.message : tRef.current('modelMgr.downloadFailedMsg');
       setModels(prev =>
         prev.map(model =>
           model.name === modelName ? { ...model, status: { Error: errorMessage } } : model
@@ -341,15 +345,15 @@ export function ParakeetModelManager({
     }
 
     const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
-    toast.success(`Switched to ${displayName}`, {
+    const displayName = displayInfo ? tRef.current(displayInfo.nameKey) : modelName;
+    toast.success(tRef.current('modelMgr.switched', { name: displayName }), {
       duration: 3000
     });
   };
 
   const deleteModel = async (modelName: string) => {
     const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
+    const displayName = displayInfo ? tRef.current(displayInfo.nameKey) : modelName;
 
     try {
       await ParakeetAPI.deleteCorruptedModel(modelName);
@@ -358,8 +362,8 @@ export function ParakeetModelManager({
       const modelList = await ParakeetAPI.getAvailableModels();
       setModels(modelList);
 
-      toast.success(`${displayName} deleted`, {
-        description: 'Model removed to free up space',
+      toast.success(tRef.current('modelMgr.deleted', { name: displayName }), {
+        description: tRef.current('modelMgr.deletedDesc'),
         duration: 3000
       });
 
@@ -369,8 +373,8 @@ export function ParakeetModelManager({
       }
     } catch (err) {
       console.error('Failed to delete model:', err);
-      toast.error(`Failed to delete ${displayName}`, {
-        description: err instanceof Error ? err.message : 'Delete failed',
+      toast.error(tRef.current('modelMgr.deleteFail', { name: displayName }), {
+        description: err instanceof Error ? err.message : tRef.current('modelMgr.deleteFailedMsg'),
         duration: 4000
       });
     }
@@ -390,7 +394,7 @@ export function ParakeetModelManager({
   if (error) {
     return (
       <div className={`bg-red-50 border border-red-200 rounded-lg p-4 ${className}`}>
-        <p className="text-sm text-red-800">Failed to load models</p>
+        <p className="text-sm text-red-800">{t('modelMgr.loadFail')}</p>
         <p className="text-xs text-red-600 mt-1">{error}</p>
       </div>
     );
@@ -455,7 +459,7 @@ export function ParakeetModelManager({
           animate={{ opacity: 1, y: 0 }}
           className="text-xs text-gray-500 text-center pt-2"
         >
-          Using {getModelDisplayName(selectedModel)} for transcription
+          {t('modelMgr.using', { name: getModelDisplayName(selectedModel, t) })}
         </motion.div>
       )}
     </div>
@@ -486,11 +490,12 @@ function ModelCard({
   isDownloading,
   isCancelling
 }: ModelCardProps) {
+  const { t, fmt } = useI18n();
   const [isHovered, setIsHovered] = useState(false);
   const displayInfo = getModelDisplayInfo(model.name);
-  const displayName = displayInfo?.friendlyName || model.name;
+  const displayName = displayInfo ? t(displayInfo.nameKey) : model.name;
   const icon = displayInfo?.icon || '📦';
-  const tagline = displayInfo?.tagline || model.description || '';
+  const tagline = displayInfo ? t(displayInfo.taglineKey) : model.description || '';
 
   const isAvailable = model.status === 'Available';
   const isMissing = model.status === 'Missing';
@@ -525,8 +530,8 @@ function ModelCard({
     >
       {/* Recommended Badge */}
       {isRecommended && (
-        <div className="absolute -top-2 -right-2 bg-blue-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">
-          Recommended
+        <div className="absolute -top-2 -end-2 bg-blue-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">
+          {t('modelMgr.recommended')}
         </div>
       )}
 
@@ -536,7 +541,7 @@ function ModelCard({
             {/* Model Name */}
             <div className="flex items-center gap-2 mb-1">
               <span className="text-2xl">{icon}</span>
-              <h3 className="font-semibold text-gray-900">{displayName}</h3>
+              <h3 className="font-semibold text-gray-900"><bdi>{displayName}</bdi></h3>
               {isSelected && isAvailable && (
                 <motion.span
                   initial={{ scale: 0 }}
@@ -549,16 +554,16 @@ function ModelCard({
             </div>
 
             {/* Tagline */}
-            <p className="text-sm text-gray-600 ml-9">{tagline}</p>
+            <p className="text-sm text-gray-600 ms-9" dir="auto">{tagline}</p>
           </div>
 
           {/* Status/Action */}
-          <div className="ml-4 flex items-center gap-2">
+          <div className="ms-4 flex items-center gap-2">
             {isAvailable && !isCancelling && (
               <>
                 <div className="flex items-center gap-1.5 text-green-600">
                   <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span className="text-xs font-medium">Ready</span>
+                  <span className="text-xs font-medium">{t('modelMgr.badgeReady')}</span>
                 </div>
                 <AnimatePresence>
                   {isHovered && (
@@ -572,7 +577,7 @@ function ModelCard({
                         onDelete();
                       }}
                       className="text-gray-400 hover:text-red-600 transition-colors p-1"
-                      title="Delete model to free up space"
+                      title={t('modelMgr.deleteTitle')}
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -591,7 +596,7 @@ function ModelCard({
                 }}
                 className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors"
               >
-                Download
+                {t('modelMgr.download')}
               </button>
             )}
 
@@ -603,7 +608,7 @@ function ModelCard({
                 }}
                 className="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-red-700 transition-colors"
               >
-                Retry
+                {t('modelMgr.retry')}
               </button>
             )}
 
@@ -616,7 +621,7 @@ function ModelCard({
                   }}
                   className="bg-orange-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-orange-700 transition-colors"
                 >
-                  Delete
+                  {t('modelMgr.delete')}
                 </button>
                 <button
                   onClick={(e) => {
@@ -625,7 +630,7 @@ function ModelCard({
                   }}
                   className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors"
                 >
-                  Re-download
+                  {t('modelMgr.redownload')}
                 </button>
               </div>
             )}
@@ -643,17 +648,17 @@ function ModelCard({
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-blue-600">
-                  {isCancelling ? 'Cancelling…' : 'Downloading...'}
+                  {isCancelling ? t('modelMgr.cancellingLabel') : t('modelMgr.downloadingLabel')}
                 </span>
                 {!isCancelling && (
                   <span className="text-sm font-semibold text-blue-600">
-                    {Math.round(displayedProgress)}%
+                    {fmt.percent(Math.round(displayedProgress) / 100)}
                   </span>
                 )}
               </div>
               {isCancelling ? (
                 <span className="text-xs text-gray-500 font-medium px-2 py-1">
-                  Cancellation requested
+                  {t('modelMgr.cancelRequested')}
                 </span>
               ) : (
                 <button
@@ -662,9 +667,9 @@ function ModelCard({
                     onCancel();
                   }}
                   className="text-xs text-gray-600 hover:text-red-600 font-medium transition-colors px-2 py-1 rounded hover:bg-red-50"
-                  title="Cancel download"
+                  title={t('modelMgr.cancelTitle')}
                 >
-                  Cancel
+                  {t('modelMgr.cancel')}
                 </button>
               )}
             </div>
@@ -679,10 +684,10 @@ function ModelCard({
             <p className="text-xs text-gray-500 mt-1">
               {model.size_mb ? (
                 <>
-                  {formatFileSize(model.size_mb * displayedProgress / 100)} / {formatFileSize(model.size_mb)}
+                  {t('modelMgr.sizeProgress', { done: formatFileSize(model.size_mb * displayedProgress / 100, t, fmt.number), total: formatFileSize(model.size_mb, t, fmt.number) })}
                 </>
               ) : (
-                'Downloading...'
+                t('modelMgr.downloadingLabel')
               )}
             </p>
           </motion.div>

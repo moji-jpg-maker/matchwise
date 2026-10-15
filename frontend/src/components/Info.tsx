@@ -3,12 +3,14 @@ import { Info as InfoIcon } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { VisuallyHidden } from "./ui/visually-hidden";
 import { About } from "./About";
+import { useT } from "@/i18n";
 
 interface InfoProps {
     isCollapsed: boolean;
 }
 
 const Info = React.forwardRef<HTMLButtonElement, InfoProps>(({ isCollapsed }, ref) => {
+  const t = useT();
   return (
     <Dialog aria-describedby={undefined}>
       <DialogTrigger asChild>
@@ -19,17 +21,17 @@ const Info = React.forwardRef<HTMLButtonElement, InfoProps>(({ isCollapsed }, re
               ? "bg-transparent p-2 hover:bg-gray-100 rounded-lg" 
               : "w-full px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-200 rounded-lg shadow-sm"
           }`}
-          title="About Matchwise"
+          title={t('logo.about')}
         >
           <InfoIcon className={`text-gray-600 ${isCollapsed ? "w-5 h-5" : "w-4 h-4"}`} />
           {!isCollapsed && (
-            <span className="ml-2 text-sm text-gray-700">About</span>
+            <span className="ms-2 text-sm text-gray-700">{t('settingTabs.about')}</span>
           )}
         </button>
       </DialogTrigger>
       <DialogContent>
         <VisuallyHidden>
-          <DialogTitle>About Matchwise</DialogTitle>
+          <DialogTitle>{t('logo.about')}</DialogTitle>
         </VisuallyHidden>
         <About />
       </DialogContent>

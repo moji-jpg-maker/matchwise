@@ -1,5 +1,8 @@
 import { CmpOp, Expr, FieldDef, Operand, Rule, RuleSet, Side, Value, kindName } from '@/types/matchmaking';
 import { isConditionField } from '@/lib/conditions';
+import type { MessageKey } from '@/i18n/types';
+
+export type Translate = (key: MessageKey, params?: Record<string, string | number>) => string;
 
 export const CMP_LABEL: Record<CmpOp, string> = {
   eq: '=',
@@ -8,18 +11,20 @@ export const CMP_LABEL: Record<CmpOp, string> = {
   le: '≤',
   gt: '>',
   ge: '≥',
-  in: 'is one of',
+  in: '',
 };
 
+export const cmpLabel = (op: CmpOp, t: Translate): string => (op === 'in' ? t('expr.cmpIn') : CMP_LABEL[op]);
+
 export const NODE_TYPES = [
-  { value: 'cmp', label: 'compare' },
-  { value: 'between', label: 'between' },
-  { value: 'exists', label: 'is filled in' },
-  { value: 'and', label: 'all of' },
-  { value: 'or', label: 'any of' },
-  { value: 'not', label: 'not' },
-  { value: 'if', label: 'if … then' },
-] as const;
+  { value: 'cmp', labelKey: 'expr.nodeCmp' },
+  { value: 'between', labelKey: 'expr.nodeBetween' },
+  { value: 'exists', labelKey: 'expr.nodeExists' },
+  { value: 'and', labelKey: 'expr.nodeAnd' },
+  { value: 'or', labelKey: 'expr.nodeOr' },
+  { value: 'not', labelKey: 'expr.nodeNot' },
+  { value: 'if', labelKey: 'expr.nodeIf' },
+] as const satisfies readonly { value: string; labelKey: MessageKey }[];
 
 export type NodeType = (typeof NODE_TYPES)[number]['value'];
 
@@ -83,33 +88,33 @@ export function convertNode(e: Expr, to: NodeType, fields: FieldDef[]): Expr {
   return fresh;
 }
 
-const operandText = (o: Operand, byKey: Record<string, FieldDef>): string => {
+const operandText = (o: Operand, byKey: Record<string, FieldDef>, t: Translate): string => {
   if ('field' in o) {
-    const who = o.field.of === 'a' ? 'A' : 'B';
-    return `${who}.${byKey[o.field.key]?.label ?? o.field.key}`;
+    const field = byKey[o.field.key]?.label ?? o.field.key;
+    return t(o.field.of === 'a' ? 'expr.sideA' : 'expr.sideB', { field });
   }
   if ('lit' in o) return Array.isArray(o.lit.value) ? (o.lit.value as string[]).join(', ') : String(o.lit.value);
-  const base = operandText(o.offset.base, byKey);
+  const base = operandText(o.offset.base, byKey, t);
   return o.offset.by === 0 ? base : `${base} ${o.offset.by > 0 ? '+' : '−'} ${Math.abs(o.offset.by)}`;
 };
 
 /** One-line summary of an expression for collapsed rule cards. */
-export function describeExpr(e: Expr, byKey: Record<string, FieldDef>): string {
+export function describeExpr(e: Expr, byKey: Record<string, FieldDef>, t: Translate): string {
   switch (e.op) {
     case 'and':
-      return e.args.map((a) => describeExpr(a, byKey)).join(' AND ');
+      return e.args.map((a) => describeExpr(a, byKey, t)).join(` ${t('expr.joinAnd')} `);
     case 'or':
-      return '(' + e.args.map((a) => describeExpr(a, byKey)).join(' OR ') + ')';
+      return '(' + e.args.map((a) => describeExpr(a, byKey, t)).join(` ${t('expr.joinOr')} `) + ')';
     case 'not':
-      return `NOT (${describeExpr(e.arg, byKey)})`;
+      return t('expr.descNot', { arg: describeExpr(e.arg, byKey, t) });
     case 'if':
-      return `IF ${describeExpr(e.when, byKey)} THEN ${describeExpr(e.then, byKey)}`;
+      return t('expr.descIf', { when: describeExpr(e.when, byKey, t), then: describeExpr(e.then, byKey, t) });
     case 'exists':
-      return `${operandText(e.value, byKey)} is filled in`;
+      return t('expr.descExists', { value: operandText(e.value, byKey, t) });
     case 'between':
-      return `${operandText(e.value, byKey)} between ${operandText(e.lo, byKey)} and ${operandText(e.hi, byKey)}`;
+      return t('expr.descBetween', { value: operandText(e.value, byKey, t), lo: operandText(e.lo, byKey, t), hi: operandText(e.hi, byKey, t) });
     case 'cmp':
-      return `${operandText(e.left, byKey)} ${CMP_LABEL[e.cmp]} ${operandText(e.right, byKey)}`;
+      return t('expr.descCmp', { left: operandText(e.left, byKey, t), op: cmpLabel(e.cmp, t), right: operandText(e.right, byKey, t) });
   }
 }
 

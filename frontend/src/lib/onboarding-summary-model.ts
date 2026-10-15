@@ -37,15 +37,27 @@ export function getDownloadTotalMb(totalMb: number | null | undefined, model: st
   return totalMb || getSummaryModelSizeMb(model);
 }
 
-export function formatSummaryModelSizeLabelFromMb(sizeMb: number): string {
+export interface SizeLabelFormatters {
+  t: (key: 'builtinMgr.sizeMib' | 'builtinMgr.sizeGib', params?: Record<string, string | number>) => string;
+  number: (value: number, options?: Intl.NumberFormatOptions) => string;
+}
+
+export function formatSummaryModelSizeLabelFromMb(sizeMb: number, formatters?: SizeLabelFormatters): string {
   if (sizeMb === 0) {
     return '';
   }
 
   if (sizeMb >= 1024) {
+    if (formatters) {
+      const value = formatters.number(sizeMb / 1024, { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+      return formatters.t('builtinMgr.sizeGib', { value });
+    }
     return `~${(sizeMb / 1024).toFixed(1)} GiB`;
   }
 
+  if (formatters) {
+    return formatters.t('builtinMgr.sizeMib', { value: formatters.number(sizeMb) });
+  }
   return `~${sizeMb} MiB`;
 }
 

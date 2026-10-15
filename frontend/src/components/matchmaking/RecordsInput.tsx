@@ -1,20 +1,24 @@
 'use client';
 
+import { fieldLabel } from '@/lib/field-label';
 import React from 'react';
 import { Plus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FieldDef, RecordValue, Value, kindName, kindOptions } from '@/types/matchmaking';
+import { useI18n } from '@/i18n';
 
 interface Props {
   defs: FieldDef[];
   entries: RecordValue[];
   entryLabel: string;
+  addLabel: string;
   onChange: (next: RecordValue[] | null) => void;
 }
 
 /** Editor for a repeating group of sub-fields, e.g. one card per child. */
-export function RecordsInput({ defs, entries, entryLabel, onChange }: Props) {
+export function RecordsInput({ defs, entries, entryLabel, addLabel, onChange }: Props) {
+  const { t, fmt, locale } = useI18n();
   const emit = (next: RecordValue[]) => onChange(next.length ? next : null);
 
   const setSub = (i: number, key: string, v: Value | null) => {
@@ -34,12 +38,12 @@ export function RecordsInput({ defs, entries, entryLabel, onChange }: Props) {
         <div key={i} className="border rounded-md p-3 bg-gray-50 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">
-              {entryLabel} {i + 1}
+              {t('profile.entryNumbered', { entry: entryLabel, number: fmt.number(i + 1) })}
             </span>
             <button
               type="button"
               className="p-1 rounded hover:bg-gray-200"
-              aria-label={`Remove ${entryLabel} ${i + 1}`}
+              aria-label={t('profile.removeEntry', { entry: entryLabel, number: fmt.number(i + 1) })}
               onClick={() => emit(entries.filter((_, j) => j !== i))}
             >
               <X className="w-4 h-4" />
@@ -51,10 +55,11 @@ export function RecordsInput({ defs, entries, entryLabel, onChange }: Props) {
               const v = entry[d.key];
               return (
                 <label key={d.key} className="text-xs text-gray-600 space-y-1 block">
-                  <span>{d.label}</span>
+                  <span>{fieldLabel(d, locale)}</span>
                   {kind === 'number' && (
                     <Input
                       type="number"
+                      dir="ltr"
                       value={typeof v === 'number' ? String(v) : ''}
                       onChange={(e) => setSub(i, d.key, e.target.value === '' ? null : Number(e.target.value))}
                     />
@@ -71,9 +76,9 @@ export function RecordsInput({ defs, entries, entryLabel, onChange }: Props) {
                       value={typeof v === 'boolean' ? String(v) : ''}
                       onChange={(e) => setSub(i, d.key, e.target.value === '' ? null : e.target.value === 'true')}
                     >
-                      <option value="">not set</option>
-                      <option value="true">yes</option>
-                      <option value="false">no</option>
+                      <option value="">{t('profile.notSet')}</option>
+                      <option value="true">{t('profiles.yes')}</option>
+                      <option value="false">{t('profiles.no')}</option>
                     </select>
                   )}
                   {kind === 'choice' && (
@@ -82,7 +87,7 @@ export function RecordsInput({ defs, entries, entryLabel, onChange }: Props) {
                       value={typeof v === 'string' ? v : ''}
                       onChange={(e) => setSub(i, d.key, e.target.value === '' ? null : e.target.value)}
                     >
-                      <option value="">not set</option>
+                      <option value="">{t('profile.notSet')}</option>
                       {kindOptions(d.kind).map((o) => (
                         <option key={o} value={o}>{o.replace(/_/g, ' ')}</option>
                       ))}
@@ -95,7 +100,7 @@ export function RecordsInput({ defs, entries, entryLabel, onChange }: Props) {
         </div>
       ))}
       <Button type="button" variant="outline" size="sm" onClick={() => emit([...entries, {}])}>
-        <Plus className="w-4 h-4 mr-1" /> Add {entryLabel.toLowerCase()}
+        <Plus className="w-4 h-4 me-1" /> {addLabel}
       </Button>
     </div>
   );

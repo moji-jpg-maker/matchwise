@@ -1,6 +1,9 @@
 'use client';
 
 import { Block } from '@/types';
+import { useI18n } from '@/i18n';
+import { normalizeSearch } from '@/i18n/format';
+import type { MessageKey } from '@/i18n/types';
 import { useRef, useState, useEffect } from 'react';
 
 interface BlockProps {
@@ -20,40 +23,40 @@ interface BlockProps {
 
 interface CommandOption {
   id: string;
-  label: string;
+  labelKey: MessageKey;
   type: Block['type'];
   icon: string;
-  description: string;
+  descriptionKey: MessageKey;
 }
 
 const COMMANDS: CommandOption[] = [
   { 
     id: 'text', 
-    label: 'Text', 
+    labelKey: 'aiSum.cmdText', 
     type: 'text', 
     icon: 'T', 
-    description: 'Just start writing with plain text' 
+    descriptionKey: 'aiSum.cmdTextDesc' 
   },
   { 
     id: 'bullet', 
-    label: 'Bullet List', 
+    labelKey: 'aiSum.cmdBullet', 
     type: 'bullet', 
     icon: '•', 
-    description: 'Create a bulleted list' 
+    descriptionKey: 'aiSum.cmdBulletDesc' 
   },
   { 
     id: 'h1', 
-    label: 'Heading 1', 
+    labelKey: 'aiSum.cmdH1', 
     type: 'heading1', 
     icon: 'H1', 
-    description: 'Big section heading' 
+    descriptionKey: 'aiSum.cmdH1Desc' 
   },
   { 
     id: 'h2', 
-    label: 'Heading 2', 
+    labelKey: 'aiSum.cmdH2', 
     type: 'heading2', 
     icon: 'H2', 
-    description: 'Medium section heading' 
+    descriptionKey: 'aiSum.cmdH2Desc' 
   },
 ];
 
@@ -71,6 +74,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
   onNavigate,
   onCreateNewBlock,
 }) => {
+  const { t } = useI18n();
   const [showCommands, setShowCommands] = useState(false);
   const [commandFilter, setCommandFilter] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
@@ -101,7 +105,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
   }, [selectedCommandIndex, showCommands]);
 
   const filteredCommands = COMMANDS.filter(cmd => 
-    cmd.label.toLowerCase().includes(commandFilter.toLowerCase())
+    normalizeSearch(t(cmd.labelKey)).includes(normalizeSearch(commandFilter))
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -228,7 +232,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
       onContextMenu={onContextMenu}
     >
       {block.type === 'bullet' && (
-        <div className="flex-shrink-0 mr-2 select-none mt-[2px]">•</div>
+        <div className="flex-shrink-0 me-2 select-none mt-[2px]">•</div>
       )}
 
       <div className="relative flex-1 py-0.5 px-1">
@@ -250,20 +254,21 @@ export const BlockComponent: React.FC<BlockProps> = ({
             ${block.type === 'heading1' ? 'text-xl font-bold' : ''}
             ${block.type === 'heading2' ? 'text-lg font-semibold' : ''}
           `}
-          placeholder="Type '/' for commands..."
+          placeholder={t('aiSum.slashPlaceholder')}
+          dir="auto"
         />
 
         {showCommands && (
           <div 
             ref={commandsRef}
-            className="absolute left-0 top-full mt-1 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50
+            className="absolute start-0 top-full mt-1 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50
                        animate-in fade-in slide-in-from-top-2 duration-150"
           >
             {filteredCommands.map((cmd, index) => (
               <button
                 key={cmd.id}
                 className={`
-                  w-full text-left px-3 py-2 flex items-center space-x-3 hover:bg-gray-50
+                  w-full text-start px-3 py-2 flex items-center space-x-3 rtl:space-x-reverse hover:bg-gray-50
                   ${index === selectedCommandIndex ? 'bg-gray-50' : ''}
                 `}
                 onClick={() => handleCommandSelect(cmd)}
@@ -273,8 +278,8 @@ export const BlockComponent: React.FC<BlockProps> = ({
                   {cmd.icon}
                 </span>
                 <div className="flex-1">
-                  <div className="font-medium">{cmd.label}</div>
-                  <div className="text-sm text-gray-500">{cmd.description}</div>
+                  <div className="font-medium">{t(cmd.labelKey)}</div>
+                  <div className="text-sm text-gray-500">{t(cmd.descriptionKey)}</div>
                 </div>
               </button>
             ))}

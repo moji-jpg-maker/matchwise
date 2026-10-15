@@ -3,6 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, Save, Loader2 } from 'lucide-react';
+import { useT } from '@/i18n';
 
 interface SummaryUpdaterButtonGroupProps {
   isSaving: boolean;
@@ -17,6 +18,7 @@ export function SummaryUpdaterButtonGroup({
   onSave,
   onCopy,
 }: SummaryUpdaterButtonGroupProps) {
+  const t = useT();
   return (
     <ButtonGroup>
       {/* Save button */}
@@ -24,7 +26,7 @@ export function SummaryUpdaterButtonGroup({
         variant="outline"
         size="sm"
         className={`${isDirty ? 'bg-green-200' : ""}`}
-        title={isSaving ? "Saving" : "Save Changes"}
+        title={isSaving ? t('meetingUi.savingTitle') : t('meetingUi.saveTitle')}
         onClick={() => {
           onSave();
         }}
@@ -33,12 +35,12 @@ export function SummaryUpdaterButtonGroup({
         {isSaving ? (
           <>
             <Loader2 className="animate-spin" />
-            <span className="hidden @[40rem]:inline">Saving...</span>
+            <span className="hidden @[40rem]:inline">{t('meetingUi.saving')}</span>
           </>
         ) : (
           <>
             <Save />
-            <span className="hidden @[40rem]:inline">Save</span>
+            <span className="hidden @[40rem]:inline">{t('meetingUi.save')}</span>
           </>
         )}
       </Button>
@@ -47,14 +49,14 @@ export function SummaryUpdaterButtonGroup({
       <Button
         variant="outline"
         size="sm"
-        title="Copy Summary"
+        title={t('meetingUi.copySummary')}
         onClick={() => {
           onCopy();
         }}
         className="cursor-pointer"
       >
         <Copy />
-        <span className="hidden @[40rem]:inline">Copy</span>
+        <span className="hidden @[40rem]:inline">{t('meetingUi.copy')}</span>
       </Button>
 
     </ButtonGroup>

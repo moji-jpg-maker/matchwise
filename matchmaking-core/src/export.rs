@@ -6,6 +6,10 @@
 //!   note. Everything the export needs lives in the match record itself.
 //! * **Reproducible text.** The same decisions must always serialise to the same bytes, so rows are emitted in a fixed
 //!   order and numbers are formatted deterministically.
+//!
+//! The output is intentionally not localized: headers are machine keys, numbers use ASCII digits and timestamps are
+//! ISO-8601, whatever language the interface uses. Only the screens that trigger and describe the export are
+//! translated.
 
 /// How many finished matches are needed before a learned ranking could be compared with the deterministic baseline.
 /// The gate is *reported*, never enforced: the dataset and the readiness view both quote this one number, so a

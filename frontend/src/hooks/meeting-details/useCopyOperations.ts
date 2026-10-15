@@ -4,6 +4,7 @@ import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummary
 import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
+import { useI18n } from '@/i18n';
 
 interface UseCopyOperationsProps {
   meeting: any;
@@ -20,6 +21,7 @@ export function useCopyOperations({
   aiSummary,
   blockNoteSummaryRef,
 }: UseCopyOperationsProps) {
+  const { t, fmt } = useI18n();
 
   // Helper function to fetch ALL transcripts for copying (not just paginated data)
   const fetchAllTranscripts = useCallback(async (meetingId: string): Promise<Transcript[]> => {
@@ -51,10 +53,10 @@ export function useCopyOperations({
       return allData.transcripts;
     } catch (error) {
       console.error('❌ Error fetching all transcripts:', error);
-      toast.error('Failed to fetch transcripts for copying');
+      toast.error(t('meetingUi.fetchCopyError'));
       return [];
     }
-  }, []);
+  }, [t]);
 
   // Copy transcript to clipboard
   const handleCopyTranscript = useCallback(async () => {
@@ -63,9 +65,8 @@ export function useCopyOperations({
     const allTranscripts = await fetchAllTranscripts(meeting.id);
 
     if (!allTranscripts.length) {
-      const error_msg = 'No transcripts available to copy';
-      console.log(error_msg);
-      toast.error(error_msg);
+      console.log('No transcripts available to copy');
+      toast.error(t('meetingUi.noneToCopy'));
       return;
     }
 
@@ -83,24 +84,24 @@ export function useCopyOperations({
       return `[${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}]`;
     };
 
-    const header = `# Transcript of the Meeting: ${meeting.id} - ${meetingTitle ?? meeting.title}\n\n`;
-    const date = `## Date: ${new Date(meeting.created_at).toLocaleDateString()}\n\n`;
+    const header = `# ${t('aiSum.copyTranscriptTitle', { id: meeting.id, title: meetingTitle ?? meeting.title })}\n\n`;
+    const date = `## ${t('aiSum.mdDate')}: ${fmt.date(new Date(meeting.created_at))}\n\n`;
     const fullTranscript = allTranscripts
       .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}  `)
       .join('\n');
 
     await navigator.clipboard.writeText(header + date + fullTranscript);
-    toast.success("Transcript copied to clipboard");
+    toast.success(t('meetingUi.transcriptCopied'));
 
     const wordCount = allTranscripts
       .map(t => t.text.split(/\s+/).length)
       .reduce((a, b) => a + b, 0);
-  }, [meeting, meetingTitle, fetchAllTranscripts]);
+  }, [meeting, meetingTitle, fetchAllTranscripts, t, fmt]);
 
   // Copy summary to clipboard
   const handleCopySummary = useCallback(async () => {
     if (!hasVisibleSummaryContent(aiSummary)) {
-      toast.error('No summary content available to copy');
+      toast.error(t('meetingUi.noSummaryToCopy'));
       return;
     }
     try {
@@ -149,36 +150,24 @@ export function useCopyOperations({
       // If still no summary content, show message
       if (!summaryMarkdown.trim()) {
         console.error('❌ No summary content available to copy');
-        toast.error('No summary content available to copy');
+        toast.error(t('meetingUi.noSummaryToCopy'));
         return;
       }
 
       // Build metadata header
-      const header = `# Meeting Summary: ${meetingTitle}\n\n`;
-      const metadata = `**Meeting ID:** ${meeting.id}\n**Date:** ${new Date(meeting.created_at).toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      })}\n**Copied on:** ${new Date().toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      })}\n\n---\n\n`;
+      const header = `# ${t('aiSum.copySummaryTitle', { title: meetingTitle })}\n\n`;
+      const metadata = `**${t('aiSum.copyMeetingId')}:** ${meeting.id}\n**${t('aiSum.mdDate')}:** ${fmt.dateTime(new Date(meeting.created_at))}\n**${t('aiSum.copyCopiedOn')}:** ${fmt.dateTime(new Date())}\n\n---\n\n`;
 
       const fullMarkdown = header + metadata + summaryMarkdown;
       await navigator.clipboard.writeText(fullMarkdown);
 
       console.log('✅ Successfully copied to clipboard!');
-      toast.success("Summary copied to clipboard");
+      toast.success(t('meetingUi.summaryCopied'));
     } catch (error) {
       console.error('❌ Failed to copy summary:', error);
-      toast.error("Failed to copy summary");
+      toast.error(t('meetingUi.copySummaryError'));
     }
-  }, [aiSummary, meetingTitle, meeting, blockNoteSummaryRef]);
+  }, [aiSummary, meetingTitle, meeting, blockNoteSummaryRef, t, fmt]);
 
   return {
     handleCopyTranscript,

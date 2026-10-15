@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { FileText, Sparkles } from 'lucide-react';
+import { useI18n } from '@/i18n';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 const STORAGE_KEY = 'matchwise.meetingDetails.transcriptPaneRatio';
 const DEFAULT_RATIO = 0.3;
@@ -47,6 +48,7 @@ export function MeetingDetailsSplitView({
   activeTab,
   onTabChange,
 }: MeetingDetailsSplitViewProps) {
+  const { dir, t, fmt } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const [ratio, setRatio] = useState(DEFAULT_RATIO);
   const [isDesktop, setIsDesktop] = useState(true);
@@ -74,8 +76,9 @@ export function MeetingDetailsSplitView({
   const onPointerMove = useCallback((event: React.PointerEvent) => {
     if (!dragging.current || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    setRatio(clampRatio((event.clientX - rect.left) / rect.width));
-  }, []);
+    const offset = dir === 'rtl' ? rect.right - event.clientX : event.clientX - rect.left;
+    setRatio(clampRatio(offset / rect.width));
+  }, [dir]);
 
   const onPointerUp = useCallback(() => {
     if (!dragging.current) return;
@@ -88,9 +91,10 @@ export function MeetingDetailsSplitView({
 
   const onSeparatorKeyDown = useCallback((event: React.KeyboardEvent) => {
     const current = ratio;
+    const step = dir === 'rtl' ? -0.05 : 0.05;
     const next =
-      event.key === 'ArrowLeft' ? clampRatio(current - 0.05) :
-      event.key === 'ArrowRight' ? clampRatio(current + 0.05) :
+      event.key === 'ArrowLeft' ? clampRatio(current - step) :
+      event.key === 'ArrowRight' ? clampRatio(current + step) :
       event.key === 'Home' ? MIN_RATIO :
       event.key === 'End' ? MAX_RATIO :
       null;
@@ -98,13 +102,13 @@ export function MeetingDetailsSplitView({
     event.preventDefault();
     setRatio(next);
     writeStoredRatio(next);
-  }, [ratio]);
+  }, [ratio, dir]);
 
   const transcriptPanelProps = isDesktop
-    ? { role: 'region' as const, 'aria-label': 'Transcript', tabIndex: -1 }
+    ? { role: 'region' as const, 'aria-label': t('splitAria.transcript'), tabIndex: -1 }
     : {};
   const summaryPanelProps = isDesktop
-    ? { role: 'region' as const, 'aria-label': 'Summary', tabIndex: -1 }
+    ? { role: 'region' as const, 'aria-label': t('splitAria.summary'), tabIndex: -1 }
     : {};
 
   return (
@@ -152,8 +156,8 @@ export function MeetingDetailsSplitView({
           aria-valuenow={Math.round(ratio * 100)}
           aria-valuemin={Math.round(MIN_RATIO * 100)}
           aria-valuemax={Math.round(MAX_RATIO * 100)}
-          aria-valuetext={`Transcript panel ${Math.round(ratio * 100)} percent`}
-          aria-label="Resize transcript and summary"
+          aria-valuetext={t('meetingPage.resizeValue', { percent: fmt.percent(ratio) })}
+          aria-label={t('meetingUi.resize')}
           tabIndex={0}
           className="group relative z-10 hidden w-2 flex-shrink-0 cursor-col-resize items-stretch justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset md:flex"
           onPointerDown={onPointerDown}

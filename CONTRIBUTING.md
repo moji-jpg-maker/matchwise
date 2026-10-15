@@ -100,6 +100,8 @@ Before starting work on a new feature or bug fix:
 - Add comments for complex logic
 - Keep functions small and focused
 - Write clear commit messages
+- Every user-visible string goes in both `frontend/src/i18n/en.ts` and `fa.ts` (one line per value); run `cd frontend && npm run check:i18n`
+- Use `docs/i18n/glossary-fa.md` for Persian terms
 
 ## Commit Message Format
 

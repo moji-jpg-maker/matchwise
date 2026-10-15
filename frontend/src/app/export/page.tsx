@@ -6,10 +6,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Download, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { DatasetSummary, ExportDoc } from '@/types/matchmaking';
+import { DatasetSummary, ExportDoc, MatchStatus, Outcome } from '@/types/matchmaking';
+import { useI18n } from '@/i18n';
+import { OUTCOME_KEY, STATUS_KEY } from '@/lib/workflow';
 
 export default function ExportPage() {
   const router = useRouter();
+  const { t, fmt } = useI18n();
   const [summary, setSummary] = useState<DatasetSummary | null>(null);
   const [doc, setDoc] = useState<ExportDoc | null>(null);
   const [busy, setBusy] = useState(false);
@@ -21,9 +24,9 @@ export default function ExportPage() {
       setLoadError(null);
     } catch (e) {
       setLoadError(`${e}`);
-      toast.error(`Could not read the decision data: ${e}`);
+      toast.error(t('exportPage.readError', { error: `${e}` }));
     }
-  }, []);
+  }, [t]);
   useEffect(() => { void load(); }, [load]);
 
   const build = async () => {
@@ -32,9 +35,9 @@ export default function ExportPage() {
       const d = await invoke<ExportDoc>('mm_export_outcomes');
       setDoc(d);
       await load();
-      toast.success(`${d.row_count} rows, ${d.with_outcome} with an outcome`);
+      toast.success(t('exportPage.built', { rows: fmt.number(d.row_count), withOutcome: fmt.number(d.with_outcome) }));
     } catch (e) {
-      toast.error(`Could not build the export: ${e}`);
+      toast.error(t('exportPage.buildError', { error: `${e}` }));
     } finally {
       setBusy(false);
     }
@@ -50,13 +53,13 @@ export default function ExportPage() {
     a.download = `matchwise-decisions-${stamp}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success('Saved. Opening it in a spreadsheet will show any quoted commas correctly.');
+    toast.success(t('exportPage.saved'));
   };
 
   const copy = async () => {
     if (!doc) return;
     await navigator.clipboard.writeText(doc.csv);
-    toast.success('Copied to the clipboard');
+    toast.success(t('exportPage.copied'));
   };
 
   // The gate comes from the command (`minimum_finished`), which is the one place it is defined; nothing is hard-coded here.
@@ -67,45 +70,42 @@ export default function ExportPage() {
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto p-6 space-y-5">
         <div className="flex items-center gap-3">
-          <button onClick={() => router.push('/')} className="p-2 rounded-lg hover:bg-gray-200" aria-label="Back">
-            <ArrowLeft className="w-5 h-5" />
+          <button onClick={() => router.push('/')} className="p-2 rounded-lg hover:bg-gray-200" aria-label={t('profiles.back')}>
+            <ArrowLeft className="w-5 h-5 rtl-mirror" />
           </button>
           <div>
-            <h1 className="text-2xl font-semibold">Decision data</h1>
-            <p className="text-sm text-gray-500">
-              Every tracked pair and how it ended, so ranking can later be checked against what actually happened.
-              The file holds no names, no contact details and no notes.
-            </p>
+            <h1 className="text-2xl font-semibold">{t('exportPage.title')}</h1>
+            <p className="text-sm text-gray-500">{t('exportPage.intro')}</p>
           </div>
         </div>
 
         <div className="bg-white rounded-lg border p-5 space-y-4">
-          <h2 className="font-medium">What is here</h2>
+          <h2 className="font-medium">{t('exportPage.whatIsHere')}</h2>
           {!summary ? (
             loadError ? (
               <div className="space-y-2">
-                <p className="text-sm text-red-700">Could not read the decision data: {loadError}</p>
-                <Button variant="outline" size="sm" onClick={() => void load()}>Retry</Button>
+                <p className="text-sm text-red-700">{t('exportPage.readError', { error: loadError })}</p>
+                <Button variant="outline" size="sm" onClick={() => void load()}>{t('profiles.retry')}</Button>
               </div>
             ) : (
-              <p className="text-sm text-gray-500">Reading…</p>
+              <p className="text-sm text-gray-500">{t('exportPage.reading')}</p>
             )
           ) : (
             <>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <Stat label="Tracked pairs" value={summary.matches} />
-                <Stat label="Finished" value={summary.finished} />
-                <Stat label="With a stored scorecard" value={summary.with_snapshot} />
-                <Stat label="Advanced by override" value={summary.overridden} />
+                <Stat label={t('exportPage.trackedPairs')} value={fmt.number(summary.matches)} />
+                <Stat label={t('exportPage.finished')} value={fmt.number(summary.finished)} />
+                <Stat label={t('exportPage.withSnapshot')} value={fmt.number(summary.with_snapshot)} />
+                <Stat label={t('exportPage.overridden')} value={fmt.number(summary.overridden)} />
               </div>
 
               {Object.keys(summary.outcome_counts).length > 0 && (
                 <div>
-                  <div className="text-sm font-medium mb-1">Outcomes</div>
+                  <div className="text-sm font-medium mb-1">{t('exportPage.outcomes')}</div>
                   <div className="flex flex-wrap gap-2 text-xs">
                     {Object.entries(summary.outcome_counts).map(([k, n]) => (
                       <span key={k} className="px-2 py-1 rounded bg-gray-100">
-                        {k.replace(/_/g, ' ')} <span className="text-gray-500">{n}</span>
+                        {k in OUTCOME_KEY ? t(OUTCOME_KEY[k as Outcome]) : k} <span className="text-gray-500">{fmt.number(n)}</span>
                       </span>
                     ))}
                   </div>
@@ -114,11 +114,11 @@ export default function ExportPage() {
 
               {Object.keys(summary.open_by_status).length > 0 && (
                 <div>
-                  <div className="text-sm font-medium mb-1">Still in progress</div>
+                  <div className="text-sm font-medium mb-1">{t('exportPage.inProgress')}</div>
                   <div className="flex flex-wrap gap-2 text-xs">
                     {Object.entries(summary.open_by_status).map(([k, n]) => (
                       <span key={k} className="px-2 py-1 rounded bg-blue-50 text-blue-800">
-                        {k.replace(/_/g, ' ')} <span className="text-blue-500">{n}</span>
+                        {k in STATUS_KEY ? t(STATUS_KEY[k as MatchStatus]) : k} <span className="text-blue-500">{fmt.number(n)}</span>
                       </span>
                     ))}
                   </div>
@@ -128,20 +128,20 @@ export default function ExportPage() {
               <div className="text-sm text-gray-500 space-y-1">
                 {summary.rule_set_versions.length > 1 && (
                   <p className="text-amber-700">
-                    These decisions were made under {summary.rule_set_versions.length} different rule-set versions. A score
-                    only means what it meant under the rules in force at the time, which is why each row records its version.
+                    {t('exportPage.multiVersions', { count: fmt.number(summary.rule_set_versions.length) })}
                   </p>
                 )}
                 {summary.earliest_created_at && (
                   <p>
-                    Oldest pair: {new Date(summary.earliest_created_at).toLocaleDateString()}
-                    {summary.latest_updated_at ? ` · latest change: ${new Date(summary.latest_updated_at).toLocaleDateString()}` : ''}
+                    {summary.latest_updated_at
+                      ? t('exportPage.oldestLatest', { date: fmt.date(summary.earliest_created_at), latest: fmt.date(summary.latest_updated_at) })
+                      : t('exportPage.oldest', { date: fmt.date(summary.earliest_created_at) })}
                   </p>
                 )}
                 <p className={enough ? '' : 'text-amber-700'}>
                   {enough
-                    ? `${summary.finished} finished matches is enough to start comparing a learned ranking with the deterministic one.`
-                    : `${summary.finished} of ${gate} finished matches. Until there are more, ranking stays fully deterministic — learning from a handful of outcomes would fit noise.`}
+                    ? t('exportPage.enough', { finished: fmt.number(summary.finished) })
+                    : t('exportPage.notEnough', { finished: fmt.number(summary.finished), gate: fmt.number(gate) })}
                 </p>
               </div>
             </>
@@ -150,42 +150,42 @@ export default function ExportPage() {
 
         <div className="bg-white rounded-lg border p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-medium">Build the file</h2>
+            <h2 className="font-medium">{t('exportPage.buildTitle')}</h2>
             <Button onClick={() => void build()} disabled={busy}>
-              {busy ? 'Building…' : 'Build CSV'}
+              {busy ? t('exportPage.building') : t('exportPage.buildCsv')}
             </Button>
           </div>
-          <p className="text-sm text-gray-500">
-            One row per pair: the rule-set version and stored scorecard it was judged on, what each person said, the
-            outcome, and whether the rules had to be overridden. Each scored dimension becomes its own column; a blank
-            means that dimension was never scored for that pair, which is not the same as a zero.
-          </p>
+          <p className="text-sm text-gray-500">{t('exportPage.buildHelp')}</p>
 
           {doc && (
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <Button onClick={save}>
-                  <Download className="w-4 h-4 mr-2" /> Save as CSV
+                  <Download className="w-4 h-4 me-2" /> {t('exportPage.saveCsv')}
                 </Button>
                 <Button variant="outline" onClick={() => void copy()}>
-                  <Copy className="w-4 h-4 mr-2" /> Copy
+                  <Copy className="w-4 h-4 me-2" /> {t('exportPage.copy')}
                 </Button>
                 <span className="text-xs text-gray-500">
-                  {doc.row_count} rows · {doc.with_outcome} with an outcome · {doc.columns.length} columns · built{' '}
-                  {new Date(doc.generated_at).toLocaleTimeString()}
+                  {t('exportPage.stats', {
+                    rows: fmt.number(doc.row_count),
+                    withOutcome: fmt.number(doc.with_outcome),
+                    columns: fmt.number(doc.columns.length),
+                    time: fmt.dateTime(doc.generated_at),
+                  })}
                 </span>
               </div>
               <details className="text-sm">
-                <summary className="cursor-pointer text-gray-600">Columns</summary>
-                <div className="mt-2 flex flex-wrap gap-1 text-xs">
+                <summary className="cursor-pointer text-gray-600">{t('exportPage.columns')}</summary>
+                <div dir="ltr" className="mt-2 flex flex-wrap gap-1 text-xs">
                   {doc.columns.map((c) => (
                     <code key={c} className="px-1.5 py-0.5 rounded bg-gray-100">{c}</code>
                   ))}
                 </div>
               </details>
               <details className="text-sm">
-                <summary className="cursor-pointer text-gray-600">Preview (first 20 lines)</summary>
-                <pre className="mt-2 p-3 bg-gray-900 text-gray-100 rounded text-xs overflow-x-auto">
+                <summary className="cursor-pointer text-gray-600">{t('exportPage.preview')}</summary>
+                <pre dir="ltr" className="mt-2 p-3 bg-gray-900 text-gray-100 rounded text-xs overflow-x-auto">
                   {doc.csv.split('\n').slice(0, 21).join('\n')}
                 </pre>
               </details>
@@ -197,7 +197,7 @@ export default function ExportPage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded border bg-gray-50 p-3">
       <div className="text-xl font-semibold">{value}</div>

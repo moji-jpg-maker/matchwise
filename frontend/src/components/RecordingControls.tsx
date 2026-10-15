@@ -10,6 +10,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { TranscriptionErrorPayload } from '@/services/transcriptService';
+import { useI18n } from '@/i18n';
+import type { MessageKey } from '@/i18n/types';
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -50,6 +52,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const { t, fmt } = useI18n();
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isPausing, setIsPausing] = useState(false);
@@ -58,7 +61,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [transcriptionErrors, setTranscriptionErrors] = useState(0);
   const [isValidatingModel, setIsValidatingModel] = useState(false);
   const [speechDetected, setSpeechDetected] = useState(false);
-  const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
+  const [deviceError, setDeviceError] = useState<{ title: MessageKey, message: MessageKey } | null>(null);
 
   const currentTime = 0;
   const duration = 0;
@@ -68,7 +71,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const formatTime = (time: number) => {
     const minutes = Math.floor(time / 60);
     const seconds = Math.floor(time % 60);
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    return `${fmt.number(minutes)}:${fmt.number(seconds, { minimumIntegerDigits: 2 })}`;
   };
 
   useEffect(() => {
@@ -78,11 +81,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         console.log('Tauri is initialized and ready, is_recording result:', result);
       } catch (error) {
         console.error('Tauri initialization error:', error);
-        alert('Failed to initialize recording. Please check the console for details.');
+        alert(t('recCtl.errInit'));
       }
     };
     checkTauri();
-  }, []);
+  }, [t]);
 
   const handleStartRecording = useCallback(async () => {
     if (isStarting || isValidatingModel || isStartingRecording) return;
@@ -116,23 +119,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       // Check for device-related errors
       if (errorMsg.includes('microphone') || errorMsg.includes('mic') || errorMsg.includes('input')) {
         setDeviceError({
-          title: 'Microphone Not Available',
-          message: 'Unable to access your microphone. Please check that:\n• Your microphone is connected\n• The app has microphone permissions\n• No other app is using the microphone'
+          title: 'recCtl.micTitle',
+          message: 'recCtl.micMessage'
         });
       } else if (errorMsg.includes('system audio') || errorMsg.includes('speaker') || errorMsg.includes('output')) {
         setDeviceError({
-          title: 'System Audio Not Available',
-          message: 'Unable to capture system audio. Please check that:\n• A virtual audio device (like BlackHole) is installed\n• The app has screen recording permissions (macOS)\n• System audio is properly configured'
+          title: 'recCtl.systemTitle',
+          message: 'recCtl.systemMessage'
         });
       } else if (errorMsg.includes('permission')) {
         setDeviceError({
-          title: 'Permission Required',
-          message: 'Recording permissions are required. Please:\n• Grant microphone access in System Settings\n• Grant screen recording access for system audio (macOS)\n• Restart the app after granting permissions'
+          title: 'recCtl.permTitle',
+          message: 'recCtl.permMessage'
         });
       } else {
         setDeviceError({
-          title: 'Recording Failed',
-          message: 'Unable to start recording. Please check your audio device settings and try again.'
+          title: 'recCtl.failTitle',
+          message: 'recCtl.failMessage'
         });
       }
     }
@@ -212,11 +215,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       console.log('Recording paused successfully');
     } catch (error) {
       console.error('Failed to pause recording:', error);
-      alert('Failed to pause recording. Please check the console for details.');
+      alert(t('recCtl.errPause'));
     } finally {
       setIsPausing(false);
     }
-  }, [isRecording, isPaused, isPausing]);
+  }, [isRecording, isPaused, isPausing, t]);
 
   const handleResumeRecording = useCallback(async () => {
     if (!isRecording || !isPaused || isResuming) return;
@@ -230,11 +233,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       console.log('Recording resumed successfully');
     } catch (error) {
       console.error('Failed to resume recording:', error);
-      alert('Failed to resume recording. Please check the console for details.');
+      alert(t('recCtl.errResume'));
     } finally {
       setIsResuming(false);
     }
-  }, [isRecording, isPaused, isResuming]);
+  }, [isRecording, isPaused, isResuming, t]);
 
   useEffect(() => {
     return () => {
@@ -327,11 +330,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   return (
     <TooltipProvider>
       <div className="flex flex-col space-y-2">
-        <div className="flex items-center space-x-2 bg-white rounded-full shadow-lg px-4 py-2">
+        <div className="flex items-center space-x-2 rtl:space-x-reverse bg-white rounded-full shadow-lg px-4 py-2">
           {isProcessing && !isParentProcessing ? (
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2 rtl:space-x-reverse">
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900"></div>
-              <span className="text-sm text-gray-600">Processing recording...</span>
+              <span className="text-sm text-gray-600">{t('recCtl.processing')}</span>
             </div>
           ) : (
             <>
@@ -346,7 +349,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
                   <div className="w-px h-6 bg-gray-200 mx-1" />
 
-                  <div className="flex items-center space-x-1 mx-2">
+                  <div className="flex items-center space-x-1 rtl:space-x-reverse mx-2">
                     <div className="text-sm text-gray-600 min-w-[40px]">
                       {formatTime(currentTime)}
                     </div>
@@ -392,7 +395,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                         </button>
                       </TooltipTrigger>
                       <TooltipContent>
-                        <p>Start recording</p>
+                        <p>{t('recCtl.start')}</p>
                       </TooltipContent>
                     </Tooltip>
                   ) : (
@@ -417,13 +420,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             {isPaused ? <Play size={16} /> : <Pause size={16} />}
                             {(isPausing || isResuming) && (
                               <div className="absolute -top-8 text-gray-600 font-medium text-xs">
-                                {isPausing ? 'Pausing...' : 'Resuming...'}
+                                {isPausing ? t('recCtl.pausing') : t('recCtl.resuming')}
                               </div>
                             )}
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>{isPaused ? 'Resume recording' : 'Pause recording'}</p>
+                          <p>{isPaused ? t('recCtl.resume') : t('recCtl.pause')}</p>
                         </TooltipContent>
                       </Tooltip>
 
@@ -440,19 +443,19 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             <Square size={16} />
                             {isStopping && (
                               <div className="absolute -top-8 text-gray-600 font-medium text-xs">
-                                Stopping...
+                                {t('recCtl.stopping')}
                               </div>
                             )}
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>Stop recording</p>
+                          <p>{t('recCtl.stop')}</p>
                         </TooltipContent>
                       </Tooltip>
                     </>
                   )}
 
-                  <div className="flex items-center space-x-1 mx-4">
+                  <div className="flex items-center space-x-1 rtl:space-x-reverse mx-4">
                     {barHeights.map((height, index) => (
                       <div
                         key={index}
@@ -484,17 +487,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             <AlertCircle className="h-5 w-5 text-red-600" />
             <button
               onClick={() => setDeviceError(null)}
-              className="absolute right-3 top-3 text-red-600 hover:text-red-800 transition-colors"
-              aria-label="Close alert"
+              className="absolute end-3 top-3 text-red-600 hover:text-red-800 transition-colors"
+              aria-label={t('recCtl.closeAlert')}
             >
               <X className="h-4 w-4" />
             </button>
             <AlertTitle className="text-red-800 font-semibold mb-2">
-              {deviceError.title}
+              {t(deviceError.title)}
             </AlertTitle>
             <AlertDescription className="text-red-700">
-              {deviceError.message.split('\n').map((line, i) => (
-                <div key={i} className={i > 0 ? 'ml-2' : ''}>
+              {t(deviceError.message).split('\n').map((line, i) => (
+                <div key={i} className={i > 0 ? 'ms-2' : ''}>
                   {line}
                 </div>
               ))}

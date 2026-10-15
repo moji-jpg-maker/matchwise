@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::locale::{localize_digits, Locale};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchStatus {
@@ -89,6 +91,25 @@ impl MatchStatus {
             MatchStatus::Rejected => "rejected",
             MatchStatus::Declined => "declined",
             MatchStatus::Stopped => "stopped",
+        }
+    }
+
+    pub fn label_for(self, locale: Locale) -> &'static str {
+        match self {
+            MatchStatus::Identified => locale.pick("identified", "شناسایی‌شده"),
+            MatchStatus::Recommended => locale.pick("recommended", "پیشنهادشده"),
+            MatchStatus::Reviewed => locale.pick("reviewed", "بررسی‌شده"),
+            MatchStatus::Approved => locale.pick("approved", "تأییدشده"),
+            MatchStatus::IntroductionProposed => locale.pick("introduction proposed", "معرفی پیشنهاد شده"),
+            MatchStatus::BothInterested => locale.pick("both interested", "هر دو علاقه‌مند"),
+            MatchStatus::ContactExchanged => locale.pick("contact exchanged", "تبادل اطلاعات تماس"),
+            MatchStatus::Conversation => locale.pick("conversation", "گفتگو"),
+            MatchStatus::Meeting => locale.pick("meeting", "جلسه"),
+            MatchStatus::Feedback => locale.pick("feedback", "بازخورد"),
+            MatchStatus::Closed => locale.pick("closed", "بسته‌شده"),
+            MatchStatus::Rejected => locale.pick("rejected", "ردشده"),
+            MatchStatus::Declined => locale.pick("declined", "انصراف"),
+            MatchStatus::Stopped => locale.pick("stopped", "متوقف‌شده"),
         }
     }
 }
@@ -197,40 +218,67 @@ fn clean(s: &Option<String>) -> Option<String> {
 }
 
 pub fn validate_text(label: &str, s: &Option<String>) -> Result<(), String> {
+    validate_text_for(label, s, Locale::En)
+}
+
+/// Like `validate_text`, with the message in `locale`. `label` must already be in that language.
+pub fn validate_text_for(label: &str, s: &Option<String>, locale: Locale) -> Result<(), String> {
     match s {
-        Some(t) if t.chars().count() > MAX_TEXT => Err(format!("{label} is too long (max {MAX_TEXT} characters)")),
+        Some(t) if t.chars().count() > MAX_TEXT => Err(match locale {
+            Locale::En => format!("{label} is too long (max {MAX_TEXT} characters)"),
+            Locale::Fa => format!("{label} بیش از حد طولانی است (حداکثر {} نویسه)", localize_digits(locale, &MAX_TEXT.to_string())),
+        }),
         _ => Ok(()),
     }
 }
 
 /// Check a requested move. Returns what to record, or a message explaining why it is not allowed.
 pub fn validate_transition(ctx: &TransitionContext, to: MatchStatus, req: &TransitionRequest) -> Result<TransitionPlan, String> {
+    validate_transition_for(ctx, to, req, Locale::En)
+}
+
+/// Like `validate_transition`, with every message in `locale`.
+pub fn validate_transition_for(ctx: &TransitionContext, to: MatchStatus, req: &TransitionRequest, locale: Locale) -> Result<TransitionPlan, String> {
     if !ctx.current.allowed_next().contains(&to) {
-        return Err(format!(
-            "A match that is '{}' cannot move to '{}'{}",
-            ctx.current.as_str(),
-            to.as_str(),
-            if ctx.current.is_terminal() { " (it is finished)" } else { "" }
-        ));
+        let finished = ctx.current.is_terminal();
+        return Err(match locale {
+            Locale::En => format!(
+                "A match that is '{}' cannot move to '{}'{}",
+                ctx.current.as_str(),
+                to.as_str(),
+                if finished { " (it is finished)" } else { "" }
+            ),
+            Locale::Fa => format!(
+                "تطبیقی که «{}» است نمی‌تواند به «{}» برود{}",
+                ctx.current.label_for(locale),
+                to.label_for(locale),
+                if finished { " (پایان یافته است)" } else { "" }
+            ),
+        });
     }
-    validate_text("The reason", &req.reason)?;
-    validate_text("The override reason", &req.override_reason)?;
+    validate_text_for(locale.pick("The reason", "دلیل"), &req.reason, locale)?;
+    validate_text_for(locale.pick("The override reason", "دلیل استثنا"), &req.override_reason, locale)?;
 
     let mut override_used = false;
     if matches!(to, MatchStatus::Recommended | MatchStatus::Approved) && !ctx.eligible {
         match clean(&req.override_reason) {
             Some(r) if r.chars().count() >= 3 => override_used = true,
             _ => {
-                return Err("The rules exclude this pair. Write a short override reason to proceed anyway; it is kept on record.".into());
+                return Err(locale
+                    .pick(
+                        "The rules exclude this pair. Write a short override reason to proceed anyway; it is kept on record.",
+                        "قوانین این زوج را کنار گذاشته‌اند. برای ادامه، یک دلیل کوتاه برای استثنا بنویسید؛ این دلیل ثبت می‌شود.",
+                    )
+                    .into());
             }
         }
     }
     if to == MatchStatus::BothInterested && !(ctx.a == Interest::Interested && ctx.b == Interest::Interested) {
-        return Err("Both people must have said they are interested first".into());
+        return Err(locale.pick("Both people must have said they are interested first", "ابتدا هر دو نفر باید علاقه‌مندی خود را اعلام کرده باشند").into());
     }
     let outcome = req.outcome.or(ctx.outcome);
     if to == MatchStatus::Closed && outcome.is_none() {
-        return Err("Record an outcome before closing the match".into());
+        return Err(locale.pick("Record an outcome before closing the match", "پیش از بستن تطبیق، یک نتیجه ثبت کنید").into());
     }
     Ok(TransitionPlan { override_used, outcome, reason: clean(&req.reason) })
 }

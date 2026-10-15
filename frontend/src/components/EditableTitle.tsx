@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
+import { useI18n } from '@/i18n';
 
 interface EditableTitleProps {
   title: string;
@@ -19,6 +20,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
   onChange,
   onDelete,
 }) => {
+  const { t } = useI18n();
   const titleInputRef = useRef<HTMLTextAreaElement>(null);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -40,6 +42,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
       <textarea
         ref={titleInputRef}
         value={title}
+        dir="auto"
         onChange={(e) => onChange(e.target.value)}
         onBlur={onFinishEditing}
         onKeyDown={(e) => {
@@ -56,18 +59,19 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
       />
     </div>
   ) : (
-    <div className="group flex items-center space-x-2 flex-1">
+    <div className="group flex items-center space-x-2 rtl:space-x-reverse flex-1">
       <h1
         className="text-2xl font-bold cursor-pointer hover:bg-gray-50 rounded px-1 flex-1 whitespace-pre-wrap"
+        dir="auto"
         onClick={onStartEditing}
       >
         {title}
       </h1>
-      <div className="flex space-x-1">
+      <div className="flex space-x-1 rtl:space-x-reverse">
         <button 
           onClick={onStartEditing}
           className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 hover:bg-gray-100 rounded"
-          title="Edit section title"
+          title={t('aiSum.editTitle')}
         >
           <svg 
             xmlns="http://www.w3.org/2000/svg" 
@@ -87,7 +91,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
           <button 
             onClick={onDelete}
             className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 hover:bg-gray-100 rounded text-red-600"
-            title="Delete section"
+            title={t('aiSum.deleteSection')}
           >
             <svg 
               xmlns="http://www.w3.org/2000/svg" 

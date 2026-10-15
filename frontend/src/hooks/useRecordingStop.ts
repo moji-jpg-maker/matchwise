@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
+import { useI18n } from '@/i18n';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -39,6 +40,9 @@ export function useRecordingStop(
   setIsRecording: (value: boolean) => void,
   setIsRecordingDisabled: (value: boolean) => void
 ): UseRecordingStopReturn {
+  const { t, fmt } = useI18n();
+  const i18nRef = useRef({ t, fmt });
+  i18nRef.current = { t, fmt };
   // USE global state instead
   const recordingState = useRecordingState();
   const {
@@ -144,7 +148,7 @@ export function useRecordingStop(
       console.log('Recording already stopped by RecordingControls, processing transcription...');
 
       // Wait for transcription to complete
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
+      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, i18nRef.current.t('recStop.waiting'));
       console.log('Waiting for transcription to complete...');
 
       const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
@@ -181,7 +185,7 @@ export function useRecordingStop(
           // Update user with current status
           if (status.chunks_in_queue > 0) {
             console.log(`Processing ${status.chunks_in_queue} remaining audio chunks...`);
-            setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, `Processing ${status.chunks_in_queue} remaining chunks...`);
+            setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, i18nRef.current.t('recStop.remaining', { count: i18nRef.current.fmt.number(status.chunks_in_queue) }));
           }
 
           // Wait before next check
@@ -213,7 +217,7 @@ export function useRecordingStop(
         time_since_stop: flushStartTime - stopStartTime,
         current_transcript_count: transcriptsRef.current.length
       });
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
+      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, i18nRef.current.t('recStop.flushing'));
       flushBuffer();
       const flushEndTime = Date.now();
       console.log('✅ Final buffer flush completed', {
@@ -232,7 +236,7 @@ export function useRecordingStop(
       // This ensures user sees all transcripts streaming in before database save
       if (isCallApi && transcriptionComplete == true) {
 
-        setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
+        setStatus(RecordingStatus.SAVING, i18nRef.current.t('recStop.saving'));
 
         // Get fresh transcript state (ALL transcripts including late ones)
         const freshTranscripts = [...transcriptsRef.current];
@@ -267,8 +271,8 @@ export function useRecordingStop(
             shouldDetectSummaryLanguage = !(await applyPinnedSummaryLanguageToMeeting(meetingId));
           } catch (error) {
             console.warn('Failed to apply pinned summary language preference for new meeting:', error);
-            toast.warning('Could not apply default summary language', {
-              description: 'The meeting was saved, but the default summary language was not applied.',
+            toast.warning(i18nRef.current.t('recStop.langApplyTitle'), {
+              description: i18nRef.current.t('recStop.langApplyDesc'),
             });
           }
 
@@ -276,12 +280,12 @@ export function useRecordingStop(
             try {
               await detectAndCacheSummaryLanguage(
                 meetingId,
-                freshTranscripts.map(t => t.text)
+                freshTranscripts.map(segment => segment.text)
               );
             } catch (error) {
               console.warn('Failed to detect summary language for new meeting:', error);
-              toast.warning('Could not detect summary language', {
-                description: 'The meeting was saved, but Auto could not detect the summary language.',
+              toast.warning(i18nRef.current.t('recStop.langDetectTitle'), {
+                description: i18nRef.current.t('recStop.langDetectDesc'),
               });
             }
           }
@@ -320,10 +324,10 @@ export function useRecordingStop(
           setStatus(RecordingStatus.COMPLETED);
 
           // Show success toast with navigation option
-          toast.success('Recording saved successfully!', {
-            description: `${freshTranscripts.length} transcript segments saved.`,
+          toast.success(i18nRef.current.t('recStop.savedTitle'), {
+            description: i18nRef.current.t('recStop.savedDesc', { count: i18nRef.current.fmt.number(freshTranscripts.length) }),
             action: {
-              label: 'View Meeting',
+              label: i18nRef.current.t('recStop.viewMeeting'),
               onClick: () => {
                 router.push(`/meeting-details?id=${meetingId}`);
               }
@@ -341,9 +345,9 @@ export function useRecordingStop(
 
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
-          setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
-          toast.error('Failed to save meeting', {
-            description: saveError instanceof Error ? saveError.message : 'Unknown error'
+          setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : i18nRef.current.t('recStop.unknownError'));
+          toast.error(i18nRef.current.t('recStop.saveFailed'), {
+            description: saveError instanceof Error ? saveError.message : i18nRef.current.t('recStop.unknownError')
           });
           throw saveError;
         }
@@ -357,7 +361,7 @@ export function useRecordingStop(
       setIsRecordingDisabled(false);
     } catch (error) {
       console.error('Error in handleRecordingStop:', error);
-      setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');
+      setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : i18nRef.current.t('recStop.unknownError'));
       // isRecording already set to false at function start
       setIsRecordingDisabled(false);
     } finally {

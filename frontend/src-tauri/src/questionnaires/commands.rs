@@ -5,7 +5,7 @@ use super::service;
 use crate::mm::repository::MmRepository;
 use crate::state::AppState;
 use crate::telegram::{notify, repo as tg_repo};
-use matchmaking_core::{missing_fields, validate_instrument, EvidenceLevel, Instrument};
+use matchmaking_core::{missing_fields, validate_instrument_for, EvidenceLevel, Instrument, Locale};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::collections::BTreeMap;
@@ -26,8 +26,9 @@ pub struct InstrumentView {
 }
 
 #[tauri::command]
-pub async fn q_list_instruments(state: State<'_, AppState>, include_archived: Option<bool>) -> Result<Vec<InstrumentView>, String> {
+pub async fn q_list_instruments(state: State<'_, AppState>, include_archived: Option<bool>, locale: Option<String>) -> Result<Vec<InstrumentView>, String> {
     let pool = state.db_manager.pool();
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     repo::ensure_builtin(pool).await.map_err(err)?;
     let rows = repo::list_instruments(pool, include_archived.unwrap_or(false)).await.map_err(err)?;
     let mut seen = std::collections::BTreeSet::new();
@@ -35,7 +36,7 @@ pub async fn q_list_instruments(state: State<'_, AppState>, include_archived: Op
         .into_iter()
         .map(|r| {
             let latest = seen.insert(r.instrument.key.clone());
-            InstrumentView { evidence_label: r.instrument.evidence.level.label().to_string(), instrument: r.instrument, archived: r.archived, created_at: r.created_at, is_latest: latest }
+            InstrumentView { evidence_label: r.instrument.evidence.level.label_for(locale).to_string(), instrument: r.instrument.localized(locale), archived: r.archived, created_at: r.created_at, is_latest: latest }
         })
         .collect())
 }
@@ -43,26 +44,46 @@ pub async fn q_list_instruments(state: State<'_, AppState>, include_archived: Op
 /// Create a custom questionnaire, or a new version of an existing custom one. Instruments shipped with the app cannot be edited,
 /// and a custom one can never claim to be a validated instrument.
 #[tauri::command]
-pub async fn q_save_instrument(state: State<'_, AppState>, instrument: Instrument) -> Result<InstrumentView, String> {
+pub async fn q_save_instrument(state: State<'_, AppState>, instrument: Instrument, locale: Option<String>) -> Result<InstrumentView, String> {
     let pool = state.db_manager.pool();
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let mut i = instrument;
     i.kind = "custom".into();
     if i.evidence.level == EvidenceLevel::ValidatedInstrument {
-        return Err("Only questionnaires shipped with Matchwise are marked as validated. If you changed a published questionnaire, mark yours as 'adapted' and cite the original.".into());
+        return Err(locale
+            .pick(
+                "Only questionnaires shipped with Matchwise are marked as validated. If you changed a published questionnaire, mark yours as 'adapted' and cite the original.",
+                "فقط پرسشنامه‌های همراه Matchwise «معتبرسنجی‌شده» علامت می‌خورند. اگر پرسشنامه‌ای منتشرشده را تغییر داده‌اید، پرسشنامهٔ خود را «اقتباس‌شده» علامت بزنید و منبع اصلی را ذکر کنید.",
+            )
+            .into());
     }
     if i.evidence.level == EvidenceLevel::AdaptedInstrument && i.evidence.sources.iter().all(|s| s.citation.trim().is_empty()) {
-        return Err("An adapted questionnaire must cite the instrument it was adapted from".into());
+        return Err(locale
+            .pick(
+                "An adapted questionnaire must cite the instrument it was adapted from",
+                "پرسشنامهٔ اقتباس‌شده باید ابزاری را که از آن اقتباس شده ذکر کند",
+            )
+            .into());
     }
     let existing = repo::get_instrument(pool, &i.key, None).await.map_err(err)?;
     i.version = match &existing {
-        Some(e) if e.instrument.kind == "standard" => return Err("This questionnaire ships with Matchwise and cannot be changed. Create your own with a different key.".into()),
+        Some(e) if e.instrument.kind == "standard" => return Err(locale
+            .pick(
+                "This questionnaire ships with Matchwise and cannot be changed. Create your own with a different key.",
+                "این پرسشنامه همراه Matchwise ارائه می‌شود و قابل تغییر نیست. پرسشنامهٔ خودتان را با کلیدی دیگر بسازید.",
+            )
+            .into()),
         Some(e) => e.instrument.version + 1,
         None => 1,
     };
     let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let issues = validate_instrument(&i, &reg);
+    let issues = validate_instrument_for(&i, &reg, locale);
     if !issues.is_empty() {
-        return Err(format!("Not saved. {}", issues.into_iter().take(5).collect::<Vec<_>>().join("; ")));
+        let joined = issues.into_iter().take(5).collect::<Vec<_>>().join(locale.pick("; ", "؛ "));
+        return Err(match locale {
+            Locale::En => format!("Not saved. {joined}"),
+            Locale::Fa => format!("ذخیره نشد. {joined}"),
+        });
     }
     // Scores need numeric profile fields; create the ones that do not exist yet (as sensitive: they are psychological information).
     for def in missing_fields(&i, &reg) {
@@ -71,14 +92,15 @@ pub async fn q_save_instrument(state: State<'_, AppState>, instrument: Instrumen
     }
     repo::insert_instrument(pool, &i).await.map_err(err)?;
     MmRepository::audit(pool, "questionnaire_saved", "instrument", &i.key, Some(&format!("v{}", i.version))).await;
-    Ok(InstrumentView { evidence_label: i.evidence.level.label().to_string(), instrument: i, archived: false, created_at: chrono::Utc::now().to_rfc3339(), is_latest: true })
+    Ok(InstrumentView { evidence_label: i.evidence.level.label_for(locale).to_string(), instrument: i, archived: false, created_at: chrono::Utc::now().to_rfc3339(), is_latest: true })
 }
 
 #[tauri::command]
-pub async fn q_archive_instrument(state: State<'_, AppState>, key: String, archived: bool) -> Result<(), String> {
+pub async fn q_archive_instrument(state: State<'_, AppState>, key: String, archived: bool, locale: Option<String>) -> Result<(), String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let pool = state.db_manager.pool();
     if repo::set_archived(pool, &key, archived).await.map_err(err)? == 0 {
-        return Err("Questionnaire not found".into());
+        return Err(locale.pick("Questionnaire not found", "پرسشنامه پیدا نشد").into());
     }
     MmRepository::audit(pool, if archived { "questionnaire_archived" } else { "questionnaire_restored" }, "instrument", &key, None).await;
     Ok(())
@@ -110,8 +132,8 @@ pub struct ResponseView {
     pub scores: Vec<ScoreView>,
 }
 
-async fn view(pool: &SqlitePool, r: &ResponseRow) -> Result<ResponseView, String> {
-    let inst = service::instrument_for(pool, r).await?;
+async fn view(pool: &SqlitePool, r: &ResponseRow, locale: Locale) -> Result<ResponseView, String> {
+    let inst = service::instrument_for_locale(pool, r, locale).await?;
     let scores = r
         .scores
         .as_ref()
@@ -123,7 +145,7 @@ async fn view(pool: &SqlitePool, r: &ResponseRow) -> Result<ResponseView, String
         instrument_name: inst.name.clone(),
         instrument_version: inst.version,
         dimension: inst.dimension.clone(),
-        evidence_label: inst.evidence.level.label().to_string(),
+        evidence_label: inst.evidence.level.label_for(locale).to_string(),
         limitations: inst.evidence.limitations.clone(),
         interpretation: inst.evidence.interpretation.clone(),
         status: r.status.clone(),
@@ -136,11 +158,12 @@ async fn view(pool: &SqlitePool, r: &ResponseRow) -> Result<ResponseView, String
 }
 
 #[tauri::command]
-pub async fn q_profile_responses(state: State<'_, AppState>, profile_id: String) -> Result<Vec<ResponseView>, String> {
+pub async fn q_profile_responses(state: State<'_, AppState>, profile_id: String, locale: Option<String>) -> Result<Vec<ResponseView>, String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let pool = state.db_manager.pool();
     let mut out = vec![];
     for r in repo::responses_for_profile(pool, &profile_id).await.map_err(err)? {
-        out.push(view(pool, &r).await?);
+        out.push(view(pool, &r, locale).await?);
     }
     Ok(out)
 }
@@ -154,26 +177,28 @@ pub struct AssignResult {
 
 /// Give a person a questionnaire to complete (in the app with you, or on Telegram). Latest version of the questionnaire is used.
 #[tauri::command]
-pub async fn q_assign(state: State<'_, AppState>, profile_id: String, instrument_key: String) -> Result<AssignResult, String> {
+pub async fn q_assign(state: State<'_, AppState>, profile_id: String, instrument_key: String, locale: Option<String>) -> Result<AssignResult, String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let pool = state.db_manager.pool();
-    MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or("Profile not found")?;
-    let inst = repo::get_instrument(pool, &instrument_key, None).await.map_err(err)?.ok_or("Questionnaire not found")?;
+    MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or(locale.pick("Profile not found", "پروفایل پیدا نشد"))?;
+    let inst = repo::get_instrument(pool, &instrument_key, None).await.map_err(err)?.ok_or(locale.pick("Questionnaire not found", "پرسشنامه پیدا نشد"))?;
     if inst.archived {
-        return Err("This questionnaire is archived".into());
+        return Err(locale.pick("This questionnaire is archived", "این پرسشنامه بایگانی شده است").into());
     }
     if repo::open_responses(pool, &profile_id).await.map_err(err)?.iter().any(|r| r.instrument_key == instrument_key) {
-        return Err("This person already has this questionnaire open".into());
+        return Err(locale.pick("This person already has this questionnaire open", "این فرد هم‌اکنون این پرسشنامه را باز دارد").into());
     }
     let id = repo::assign(pool, &profile_id, &instrument_key, inst.instrument.version).await.map_err(err)?;
     MmRepository::audit(pool, "questionnaire_assigned", "profile", &profile_id, Some(&instrument_key)).await;
     let mut notified = false;
-    if notify::reachable_link(pool, &profile_id).await?.is_some() {
-        let text = format!("Your matchmaker would like you to answer a short questionnaire: <b>{}</b>. Send /questionnaires to start; you can stop and continue later.", crate::telegram::render::esc(&inst.instrument.name));
+    if let Some(link) = notify::reachable_link(pool, &profile_id).await? {
+        let localized = inst.instrument.clone().localized(link.locale);
+        let text = crate::telegram::render::questionnaire_assigned_text(link.locale, &localized.name);
         tg_repo::enqueue(pool, &profile_id, "questionnaire_assigned", &text, None, None).await.map_err(err)?;
         notified = true;
     }
-    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or("Response vanished")?;
-    Ok(AssignResult { response: view(pool, &r).await?, notified })
+    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or(locale.pick("Response vanished", "پاسخ ناپدید شد"))?;
+    Ok(AssignResult { response: view(pool, &r, locale).await?, notified })
 }
 
 /// The questions of an open response with the answers so far (for entering answers in the app).
@@ -185,11 +210,12 @@ pub struct ResponseDetail {
 }
 
 #[tauri::command]
-pub async fn q_get_response(state: State<'_, AppState>, id: i64) -> Result<ResponseDetail, String> {
+pub async fn q_get_response(state: State<'_, AppState>, id: i64, locale: Option<String>) -> Result<ResponseDetail, String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let pool = state.db_manager.pool();
-    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or("Response not found")?;
-    let instrument = service::instrument_for(pool, &r).await?;
-    Ok(ResponseDetail { response: view(pool, &r).await?, instrument, answers: r.answers })
+    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or(locale.pick("Response not found", "پاسخ پیدا نشد"))?;
+    let instrument = service::instrument_for_locale(pool, &r, locale).await?;
+    Ok(ResponseDetail { response: view(pool, &r, locale).await?, instrument, answers: r.answers })
 }
 
 #[derive(Debug, Serialize)]
@@ -202,22 +228,24 @@ pub struct AnswerResult {
 
 /// Record one answer on a person's behalf (for example during an interview). The last answer completes the questionnaire.
 #[tauri::command]
-pub async fn q_answer(state: State<'_, AppState>, id: i64, item_id: String, value: i32) -> Result<AnswerResult, String> {
+pub async fn q_answer(state: State<'_, AppState>, id: i64, item_id: String, value: i32, locale: Option<String>) -> Result<AnswerResult, String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let pool = state.db_manager.pool();
-    let out = service::record_answer(pool, id, &item_id, value).await?;
-    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or("Response not found")?;
-    Ok(AnswerResult { response: view(pool, &r).await?, completed: out.completed, not_applied: out.fields.into_iter().filter(|(_, ok)| !ok).map(|(f, _)| f).collect() })
+    let out = service::record_answer_for(pool, id, &item_id, value, locale).await?;
+    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or(locale.pick("Response not found", "پاسخ پیدا نشد"))?;
+    Ok(AnswerResult { response: view(pool, &r, locale).await?, completed: out.completed, not_applied: out.fields.into_iter().filter(|(_, ok)| !ok).map(|(f, _)| f).collect() })
 }
 
 /// Delete a response. With `clear_scores` the profile fields this questionnaire filled in (and that still carry
 /// questionnaire provenance) are removed too.
 #[tauri::command]
-pub async fn q_delete_response(state: State<'_, AppState>, id: i64, clear_scores: bool) -> Result<(), String> {
+pub async fn q_delete_response(state: State<'_, AppState>, id: i64, clear_scores: bool, locale: Option<String>) -> Result<(), String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let pool = state.db_manager.pool();
-    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or("Response not found")?;
+    let r = repo::get_response(pool, id).await.map_err(err)?.ok_or(locale.pick("Response not found", "پاسخ پیدا نشد"))?;
     if clear_scores {
-        let inst = service::instrument_for(pool, &r).await?;
-        let mut p = MmRepository::get_profile(pool, &r.profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+        let inst = service::instrument_for_locale(pool, &r, locale).await?;
+        let mut p = MmRepository::get_profile(pool, &r.profile_id).await.map_err(err)?.ok_or(locale.pick("Profile not found", "پروفایل پیدا نشد"))?;
         for s in &inst.subscales {
             if p.profile.fields.get(&s.field).map_or(false, |e| e.source == matchmaking_core::Provenance::Questionnaire) {
                 p.profile.fields.remove(&s.field);

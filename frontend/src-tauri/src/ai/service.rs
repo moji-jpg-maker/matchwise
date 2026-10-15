@@ -9,8 +9,8 @@ use crate::mm::match_commands::compute_scorecard;
 use crate::mm::match_repo::MatchRepo;
 use crate::mm::repository::MmRepository;
 use matchmaking_core::{
-    build_pair_facts, extraction_prompt, pair_prompt, parse_extraction, parse_pair_analysis, profile_text_for_ai, validate_preference, AiFact,
-    Extraction, PairAnalysis, Provenance, Value,
+    build_pair_facts, extraction_prompt_for, pair_prompt_for, parse_extraction, parse_pair_analysis, profile_text_for_ai, validate_preference, AiFact,
+    Extraction, Locale, PairAnalysis, Provenance, Value,
 };
 use serde::Serialize;
 use serde_json::{json, Value as Json};
@@ -37,6 +37,7 @@ pub struct Session<'a> {
     pub provider: String,
     pub model: String,
     pub mode: Mode,
+    pub locale: Locale,
 }
 
 /// Ask the model, check the answer with `parse`, and on unreadable output ask once more. Every attempt is logged.
@@ -72,7 +73,10 @@ async fn ask<T>(
             }
         }
     }
-    Err(format!("The model's answer could not be used: {last_err}"))
+    Err(match s.locale {
+        Locale::En => format!("The model's answer could not be used: {last_err}"),
+        Locale::Fa => format!("پاسخ مدل قابل استفاده نبود: {last_err}"),
+    })
 }
 
 // ------------------------------------------------------------------ profile understanding
@@ -103,28 +107,29 @@ pub struct ExtractionView {
 }
 
 /// The exact prompt that would be sent, for the matchmaker to read first.
-pub async fn preview_extraction(pool: &SqlitePool, profile_id: &str, extra: Option<&str>, mode: Mode) -> Result<(String, String), String> {
+pub async fn preview_extraction(pool: &SqlitePool, profile_id: &str, extra: Option<&str>, mode: Mode, locale: Locale) -> Result<(String, String), String> {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+    let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
     let extra = profile_extra(pool, profile_id, extra).await?;
     let extra = extra.as_deref();
     let text = profile_text_for_ai(&p.profile, &reg, extra, mode.include_sensitive);
     if text.trim().is_empty() {
-        return Err("There is no free text to read. Add notes about the person (for example from an intake interview) first.".into());
+        return Err(locale.pick("There is no free text to read. Add notes about the person (for example from an intake interview) first.", "متنی برای خواندن وجود ندارد. ابتدا یادداشت‌هایی دربارهٔ فرد بنویسید (مثلاً از مصاحبهٔ ورودی).").to_string());
     }
-    Ok(extraction_prompt(&reg, &text, mode.include_sensitive))
+    Ok(extraction_prompt_for(&reg, &text, mode.include_sensitive, locale))
 }
 
 pub async fn extract_profile(pool: &SqlitePool, s: &Session<'_>, profile_id: &str, extra: Option<&str>) -> Result<ExtractionView, String> {
+    let locale = s.locale;
     let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+    let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
     let extra = profile_extra(pool, profile_id, extra).await?;
     let extra = extra.as_deref();
     let text = profile_text_for_ai(&p.profile, &reg, extra, s.mode.include_sensitive);
     if text.trim().is_empty() {
-        return Err("There is no free text to read. Add notes about the person (for example from an intake interview) first.".into());
+        return Err(locale.pick("There is no free text to read. Add notes about the person (for example from an intake interview) first.", "متنی برای خواندن وجود ندارد. ابتدا یادداشت‌هایی دربارهٔ فرد بنویسید (مثلاً از مصاحبهٔ ورودی).").to_string());
     }
-    let (system, user) = extraction_prompt(&reg, &text, s.mode.include_sensitive);
+    let (system, user) = extraction_prompt_for(&reg, &text, s.mode.include_sensitive, locale);
     let ex: Extraction = ask(pool, s, "extract", (Some(profile_id), None), &system, &user, |raw| {
         parse_extraction(raw, &reg, &text, &p.profile, s.mode.include_sensitive)
     })
@@ -166,10 +171,10 @@ pub enum Decision {
     Reject,
 }
 
-pub async fn decide_suggestion(pool: &SqlitePool, id: i64, decision: Decision) -> Result<(), String> {
-    let sug = repo::get_suggestion(pool, id).await.map_err(err)?.ok_or("Suggestion not found")?;
+pub async fn decide_suggestion(pool: &SqlitePool, id: i64, decision: Decision, locale: Locale) -> Result<(), String> {
+    let sug = repo::get_suggestion(pool, id).await.map_err(err)?.ok_or_else(|| locale.pick("Suggestion not found", "پیشنهاد پیدا نشد").to_string())?;
     if sug.status != "pending" {
-        return Err("This suggestion has already been handled or replaced".into());
+        return Err(locale.pick("This suggestion has already been handled or replaced", "این پیشنهاد پیش‌تر بررسی یا جایگزین شده است").to_string());
     }
     if decision == Decision::Reject {
         repo::set_suggestion_status(pool, id, "rejected").await.map_err(err)?;
@@ -181,10 +186,10 @@ pub async fn decide_suggestion(pool: &SqlitePool, id: i64, decision: Decision) -
         "field" => {
             let value: Value = serde_json::from_value(sug.payload.clone()).map_err(err)?;
             reg.validate_value(&sug.field, &value)?; // the registry may have changed since the suggestion was made
-            let mut p = MmRepository::get_profile(pool, &sug.profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+            let mut p = MmRepository::get_profile(pool, &sug.profile_id).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
             let source = if decision == Decision::AcceptVerified { Provenance::Matchmaker } else { Provenance::AiInferred };
             if !p.profile.set(&sug.field, value, source) {
-                return Err("A person already entered a different value here. Use “Accept as verified” if you have checked and want to replace it.".into());
+                return Err(locale.pick("A person already entered a different value here. Use “Accept as verified” if you have checked and want to replace it.", "فرد پیش‌تر در اینجا مقدار دیگری وارد کرده است. اگر بررسی کرده‌اید و می‌خواهید جایگزین شود، «پذیرش به‌عنوان تأییدشده» را بزنید.").to_string());
             }
             MmRepository::update_profile_data(pool, &p.profile).await.map_err(err)?;
         }
@@ -194,12 +199,15 @@ pub async fn decide_suggestion(pool: &SqlitePool, id: i64, decision: Decision) -
             validate_preference(&pref, &reg)?;
             let mut prefs = MmRepository::get_preferences(pool, &sug.profile_id).await.map_err(err)?;
             if prefs.len() >= 100 {
-                return Err("This profile already has the maximum number of preferences".into());
+                return Err(locale.pick("This profile already has the maximum number of preferences", "این پروفایل به حداکثر تعداد ترجیحات رسیده است").to_string());
             }
             prefs.push(pref);
             MmRepository::save_preferences(pool, &sug.profile_id, &prefs).await.map_err(err)?;
         }
-        other => return Err(format!("Unknown suggestion kind '{other}'")),
+        other => return Err(match locale {
+            Locale::En => format!("Unknown suggestion kind '{other}'"),
+            Locale::Fa => format!("نوع پیشنهاد ناشناخته است: «{other}»"),
+        }),
     }
     repo::set_suggestion_status(pool, id, "accepted").await.map_err(err)?;
     // Which field, never the value or the quoted evidence.
@@ -225,38 +233,40 @@ struct PairInput {
     facts: Vec<AiFact>,
     system: String,
     user: String,
+    input_hash: String,
     rule_set_version: u32,
     a: String,
     b: String,
 }
 
-async fn pair_input(pool: &SqlitePool, match_id: &str, include_sensitive: bool) -> Result<PairInput, String> {
-    let m = MatchRepo::get(pool, match_id).await.map_err(err)?.ok_or("Match not found")?;
-    let (_, set, _) = MmRepository::get_rule_set(pool, &m.rule_set_id, Some(m.rule_set_version)).await.map_err(err)?.ok_or("Rule set version not found")?;
+async fn pair_input(pool: &SqlitePool, match_id: &str, include_sensitive: bool, locale: Locale) -> Result<PairInput, String> {
+    let m = MatchRepo::get(pool, match_id).await.map_err(err)?.ok_or_else(|| locale.pick("Match not found", "تطبیق پیدا نشد").to_string())?;
+    let (_, set, _) = MmRepository::get_rule_set(pool, &m.rule_set_id, Some(m.rule_set_version)).await.map_err(err)?.ok_or_else(|| locale.pick("Rule set version not found", "نسخهٔ مجموعه‌قواعد پیدا نشد").to_string())?;
     let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let a = MmRepository::get_profile(pool, &m.profile_a).await.map_err(err)?.ok_or("Profile not found")?;
-    let b = MmRepository::get_profile(pool, &m.profile_b).await.map_err(err)?.ok_or("Profile not found")?;
+    let a = MmRepository::get_profile(pool, &m.profile_a).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
+    let b = MmRepository::get_profile(pool, &m.profile_b).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
     let a_prefs = MmRepository::get_preferences(pool, &m.profile_a).await.map_err(err)?;
     let b_prefs = MmRepository::get_preferences(pool, &m.profile_b).await.map_err(err)?;
     // The advisory pair analysis reads a scorecard, so it reads it under the same numbers the match was judged by.
     let config = crate::mm::scoring_config_repo::ScoringConfigRepo::config_for_rule_set(pool, &m.rule_set_id).await.map_err(err)?;
     let card = compute_scorecard(pool, &set, &config, &m.profile_a, &m.profile_b, &m.weight_overrides).await?;
     let facts = build_pair_facts(&a.profile, &b.profile, &a_prefs, &b_prefs, &card, &reg, include_sensitive);
-    let (system, user) = pair_prompt(&facts);
-    Ok(PairInput { facts, system, user, rule_set_version: m.rule_set_version, a: m.profile_a, b: m.profile_b })
+    let (system, user) = pair_prompt_for(&facts, locale);
+    let input_hash = hash(&pair_prompt_for(&facts, Locale::En).1);
+    Ok(PairInput { facts, system, user, input_hash, rule_set_version: m.rule_set_version, a: m.profile_a, b: m.profile_b })
 }
 
-pub async fn preview_pair(pool: &SqlitePool, match_id: &str, mode: Mode) -> Result<(String, String), String> {
-    let i = pair_input(pool, match_id, mode.include_sensitive).await?;
+pub async fn preview_pair(pool: &SqlitePool, match_id: &str, mode: Mode, locale: Locale) -> Result<(String, String), String> {
+    let i = pair_input(pool, match_id, mode.include_sensitive, locale).await?;
     Ok((i.system, i.user))
 }
 
 pub async fn analyse_pair(pool: &SqlitePool, s: &Session<'_>, match_id: &str) -> Result<PairView, String> {
-    let i = pair_input(pool, match_id, s.mode.include_sensitive).await?;
+    let i = pair_input(pool, match_id, s.mode.include_sensitive, s.locale).await?;
     let facts = i.facts.clone();
     let analysis: PairAnalysis = ask(pool, s, "pair", (Some(&i.a), Some(&i.b)), &i.system, &i.user, |raw| parse_pair_analysis(raw, &facts)).await?;
     let result = json!({"facts": i.facts, "analysis": analysis, "include_sensitive": s.mode.include_sensitive});
-    let run_id = repo::insert_run(pool, None, Some(match_id), "pair", &s.provider, &s.model, s.mode.is_cloud, &hash(&i.user), Some(i.rule_set_version), &result).await.map_err(err)?;
+    let run_id = repo::insert_run(pool, None, Some(match_id), "pair", &s.provider, &s.model, s.mode.is_cloud, &i.input_hash, Some(i.rule_set_version), &result).await.map_err(err)?;
     MmRepository::audit(pool, "ai_pair_analysis", "match", match_id, Some(if s.mode.is_cloud { "cloud" } else { "local" })).await;
     Ok(PairView { run_id, model: s.model.clone(), is_cloud: s.mode.is_cloud, created_at: chrono::Utc::now().to_rfc3339(), stale: false, facts: i.facts, analysis })
 }
@@ -267,6 +277,6 @@ pub async fn latest_pair_analysis(pool: &SqlitePool, match_id: &str) -> Result<O
     let include_sensitive = run.result.get("include_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);
     let facts: Vec<AiFact> = serde_json::from_value(run.result.get("facts").cloned().unwrap_or(Json::Null)).map_err(err)?;
     let analysis: PairAnalysis = serde_json::from_value(run.result.get("analysis").cloned().unwrap_or(Json::Null)).map_err(err)?;
-    let current = pair_input(pool, match_id, include_sensitive).await?;
-    Ok(Some(PairView { run_id: run.id, model: run.model, is_cloud: run.is_cloud, created_at: run.created_at, stale: hash(&current.user) != run.input_hash, facts, analysis }))
+    let current = pair_input(pool, match_id, include_sensitive, Locale::En).await?;
+    Ok(Some(PairView { run_id: run.id, model: run.model, is_cloud: run.is_cloud, created_at: run.created_at, stale: current.input_hash != run.input_hash, facts, analysis }))
 }

@@ -6,6 +6,7 @@ import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, FolderOpen, RefreshCw } from 'lucide-react';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useT } from '@/i18n';
 
 
 interface TranscriptButtonGroupProps {
@@ -27,6 +28,7 @@ export function TranscriptButtonGroup({
   onRefetchTranscripts,
 }: TranscriptButtonGroupProps) {
   const { betaFeatures } = useConfig();
+  const t = useT();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
 
   const handleRetranscribeComplete = useCallback(async () => {
@@ -47,10 +49,10 @@ export function TranscriptButtonGroup({
             onCopyTranscript();
           }}
           disabled={transcriptCount === 0}
-          title={transcriptCount === 0 ? 'No transcript available' : 'Copy Transcript'}
+          title={transcriptCount === 0 ? t('meetingUi.noTranscript') : t('meetingUi.copyTranscript')}
         >
           <Copy />
-          <span className="hidden @[22rem]:inline">Copy</span>
+          <span className="hidden @[22rem]:inline">{t('meetingUi.copy')}</span>
         </Button>
 
         <Button
@@ -60,10 +62,10 @@ export function TranscriptButtonGroup({
           onClick={() => {
             onOpenMeetingFolder();
           }}
-          title="Open Recording Folder"
+          title={t('meetingUi.openFolder')}
         >
-          <FolderOpen className="@[22rem]:mr-2" size={18} />
-          <span className="hidden @[22rem]:inline">Recording</span>
+          <FolderOpen className="@[22rem]:me-2" size={18} />
+          <span className="hidden @[22rem]:inline">{t('meetingUi.recording')}</span>
         </Button>
 
         {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
@@ -74,10 +76,10 @@ export function TranscriptButtonGroup({
             onClick={() => {
               setShowRetranscribeDialog(true);
             }}
-            title="Retranscribe to enhance your recorded audio"
+            title={t('meetingUi.enhanceTitle')}
           >
-            <RefreshCw className="@[22rem]:mr-2" size={18} />
-            <span className="hidden @[22rem]:inline">Enhance</span>
+            <RefreshCw className="@[22rem]:me-2" size={18} />
+            <span className="hidden @[22rem]:inline">{t('meetingUi.enhance')}</span>
           </Button>
         )}
       </ButtonGroup>

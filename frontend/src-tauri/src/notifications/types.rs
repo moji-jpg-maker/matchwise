@@ -1,3 +1,4 @@
+use matchmaking_core::Locale;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,9 +115,21 @@ impl Default for NotificationTimeout {
 // Helper functions for creating common notifications
 impl Notification {
     pub fn recording_started(meeting_name: Option<String>) -> Self {
+        Self::recording_started_for(meeting_name, Locale::En)
+    }
+
+    pub fn recording_started_for(meeting_name: Option<String>, locale: Locale) -> Self {
         let body = match meeting_name {
-            Some(name) => format!("Recording started for meeting: {}", name),
-            None => "Recording has started. Please inform others in the meeting that you are recording.".to_string(),
+            Some(name) => match locale {
+                Locale::En => format!("Recording started for meeting: {}", name),
+                Locale::Fa => format!("ضبط جلسه «{}» آغاز شد", name),
+            },
+            None => locale
+                .pick(
+                    "Recording has started. Please inform others in the meeting that you are recording.",
+                    "ضبط آغاز شد. لطفاً به دیگر حاضران جلسه اطلاع دهید که در حال ضبط هستید.",
+                )
+                .to_string(),
         };
 
         Notification::new("Matchwise", body, NotificationType::RecordingStarted)
@@ -125,9 +138,13 @@ impl Notification {
     }
 
     pub fn recording_stopped() -> Self {
+        Self::recording_stopped_for(Locale::En)
+    }
+
+    pub fn recording_stopped_for(locale: Locale) -> Self {
         Notification::new(
             "Matchwise",
-            "Recording has been stopped and saved",
+            locale.pick("Recording has been stopped and saved", "ضبط متوقف و ذخیره شد"),
             NotificationType::RecordingStopped
         )
         .with_priority(NotificationPriority::Normal)
@@ -135,9 +152,13 @@ impl Notification {
     }
 
     pub fn recording_paused() -> Self {
+        Self::recording_paused_for(Locale::En)
+    }
+
+    pub fn recording_paused_for(locale: Locale) -> Self {
         Notification::new(
             "Matchwise",
-            "Recording has been paused",
+            locale.pick("Recording has been paused", "ضبط موقتاً متوقف شد"),
             NotificationType::RecordingPaused
         )
         .with_priority(NotificationPriority::Normal)
@@ -145,9 +166,13 @@ impl Notification {
     }
 
     pub fn recording_resumed() -> Self {
+        Self::recording_resumed_for(Locale::En)
+    }
+
+    pub fn recording_resumed_for(locale: Locale) -> Self {
         Notification::new(
             "Matchwise",
-            "Recording has been resumed",
+            locale.pick("Recording has been resumed", "ضبط از سر گرفته شد"),
             NotificationType::RecordingResumed
         )
         .with_priority(NotificationPriority::Normal)
@@ -155,9 +180,18 @@ impl Notification {
     }
 
     pub fn transcription_complete(file_path: Option<String>) -> Self {
+        Self::transcription_complete_for(file_path, Locale::En)
+    }
+
+    pub fn transcription_complete_for(file_path: Option<String>, locale: Locale) -> Self {
         let body = match file_path {
-            Some(path) => format!("Transcription completed and saved to: {}", path),
-            None => "Transcription has been completed".to_string(),
+            Some(path) => match locale {
+                Locale::En => format!("Transcription completed and saved to: {}", path),
+                Locale::Fa => format!("رونویسی کامل و در این مسیر ذخیره شد: {}", path),
+            },
+            None => locale
+                .pick("Transcription has been completed", "رونویسی کامل شد")
+                .to_string(),
         };
 
         Notification::new("Matchwise", body, NotificationType::TranscriptionComplete)
@@ -166,9 +200,23 @@ impl Notification {
     }
 
     pub fn meeting_reminder(minutes_until: u64, meeting_title: Option<String>) -> Self {
-        let body = match meeting_title {
-            Some(title) => format!("Meeting '{}' starts in {} minutes", title, minutes_until),
-            None => format!("Meeting starts in {} minutes", minutes_until),
+        Self::meeting_reminder_for(minutes_until, meeting_title, Locale::En)
+    }
+
+    pub fn meeting_reminder_for(
+        minutes_until: u64,
+        meeting_title: Option<String>,
+        locale: Locale,
+    ) -> Self {
+        let body = match (meeting_title, locale) {
+            (Some(title), Locale::En) => {
+                format!("Meeting '{}' starts in {} minutes", title, minutes_until)
+            }
+            (None, Locale::En) => format!("Meeting starts in {} minutes", minutes_until),
+            (Some(title), Locale::Fa) => {
+                format!("جلسه «{}» تا {} دقیقه دیگر شروع می‌شود", title, minutes_until)
+            }
+            (None, Locale::Fa) => format!("جلسه تا {} دقیقه دیگر شروع می‌شود", minutes_until),
         };
 
         Notification::new("Matchwise", body, NotificationType::MeetingReminder(minutes_until))
@@ -177,9 +225,13 @@ impl Notification {
     }
 
     pub fn system_error(error: impl Into<String>) -> Self {
+        Self::system_error_for(error, Locale::En)
+    }
+
+    pub fn system_error_for(error: impl Into<String>, locale: Locale) -> Self {
         let error_string = error.into();
         Notification::new(
-            "Matchwise Error",
+            locale.pick("Matchwise Error", "خطای Matchwise"),
             error_string.clone(),
             NotificationType::SystemError(error_string)
         )
@@ -188,12 +240,40 @@ impl Notification {
     }
 
     pub fn test_notification() -> Self {
+        Self::test_notification_for(Locale::En)
+    }
+
+    pub fn test_notification_for(locale: Locale) -> Self {
         Notification::new(
             "Matchwise",
-            "This is a test notification to verify the system is working correctly",
+            locale.pick(
+                "This is a test notification to verify the system is working correctly",
+                "این یک اعلان آزمایشی برای اطمینان از کارکرد درست سامانه است",
+            ),
             NotificationType::Test
         )
         .with_priority(NotificationPriority::Normal)
         .with_timeout(NotificationTimeout::Seconds(5))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persian_recording_notice_asks_to_inform_others() {
+        let notification = Notification::recording_started_for(None, Locale::Fa);
+        assert!(notification.body.contains("اطلاع دهید"));
+        let english = Notification::recording_started(None);
+        assert!(english.body.starts_with("Recording has started"));
+    }
+
+    #[test]
+    fn persian_reminder_quotes_the_title() {
+        let notification =
+            Notification::meeting_reminder_for(5, Some("Demo".to_string()), Locale::Fa);
+        assert!(notification.body.contains("«Demo»"));
+        assert!(notification.body.contains('5'));
     }
 }

@@ -6,6 +6,7 @@
 
 use crate::expr::{Expr, Side};
 use crate::field::{FieldKind, FieldRegistry};
+use crate::locale::Locale;
 use crate::profile::{Profile, Value};
 use crate::rules::{evaluate_pair, MatchOutcome, Rule, RuleKind, RuleSet};
 use crate::search::{condition_to_expr, Condition, ConditionOp};
@@ -77,46 +78,76 @@ fn kind_supports(kind: &FieldKind, op: ConditionOp) -> bool {
 
 /// Check one preference against the field registry (before it is saved).
 pub fn validate_preference(p: &Preference, registry: &FieldRegistry) -> Result<(), String> {
+    validate_preference_for(p, registry, Locale::En)
+}
+
+/// Like [`validate_preference`], with messages in `locale`.
+pub fn validate_preference_for(p: &Preference, registry: &FieldRegistry, locale: Locale) -> Result<(), String> {
     let c = &p.condition;
-    let def = registry.get(&c.field).ok_or_else(|| format!("unknown field '{}'", c.field))?;
+    let def = registry.get(&c.field).ok_or_else(|| match locale {
+        Locale::En => format!("unknown field '{}'", c.field),
+        Locale::Fa => format!("فیلد ناشناخته «{}»", c.field),
+    })?;
+    let label = def.label_for(locale);
     if !(1..=5).contains(&p.importance) {
-        return Err(format!("'{}': importance must be between 1 and 5", def.label));
+        return Err(match locale {
+            Locale::En => format!("'{label}': importance must be between 1 and 5"),
+            Locale::Fa => format!("«{label}»: اهمیت باید بین ۱ تا ۵ باشد"),
+        });
     }
     if !kind_supports(&def.kind, c.op) {
-        return Err(format!("'{}': this field does not support the '{:?}' condition", def.label, c.op).to_lowercase());
+        return Err(match locale {
+            Locale::En => format!("'{label}': this field does not support the '{:?}' condition", c.op).to_lowercase(),
+            Locale::Fa => format!("«{label}»: این فیلد از شرط «{:?}» پشتیبانی نمی‌کند", c.op).to_lowercase(),
+        });
     }
     // Relative values: numeric operators only, and they must point at a numeric field.
     for rel in [&c.value_rel, &c.value2_rel].into_iter().flatten() {
         if !matches!(def.kind, FieldKind::Number) {
-            return Err(format!("'{}': relative values only work on numeric fields", def.label));
+            return Err(match locale {
+                Locale::En => format!("'{label}': relative values only work on numeric fields"),
+                Locale::Fa => format!("«{label}»: مقدار نسبی فقط برای فیلدهای عددی کار می‌کند"),
+            });
         }
         match registry.get(&rel.field).map(|d| &d.kind) {
             Some(FieldKind::Number) => {}
-            _ => return Err(format!("'{}': relative to '{}', which is not a numeric field", def.label, rel.field)),
+            _ => return Err(match locale {
+                Locale::En => format!("'{label}': relative to '{}', which is not a numeric field", rel.field),
+                Locale::Fa => format!("«{label}»: نسبت به «{}» که فیلد عددی نیست", rel.field),
+            }),
         }
         if !rel.offset.is_finite() {
-            return Err(format!("'{}': offset must be a finite number", def.label));
+            return Err(match locale {
+                Locale::En => format!("'{label}': offset must be a finite number"),
+                Locale::Fa => format!("«{label}»: اختلاف باید عدد متناهی باشد"),
+            });
         }
     }
     let lit_ok = |v: &Option<Value>, rel: &Option<crate::search::RelativeValue>| -> Result<(), String> {
         if rel.is_some() {
             return Ok(());
         }
-        let v = v.as_ref().ok_or_else(|| format!("'{}': a value is required", def.label))?;
+        let v = v.as_ref().ok_or_else(|| match locale {
+            Locale::En => format!("'{label}': a value is required"),
+            Locale::Fa => format!("«{label}»: مقدار لازم است"),
+        })?;
         match (&def.kind, c.op, v) {
             (FieldKind::Choice(opts) | FieldKind::MultiChoice(opts), ConditionOp::In, Value::List(items)) => {
                 if items.is_empty() {
-                    return Err(format!("'{}': pick at least one option", def.label));
+                    return Err(match locale {
+                        Locale::En => format!("'{label}': pick at least one option"),
+                        Locale::Fa => format!("«{label}»: دست‌کم یک گزینه انتخاب کنید"),
+                    });
                 }
                 match items.iter().find(|i| !opts.contains(i)) {
-                    Some(bad) => Err(format!("'{}': '{bad}' is not one of {opts:?}", def.label)),
+                    Some(bad) => Err(format!("«{label}»: {}", FieldKind::Choice(opts.clone()).validate_for(&Value::Text(bad.clone()), locale).unwrap_err())),
                     None => Ok(()),
                 }
             }
             (FieldKind::Choice(opts) | FieldKind::MultiChoice(opts), ConditionOp::In, Value::Text(t)) => {
-                if opts.contains(t) { Ok(()) } else { Err(format!("'{}': '{t}' is not one of {opts:?}", def.label)) }
+                if opts.contains(t) { Ok(()) } else { Err(format!("«{label}»: {}", FieldKind::Choice(opts.clone()).validate_for(&Value::Text(t.clone()), locale).unwrap_err())) }
             }
-            (kind, _, v) => kind.validate(v).map_err(|e| format!("'{}': {e}", def.label)),
+            (kind, _, v) => kind.validate_for(v, locale).map_err(|e| format!("«{label}»: {e}")),
         }
     };
     match c.op {
@@ -174,38 +205,56 @@ pub fn evaluate_mutual(
 
 /// One-line, human wording for a stored preference (used where the editor is not available, for example in chat).
 pub fn describe_preference(p: &Preference, registry: &FieldRegistry) -> String {
+    describe_preference_for(p, registry, Locale::En)
+}
+
+/// [`describe_preference`] in the reader's language. The Persian wording is a draft for native review.
+pub fn describe_preference_for(p: &Preference, registry: &FieldRegistry, locale: Locale) -> String {
     use crate::search::ConditionOp::*;
     let c = &p.condition;
-    let label = registry.get(&c.field).map(|d| d.label.as_str()).unwrap_or(c.field.as_str());
+    let label = registry.get(&c.field).map(|d| d.label_for(locale)).unwrap_or(c.field.as_str());
+    let or_word = locale.pick(" or ", " یا ");
     let show = |v: &Option<Value>| match v {
-        Some(Value::List(l)) => l.iter().map(|s| s.replace('_', " ")).collect::<Vec<_>>().join(" or "),
-        Some(v) => crate::sharing::display_value(v).unwrap_or_default(),
+        Some(Value::List(l)) => l.iter().map(|s| s.replace('_', " ")).collect::<Vec<_>>().join(or_word),
+        Some(v) => crate::sharing::display_value_for(v, locale).unwrap_or_default(),
         None => String::new(),
     };
     let rel = |r: &Option<crate::search::RelativeValue>| {
         r.as_ref().map(|r| {
             let off = if r.offset == 0.0 { String::new() } else if r.offset > 0.0 { format!(" + {}", r.offset) } else { format!(" - {}", r.offset.abs()) };
-            format!("own {}{}", registry.get(&r.field).map(|d| d.label.to_lowercase()).unwrap_or_else(|| r.field.clone()), off)
+            let name = registry.get(&r.field).map(|d| d.label_for(locale).to_lowercase()).unwrap_or_else(|| r.field.clone());
+            match locale {
+                Locale::En => format!("own {name}{off}"),
+                Locale::Fa => format!("{name} خودتان{off}"),
+            }
         })
     };
     let lo = rel(&c.value_rel).unwrap_or_else(|| show(&c.value));
     let hi = rel(&c.value2_rel).unwrap_or_else(|| show(&c.value2));
-    let body = match c.op {
-        Eq => format!("{label} is {lo}"),
-        Ne => format!("{label} is not {lo}"),
-        Lt => format!("{label} is below {lo}"),
-        Le => format!("{label} is at most {lo}"),
-        Gt => format!("{label} is above {lo}"),
-        Ge => format!("{label} is at least {lo}"),
-        In => format!("{label} is {lo}"),
-        Between => format!("{label} between {lo} and {hi}"),
-        Exists => format!("{label} is given"),
+    let body = match (locale, c.op) {
+        (Locale::En, Eq | In) => format!("{label} is {lo}"),
+        (Locale::En, Ne) => format!("{label} is not {lo}"),
+        (Locale::En, Lt) => format!("{label} is below {lo}"),
+        (Locale::En, Le) => format!("{label} is at most {lo}"),
+        (Locale::En, Gt) => format!("{label} is above {lo}"),
+        (Locale::En, Ge) => format!("{label} is at least {lo}"),
+        (Locale::En, Between) => format!("{label} between {lo} and {hi}"),
+        (Locale::En, Exists) => format!("{label} is given"),
+        (Locale::Fa, Eq | In) => format!("{label}: {lo}"),
+        (Locale::Fa, Ne) => format!("{label}: غیر از {lo}"),
+        (Locale::Fa, Lt) => format!("{label}: کمتر از {lo}"),
+        (Locale::Fa, Le) => format!("{label}: حداکثر {lo}"),
+        (Locale::Fa, Gt) => format!("{label}: بیشتر از {lo}"),
+        (Locale::Fa, Ge) => format!("{label}: حداقل {lo}"),
+        (Locale::Fa, Between) => format!("{label}: بین {lo} و {hi}"),
+        (Locale::Fa, Exists) => format!("{label}: ذکر شده باشد"),
     };
+    let body = crate::locale::localize_digits(locale, &body);
     let tag = match p.strength {
-        Strength::Required => "must have",
-        Strength::DealBreaker => "deal-breaker",
-        Strength::Preferred => "preferred",
-        Strength::Flexible => "nice to have",
+        Strength::Required => locale.pick("must have", "الزامی"),
+        Strength::DealBreaker => locale.pick("deal-breaker", "غیرقابل‌گذشت"),
+        Strength::Preferred => locale.pick("preferred", "ترجیحی"),
+        Strength::Flexible => locale.pick("nice to have", "در صورت امکان"),
     };
     format!("{body} ({tag})")
 }

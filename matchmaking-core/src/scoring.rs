@@ -22,6 +22,7 @@ use crate::expr::{Expr, Operand, Side, Tri};
 use crate::preferences::{evaluate_preferences, preferences_to_ruleset, Preference};
 use crate::profile::Profile;
 use crate::rules::{evaluate_ruleset_mutual, Direction, Rule, RuleKind, RuleResult, RuleSet};
+use crate::locale::Locale;
 use crate::scoring_config::ScoringConfig;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -32,7 +33,31 @@ pub struct DimensionDef {
     pub label: &'static str,
     pub description: &'static str,
     #[serde(skip)]
+    pub label_fa: &'static str,
+    #[serde(skip)]
+    pub description_fa: &'static str,
+    #[serde(skip)]
     pub aliases: &'static [&'static str],
+}
+
+impl DimensionDef {
+    pub fn label_for(&self, locale: Locale) -> &'static str {
+        locale.pick(self.label, self.label_fa)
+    }
+
+    pub fn description_for(&self, locale: Locale) -> &'static str {
+        locale.pick(self.description, self.description_fa)
+    }
+
+    pub fn localized(mut self, locale: Locale) -> Self {
+        self.label = self.label_for(locale);
+        self.description = self.description_for(locale);
+        self
+    }
+}
+
+pub fn other_dimension_text(locale: Locale) -> (&'static str, &'static str) {
+    (locale.pick("Other", "سایر"), locale.pick("Rules without a dimension", "قوانین بدون بعد مشخص"))
 }
 
 pub const PREFERENCES: &str = "preferences";
@@ -41,18 +66,18 @@ pub const OTHER: &str = "other";
 /// The default dimensions, in display order (from the product plan).
 pub fn dimension_catalog() -> Vec<DimensionDef> {
     vec![
-        DimensionDef { key: "age_life_stage", label: "Age / life stage", description: "Age gap and where each person is in life", aliases: &["age", "life_stage"] },
-        DimensionDef { key: "values", label: "Values", description: "Shared core values (needs questionnaire data)", aliases: &[] },
-        DimensionDef { key: "personality", label: "Personality", description: "Personality fit (needs questionnaire data)", aliases: &[] },
-        DimensionDef { key: "family", label: "Family", description: "Family background and expectations", aliases: &["family_expectations"] },
-        DimensionDef { key: "children", label: "Children", description: "Existing children and views on having children", aliases: &["kids"] },
-        DimensionDef { key: "religion", label: "Religion", description: "Religion and level of observance", aliases: &["religious"] },
-        DimensionDef { key: "lifestyle", label: "Lifestyle", description: "Daily habits: smoking, health, routines", aliases: &["habits"] },
-        DimensionDef { key: "communication", label: "Communication", description: "Communication and conflict style (needs questionnaire data)", aliases: &[] },
-        DimensionDef { key: "relationship_expectations", label: "Relationship expectations", description: "What each wants from the relationship", aliases: &["expectations"] },
-        DimensionDef { key: "geography", label: "Geographic compatibility", description: "Where they live and are willing to live", aliases: &["location", "geo", "city"] },
-        DimensionDef { key: "financial_practical", label: "Financial / practical", description: "Education, work, finances", aliases: &["financial", "practical", "education", "work"] },
-        DimensionDef { key: PREFERENCES, label: "Personal preferences", description: "How well each fits the other's stated partner preferences", aliases: &["preference"] },
+        DimensionDef { key: "age_life_stage", label: "Age / life stage", description: "Age gap and where each person is in life", label_fa: "سن و مرحله زندگی", description_fa: "فاصله سنی و جایگاه هر فرد در زندگی", aliases: &["age", "life_stage"] },
+        DimensionDef { key: "values", label: "Values", description: "Shared core values (needs questionnaire data)", label_fa: "ارزش‌ها", description_fa: "ارزش‌های بنیادین مشترک (نیازمند داده‌های پرسشنامه)", aliases: &[] },
+        DimensionDef { key: "personality", label: "Personality", description: "Personality fit (needs questionnaire data)", label_fa: "شخصیت", description_fa: "تناسب شخصیتی (نیازمند داده‌های پرسشنامه)", aliases: &[] },
+        DimensionDef { key: "family", label: "Family", description: "Family background and expectations", label_fa: "خانواده", description_fa: "پیشینه و انتظارات خانوادگی", aliases: &["family_expectations"] },
+        DimensionDef { key: "children", label: "Children", description: "Existing children and views on having children", label_fa: "فرزندان", description_fa: "فرزندان موجود و دیدگاه درباره فرزندآوری", aliases: &["kids"] },
+        DimensionDef { key: "religion", label: "Religion", description: "Religion and level of observance", label_fa: "دین", description_fa: "دین و میزان پایبندی", aliases: &["religious"] },
+        DimensionDef { key: "lifestyle", label: "Lifestyle", description: "Daily habits: smoking, health, routines", label_fa: "سبک زندگی", description_fa: "عادت‌های روزانه: سیگار، سلامت، روزمرگی", aliases: &["habits"] },
+        DimensionDef { key: "communication", label: "Communication", description: "Communication and conflict style (needs questionnaire data)", label_fa: "ارتباط", description_fa: "سبک ارتباط و حل اختلاف (نیازمند داده‌های پرسشنامه)", aliases: &[] },
+        DimensionDef { key: "relationship_expectations", label: "Relationship expectations", description: "What each wants from the relationship", label_fa: "انتظارات از رابطه", description_fa: "آنچه هر کدام از رابطه می‌خواهند", aliases: &["expectations"] },
+        DimensionDef { key: "geography", label: "Geographic compatibility", description: "Where they live and are willing to live", label_fa: "سازگاری جغرافیایی", description_fa: "محل زندگی و شهرهایی که حاضرند در آن زندگی کنند", aliases: &["location", "geo", "city"] },
+        DimensionDef { key: "financial_practical", label: "Financial / practical", description: "Education, work, finances", label_fa: "مالی و عملی", description_fa: "تحصیلات، شغل و وضعیت مالی", aliases: &["financial", "practical", "education", "work"] },
+        DimensionDef { key: PREFERENCES, label: "Personal preferences", description: "How well each fits the other's stated partner preferences", label_fa: "ترجیحات شخصی", description_fa: "میزان تطابق هر فرد با ترجیحات اعلام‌شده‌اش برای شریک زندگی", aliases: &["preference"] },
     ]
 }
 
@@ -316,6 +341,99 @@ fn finding(
         weight: r.weight,
         priority: r.priority,
         missing,
+    }
+}
+
+/// Looks up replacement wording for a preference finding (`source`, preference id); used where the preference has no note.
+pub type PreferenceText<'a> = &'a dyn Fn(FindingSource, &str) -> Option<String>;
+
+fn localized_description(locale: Locale, source: FindingSource, id: &str, preference_text: PreferenceText) -> Option<String> {
+    match source {
+        FindingSource::Rule if locale == Locale::Fa => crate::defaults::default_rule_description_fa(id).map(str::to_string),
+        FindingSource::Rule => None,
+        _ => preference_text(source, id),
+    }
+}
+
+impl ScoreCard {
+    /// Re-labels dimensions and findings for `locale`; scores and keys are untouched. Rules and notes the
+    /// matchmaker wrote stay as typed.
+    pub fn localize(&mut self, locale: Locale, preference_text: PreferenceText) {
+        let catalog = dimension_catalog();
+        for dim in &mut self.dimensions {
+            if let Some(def) = catalog.iter().find(|def| def.key == dim.key) {
+                dim.label = def.label_for(locale).to_string();
+                dim.description = def.description_for(locale).to_string();
+            } else if dim.key == OTHER {
+                let (label, description) = other_dimension_text(locale);
+                dim.label = label.to_string();
+                dim.description = description.to_string();
+            }
+        }
+        let findings = self
+            .strengths
+            .iter_mut()
+            .chain(self.concerns.iter_mut())
+            .chain(self.unknowns.iter_mut())
+            .chain(self.hard_constraints.violations.iter_mut())
+            .chain(self.hard_constraints.undecided.iter_mut());
+        for finding in findings {
+            if let Some(text) = localized_description(locale, finding.source, &finding.id, preference_text) {
+                finding.description = text;
+            }
+        }
+    }
+}
+
+/// [`ScoreCard::localize`] for a stored scorecard in its JSON form.
+pub fn localize_scorecard_json(card: &mut serde_json::Value, locale: Locale, preference_text: PreferenceText) {
+    use serde_json::Value as Json;
+    let catalog = dimension_catalog();
+    if let Some(Json::Array(dims)) = card.get_mut("dimensions") {
+        for dim in dims {
+            let key = dim.get("key").and_then(Json::as_str).unwrap_or_default().to_string();
+            let texts = match catalog.iter().find(|def| def.key == key) {
+                Some(def) => Some((def.label_for(locale), def.description_for(locale))),
+                None if key == OTHER => Some(other_dimension_text(locale)),
+                None => None,
+            };
+            if let (Some((label, description)), Some(map)) = (texts, dim.as_object_mut()) {
+                map.insert("label".into(), Json::String(label.into()));
+                map.insert("description".into(), Json::String(description.into()));
+            }
+        }
+    }
+    let mut lists: Vec<&mut Json> = vec![];
+    let Json::Object(root) = card else { return };
+    for (key, value) in root.iter_mut() {
+        match key.as_str() {
+            "strengths" | "concerns" | "unknowns" => lists.push(value),
+            "hard_constraints" => {
+                if let Json::Object(hard) = value {
+                    for (inner_key, inner) in hard.iter_mut() {
+                        if inner_key == "violations" || inner_key == "undecided" {
+                            lists.push(inner);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for list in lists {
+        let Json::Array(items) = list else { continue };
+        for item in items {
+            let source = match item.get("source").and_then(Json::as_str) {
+                Some("rule") => FindingSource::Rule,
+                Some("preference_a") => FindingSource::PreferenceA,
+                Some("preference_b") => FindingSource::PreferenceB,
+                _ => continue,
+            };
+            let id = item.get("id").and_then(Json::as_str).unwrap_or_default().to_string();
+            if let (Some(text), Some(map)) = (localized_description(locale, source, &id, preference_text), item.as_object_mut()) {
+                map.insert("description".into(), Json::String(text));
+            }
+        }
     }
 }
 

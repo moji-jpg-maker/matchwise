@@ -17,6 +17,7 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useI18n } from '@/i18n';
 
 export default function PageContent({
   meeting,
@@ -68,6 +69,7 @@ export default function PageContent({
 
   // Sidebar context
   const { serverAddress } = useSidebar();
+  const { t } = useI18n();
 
   // Get model config from ConfigContext
   const { modelConfig, setModelConfig, isModelConfigLoading } = useConfig();
@@ -108,10 +110,10 @@ export default function PageContent({
       const { emit } = await import('@tauri-apps/api/event');
       await emit('model-config-updated', config);
 
-      toast.success('Model settings saved successfully');
+      toast.success(t('meetingPage.modelSaved'));
     } catch (error) {
       console.error('Failed to save model config:', error);
-      toast.error('Failed to save model settings');
+      toast.error(t('meetingPage.modelSaveError'));
     }
   };
 

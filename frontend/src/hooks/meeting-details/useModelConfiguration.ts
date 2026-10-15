@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
+import { useT } from '@/i18n';
 
 interface UseModelConfigurationProps {
   serverAddress: string | null;
 }
 
 export function useModelConfiguration({ serverAddress }: UseModelConfigurationProps) {
+  const t = useT();
   // Note: No hardcoded defaults - DB is the source of truth
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
@@ -139,17 +141,17 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
       const { emit } = await import('@tauri-apps/api/event');
       await emit('model-config-updated', payload);
 
-      toast.success("Summary settings Saved successfully");
+      toast.success(t('meetingUi.settingsSaved'));
     } catch (error) {
       console.error('Failed to save model config:', error);
-      toast.error("Failed to save summary settings", { description: String(error) });
+      toast.error(t('meetingUi.settingsSaveError'), { description: String(error) });
       if (error instanceof Error) {
         setError(error.message);
       } else {
         setError('Failed to save model config: Unknown error');
       }
     }
-  }, [modelConfig]);
+  }, [modelConfig, t]);
 
   return {
     modelConfig,

@@ -230,3 +230,15 @@ fn json_produced_by_the_editor_deserializes() {
     assert_eq!(set.group_weights.get("age"), Some(&2.0));
     assert!(validate_ruleset(&set, &default_registry()).is_empty());
 }
+
+#[test]
+fn validation_messages_follow_the_locale() {
+    let reg = FieldRegistry::default();
+    let set = RuleSet::new("", 1, vec![]);
+    let english = validate_ruleset_for(&set, &reg, Locale::En);
+    let persian = validate_ruleset_for(&set, &reg, Locale::Fa);
+    assert_eq!(english.len(), persian.len());
+    assert!(english[0].message.contains("needs a name"));
+    assert!(persian[0].message.contains("نام"));
+    assert_eq!(validate_ruleset(&set, &reg), english);
+}

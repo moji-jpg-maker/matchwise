@@ -1,6 +1,6 @@
 import React from 'react';
 import { ModelStatus } from '../lib/whisper';
-import { Button } from './ui/button';
+import { useI18n } from '@/i18n';
 
 interface ModelDownloadProgressProps {
   status: ModelStatus;
@@ -9,6 +9,7 @@ interface ModelDownloadProgressProps {
 }
 
 export function ModelDownloadProgress({ status, modelName, onCancel }: ModelDownloadProgressProps) {
+  const { t, fmt } = useI18n();
   if (typeof status !== 'object' || !('Downloading' in status)) {
     return null;
   }
@@ -19,10 +20,10 @@ export function ModelDownloadProgress({ status, modelName, onCancel }: ModelDown
   return (
     <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 rtl:space-x-reverse">
           <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
           <span className="text-sm font-medium text-blue-900">
-            {isCompleted ? 'Finalizing...' : `Downloading ${modelName}`}
+            {isCompleted ? t('dlProgress.finalizing') : t('dlProgress.downloading', { model: modelName })}
           </span>
         </div>
       </div>
@@ -35,16 +36,16 @@ export function ModelDownloadProgress({ status, modelName, onCancel }: ModelDown
           />
         </div>
         <div className="flex justify-between text-xs text-blue-700 mt-1">
-          <span>{Math.round(progress)}% complete</span>
+          <span>{t('dlProgress.complete', { percent: fmt.percent(progress / 100) })}</span>
           {!isCompleted && (
-            <span className="animate-pulse">Downloading...</span>
+            <span className="animate-pulse">{t('dlProgress.downloadingShort')}</span>
           )}
         </div>
       </div>
       
       {isCompleted && (
         <div className="mt-2 text-xs text-green-700">
-          ✓ Download completed, loading model...
+          {t('dlProgress.loading')}
         </div>
       )}
     </div>
@@ -58,6 +59,7 @@ interface ProgressRingProps {
 }
 
 export function ProgressRing({ progress, size = 40, strokeWidth = 3 }: ProgressRingProps) {
+  const { fmt } = useI18n();
   const radius = (size - strokeWidth) / 2;
   const circumference = radius * 2 * Math.PI;
   const strokeDasharray = circumference;
@@ -92,7 +94,7 @@ export function ProgressRing({ progress, size = 40, strokeWidth = 3 }: ProgressR
         />
       </svg>
       <span className="absolute text-xs font-medium text-blue-600">
-        {Math.round(progress)}%
+        {fmt.percent(progress / 100)}
       </span>
     </div>
   );
@@ -105,24 +107,25 @@ interface DownloadSummaryProps {
 }
 
 export function DownloadSummary({ totalModels, downloadedModels, totalSizeMb }: DownloadSummaryProps) {
+  const { t, fmt } = useI18n();
   const formatSize = (mb: number) => {
-    if (mb >= 1000) return `${(mb / 1000).toFixed(1)}GB`;
-    return `${mb}MB`;
+    if (mb >= 1000) return t('dlProgress.sizeGb', { value: fmt.number(mb / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+    return t('dlProgress.sizeMb', { value: fmt.number(mb) });
   };
 
   return (
     <div className="bg-gray-50 rounded-lg p-3 text-sm">
       <div className="flex items-center justify-between">
         <span className="text-gray-700">
-          📦 {downloadedModels} of {totalModels} models available
+          {t('dlProgress.available', { done: fmt.number(downloadedModels), total: fmt.number(totalModels) })}
         </span>
         <span className="text-gray-600">
-          💾 {formatSize(totalSizeMb)} total
+          {t('dlProgress.total', { size: formatSize(totalSizeMb) })}
         </span>
       </div>
       {downloadedModels > 0 && (
         <div className="mt-1 text-xs text-green-600">
-          ✓ Models run locally - no internet required for transcription
+          {t('dlProgress.local')}
         </div>
       )}
     </div>

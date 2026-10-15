@@ -45,6 +45,9 @@ cargo test -p matchmaking-core          # engine tests
 cd frontend && pnpm install && pnpm run tauri:dev
 ```
 
+## Languages
+The interface is available in English and Persian (فارسی, right to left). Switch it in the app; the choice is remembered. Stored values stay English. Persian wording is a draft that needs native review; see `docs/i18n/glossary-fa.md` and `docs/i18n/HANDOFF-fa.md`. `PRIVACY_POLICY.md` is English only and its translation is pending.
+
 ## Telegram
 Matchwise can talk to candidates through a bot you create yourself (BotFather). See the Telegram page in the app and `docs/matchmaking/M5_STATUS.md`. On WSL or a machine without a credential store,
 provide the token as `MATCHWISE_TELEGRAM_TOKEN`. The bot answers only while the app is running.

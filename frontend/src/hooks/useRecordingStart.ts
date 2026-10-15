@@ -12,9 +12,9 @@ import {
   type ModelWithStatus,
 } from '@/lib/transcription-model-readiness';
 import { toast } from 'sonner';
+import { useT } from '@/i18n';
 
 const TRANSCRIPTION_RUNTIME_START_ERROR_CODE = 'TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED';
-const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'Speech recognition could not initialize. Restart Matchwise. If the problem continues, repair or reinstall the app.';
 
 const isTranscriptionRuntimeStartError = (error: unknown) =>
   String(error) === TRANSCRIPTION_RUNTIME_START_ERROR_CODE;
@@ -43,6 +43,9 @@ export function useRecordingStart(
   setIsRecording: (value: boolean) => void,
   showModal?: (name: 'modelSelector', message?: string) => void
 ): UseRecordingStartReturn {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [isAutoStarting, setIsAutoStarting] = useState(false);
 
   // Synchronous latch: a rapid double-click re-enters handleRecordingStart
@@ -128,16 +131,16 @@ export function useRecordingStart(
       if (!modelReady) {
         const isDownloading = await checkIfModelDownloading();
         if (isDownloading) {
-          toast.info('Model download in progress', {
-            description: 'Please wait for the transcription model to finish downloading before recording.',
+          toast.info(tRef.current('recStart.downloadingTitle'), {
+            description: tRef.current('recStart.downloadingDesc'),
             duration: 5000,
           });
         } else {
-          toast.error('Transcription model not ready', {
-            description: 'Please download a transcription model before recording.',
+          toast.error(tRef.current('recStart.notReadyTitle'), {
+            description: tRef.current('recStart.notReadyDesc'),
             duration: 5000,
           });
-          showModal?.('modelSelector', 'Transcription model setup required');
+          showModal?.('modelSelector', tRef.current('recStart.setupRequired'));
         }
         setStatus(RecordingStatus.IDLE);
         return;
@@ -149,7 +152,7 @@ export function useRecordingStart(
       setMeetingTitle(randomTitle);
 
       // Set STARTING status before initiating backend recording
-      setStatus(RecordingStatus.STARTING, 'Initializing recording...');
+      setStatus(RecordingStatus.STARTING, tRef.current('recStart.initializing'));
 
       // Start the actual backend recording
       console.log('Starting backend recording with meeting:', randomTitle);
@@ -184,11 +187,11 @@ export function useRecordingStart(
 
       const isRuntimeError = isTranscriptionRuntimeStartError(error);
       if (errorMsg.includes('Recording start timed out')) {
-        toast.error('Recording start timed out — please try again');
+        toast.error(tRef.current('recStart.timedOut'));
       }
 
       setStatus(RecordingStatus.ERROR, isRuntimeError
-        ? TRANSCRIPTION_RUNTIME_USER_MESSAGE
+        ? tRef.current('recStart.runtimeError')
         : errorMsg);
       setIsRecording(false); // Reset state on error
       if (isRuntimeError) return;
@@ -214,16 +217,16 @@ export function useRecordingStart(
           if (!modelReady) {
             const isDownloading = await checkIfModelDownloading();
             if (isDownloading) {
-              toast.info('Model download in progress', {
-                description: 'Please wait for the transcription model to finish downloading before recording.',
+              toast.info(tRef.current('recStart.downloadingTitle'), {
+                description: tRef.current('recStart.downloadingDesc'),
                 duration: 5000,
               });
             } else {
-              toast.error('Transcription model not ready', {
-                description: 'Please download a transcription model before recording.',
+              toast.error(tRef.current('recStart.notReadyTitle'), {
+                description: tRef.current('recStart.notReadyDesc'),
                 duration: 5000,
               });
-              showModal?.('modelSelector', 'Transcription model setup required');
+              showModal?.('modelSelector', tRef.current('recStart.setupRequired'));
             }
             setStatus(RecordingStatus.IDLE);
             setIsAutoStarting(false);
@@ -236,7 +239,7 @@ export function useRecordingStart(
             const generatedMeetingTitle = generateMeetingTitle();
 
             // Set STARTING status before initiating backend recording
-            setStatus(RecordingStatus.STARTING, 'Initializing recording...');
+            setStatus(RecordingStatus.STARTING, tRef.current('recStart.initializing'));
 
             console.log('Auto-starting backend recording with meeting:', generatedMeetingTitle);
             const result = await recordingService.startRecordingWithDevices(
@@ -263,10 +266,10 @@ export function useRecordingStart(
             } else {
               const isRuntimeError = isTranscriptionRuntimeStartError(error);
               setStatus(RecordingStatus.ERROR, isRuntimeError
-                ? TRANSCRIPTION_RUNTIME_USER_MESSAGE
+                ? tRef.current('recStart.runtimeError')
                 : errorMsg);
               if (!isRuntimeError) {
-                alert(`Failed to start recording.\n\n${errorMsg}`);
+                alert(`${tRef.current('recStart.failedAlert')}\n\n${errorMsg}`);
               }
             }
           } finally {
@@ -308,16 +311,16 @@ export function useRecordingStart(
       if (!modelReady) {
         const isDownloading = await checkIfModelDownloading();
         if (isDownloading) {
-          toast.info('Model download in progress', {
-            description: 'Please wait for the transcription model to finish downloading before recording.',
+          toast.info(tRef.current('recStart.downloadingTitle'), {
+            description: tRef.current('recStart.downloadingDesc'),
             duration: 5000,
           });
         } else {
-          toast.error('Transcription model not ready', {
-            description: 'Please download a transcription model before recording.',
+          toast.error(tRef.current('recStart.notReadyTitle'), {
+            description: tRef.current('recStart.notReadyDesc'),
             duration: 5000,
           });
-          showModal?.('modelSelector', 'Transcription model setup required');
+          showModal?.('modelSelector', tRef.current('recStart.setupRequired'));
         }
         setStatus(RecordingStatus.IDLE);
         setIsAutoStarting(false);
@@ -329,7 +332,7 @@ export function useRecordingStart(
         const generatedMeetingTitle = generateMeetingTitle();
 
         // Set STARTING status before initiating backend recording
-        setStatus(RecordingStatus.STARTING, 'Initializing recording...');
+        setStatus(RecordingStatus.STARTING, tRef.current('recStart.initializing'));
 
         console.log('Starting backend recording with meeting:', generatedMeetingTitle);
         const result = await recordingService.startRecordingWithDevices(
@@ -356,10 +359,10 @@ export function useRecordingStart(
         } else {
           const isRuntimeError = isTranscriptionRuntimeStartError(error);
           setStatus(RecordingStatus.ERROR, isRuntimeError
-            ? TRANSCRIPTION_RUNTIME_USER_MESSAGE
+            ? tRef.current('recStart.runtimeError')
             : errorMsg);
           if (!isRuntimeError) {
-            alert(`Failed to start recording.\n\n${errorMsg}`);
+            alert(`${tRef.current('recStart.failedAlert')}\n\n${errorMsg}`);
           }
         }
       } finally {

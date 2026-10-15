@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useI18n } from '@/i18n';
 import { ScoringConfig, ScoringConfigView } from '@/types/matchmaking';
 
 /** An empty box is not a zero: it means the matchmaker has not said, so it is never valid. */
@@ -14,11 +15,12 @@ function num(value: string): number {
   return value.trim() === '' ? NaN : Number(value);
 }
 
-function bad(label: string, v: number): string | null {
-  return Number.isFinite(v) ? null : `${label} must be a number between 0 and 100.`;
+function bad(message: string, v: number): string | null {
+  return Number.isFinite(v) ? null : message;
 }
 
 function Editor() {
+  const { t, fmt } = useI18n();
   const router = useRouter();
   const idParam = useSearchParams().get('id');
   const isNew = idParam === 'new' || !idParam;
@@ -62,10 +64,10 @@ function Editor() {
           if (version) setDirty(true); // viewing an old version: saving makes it the new current version
         }
       } catch (e) {
-        toast.error(`Could not load: ${e}`);
+        toast.error(t('scoringConfig.loadError', { error: `${e}` }));
       }
     },
-    [apply, idParam, isNew]
+    [apply, idParam, isNew, t]
   );
 
   useEffect(() => { void load(); }, [load]);
@@ -77,7 +79,11 @@ function Editor() {
 
   // A half-typed number cannot be sent (it would not even survive the trip), so this is checked here first; the
   // backend still re-checks on save, and what it says about the rest is what is shown.
-  const localIssues = [bad('The strong cutoff', num(strong)), bad('The mixed cutoff', num(mixed)), bad('The neutral baseline', num(prior))].filter(
+  const localIssues = [
+    bad(t('scoringConfig.mustBeNumber', { label: t('scoringConfig.strongCutoff') }), num(strong)),
+    bad(t('scoringConfig.mustBeNumber', { label: t('scoringConfig.mixedCutoff') }), num(mixed)),
+    bad(t('scoringConfig.mustBeNumber', { label: t('scoringConfig.neutralBaseline') }), num(prior)),
+  ].filter(
     (m): m is string => m !== null
   );
   const shown = [...localIssues, ...issues];
@@ -88,14 +94,14 @@ function Editor() {
       setIssues([]);
       return;
     }
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
         setIssues(await invoke<string[]>('mm_validate_scoring_config', { definition: definition() }));
       } catch {
         /* validation is advisory; saving re-checks */
       }
     }, 400);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [definition, localIssues.length]);
 
   const save = async () => {
@@ -108,7 +114,7 @@ function Editor() {
         definition: definition(),
         note: note || null,
       });
-      toast.success(`Saved as version ${v.current_version}`);
+      toast.success(t('scoringConfig.saved', { version: fmt.number(v.current_version) }));
       if (isNew) router.replace(`/scoring-config?id=${encodeURIComponent(v.id)}`);
       else apply(v);
     } catch (e) {
@@ -126,39 +132,38 @@ function Editor() {
       <div className="max-w-4xl mx-auto p-6 space-y-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button onClick={() => router.push('/scoring')} className="p-2 rounded-lg hover:bg-gray-200" aria-label="Back">
-              <ArrowLeft className="w-5 h-5" />
+            <button onClick={() => router.push('/scoring')} className="p-2 rounded-lg hover:bg-gray-200" aria-label={t('scoringConfig.back')}>
+              <ArrowLeft className="w-5 h-5 rtl-mirror" />
             </button>
             <div>
-              <h1 className="text-2xl font-semibold">{isNew ? 'New scoring config' : name || 'Scoring config'}</h1>
+              <h1 className="text-2xl font-semibold">{isNew ? t('scoringConfig.newTitle') : name ? <bdi>{name}</bdi> : t('scoringConfig.fallbackTitle')}</h1>
               <p className="text-sm text-gray-500">
-                A rule set says what to measure; these three numbers say how to read the result. Every save creates a new
-                version.
+                {t('scoringConfig.intro')}
               </p>
             </div>
             {meta && (
               <span className="text-sm text-gray-500">
-                showing v{meta.version}
-                {meta.version !== meta.current_version ? ` (current is v${meta.current_version})` : ''}
+                {meta.version !== meta.current_version
+                  ? t('scoringConfig.showingCurrent', { version: fmt.number(meta.version), current: fmt.number(meta.current_version) })
+                  : t('scoringConfig.showing', { version: fmt.number(meta.version) })}
               </span>
             )}
           </div>
           <Button onClick={save} disabled={saving || blocked || (!dirty && !isNew) || name.trim() === ''}>
-            {saving ? 'Saving…' : isNew ? 'Create' : 'Save new version'}
+            {saving ? t('scoringConfig.saving') : isNew ? t('scoringConfig.create') : t('scoringConfig.saveVersion')}
           </Button>
         </div>
 
         {meta && meta.version !== meta.current_version && (
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
-            You are viewing an older version. Saving creates a new version with this content — the version you are
-            looking at is left untouched, because stored scorecards name it.
+            {t('scoringConfig.olderVersion')}
           </div>
         )}
 
         {blocked && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
-            <div className="font-medium">Not saved as it stands:</div>
-            <ul className="list-disc ml-5">
+            <div className="font-medium">{t('scoringConfig.notSaved')}</div>
+            <ul className="list-disc ms-5">
               {shown.map((m, i) => (
                 <li key={i}>{m}</li>
               ))}
@@ -168,64 +173,59 @@ function Editor() {
 
         <div className="bg-white rounded-lg border p-4 space-y-3">
           <div className="grid grid-cols-3 gap-3 items-center">
-            <label className="text-sm font-medium">Name</label>
-            <Input className="col-span-2" value={name} onChange={(e) => { setName(e.target.value); touch(); }} />
-            <label className="text-sm font-medium">Description</label>
-            <Input className="col-span-2" value={description} onChange={(e) => { setDescription(e.target.value); touch(); }} />
+            <label className="text-sm font-medium">{t('scoringConfig.name')}</label>
+            <Input className="col-span-2" dir="auto" value={name} onChange={(e) => { setName(e.target.value); touch(); }} />
+            <label className="text-sm font-medium">{t('scoringConfig.description')}</label>
+            <Input className="col-span-2" dir="auto" value={description} onChange={(e) => { setDescription(e.target.value); touch(); }} />
           </div>
 
           <div className="border-t pt-3">
-            <div className="text-sm font-medium mb-2">Reading a scorecard</div>
+            <div className="text-sm font-medium mb-2">{t('scoringConfig.reading')}</div>
             <div className="grid grid-cols-3 gap-3 items-center">
-              <label className="text-sm font-medium" title="A dimension at or above this reads as strong">
-                Strong at or above (0-100)
+              <label className="text-sm font-medium" title={t('scoringConfig.strongTip')}>
+                {t('scoringConfig.strongField')}
               </label>
-              <Input className="w-28" type="number" step="0.1" value={strong} onChange={(e) => { setStrong(e.target.value); touch(); }} />
-              <label className="text-sm font-medium" title="A dimension at or above this, but below strong, reads as mixed">
-                Mixed at or above (0-100)
+              <Input className="w-28" dir="ltr" type="number" step="0.1" value={strong} onChange={(e) => { setStrong(e.target.value); touch(); }} />
+              <label className="text-sm font-medium" title={t('scoringConfig.mixedTip')}>
+                {t('scoringConfig.mixedField')}
               </label>
-              <Input className="w-28" type="number" step="0.1" value={mixed} onChange={(e) => { setMixed(e.target.value); touch(); }} />
-              <label className="text-sm font-medium" title="Scores resting on little information are pulled towards this neutral value">
-                Neutral baseline (0-100)
+              <Input className="w-28" dir="ltr" type="number" step="0.1" value={mixed} onChange={(e) => { setMixed(e.target.value); touch(); }} />
+              <label className="text-sm font-medium" title={t('scoringConfig.baselineTip')}>
+                {t('scoringConfig.baselineField')}
               </label>
-              <Input className="w-28" type="number" step="0.1" value={prior} onChange={(e) => { setPrior(e.target.value); touch(); }} />
+              <Input className="w-28" dir="ltr" type="number" step="0.1" value={prior} onChange={(e) => { setPrior(e.target.value); touch(); }} />
             </div>
             <p className="text-xs text-gray-500 mt-2">
-              The baseline only moves scores that rest on little evidence. A scorecard built from every answer is read
-              as it stands; one resting on a single answer is read between that answer and{' '}
-              {prior.trim() === '' ? 'the neutral value' : prior}, rather than pretending the answer is the whole
-              picture. The cutoffs label each dimension on its own, so a dimension reads as strong or mixed whatever the
-              baseline is.
+              {t('scoringConfig.baselineNote', { prior: prior.trim() === '' ? t('scoringConfig.neutralValue') : fmt.number(Number(prior)) })}
             </p>
           </div>
         </div>
 
         {(dirty || isNew) && (
           <div className="bg-white rounded-lg border p-4">
-            <label className="text-sm font-medium">What changed? (optional, kept in the version history)</label>
-            <Input className="mt-1" value={note} onChange={(e) => setNote(e.target.value)} />
+            <label className="text-sm font-medium">{t('scoringConfig.noteLabel')}</label>
+            <Input className="mt-1" dir="auto" value={note} onChange={(e) => setNote(e.target.value)} />
           </div>
         )}
 
         {meta && (
           <div className="bg-white rounded-lg border p-4">
-            <h2 className="font-medium mb-1">Version history</h2>
+            <h2 className="font-medium mb-1">{t('scoringConfig.historyTitle')}</h2>
             <p className="text-xs text-gray-500 mb-2">
-              A stored scorecard names the version that judged it, so an old version keeps its meaning even after the
-              numbers move on.
+              {t('scoringConfig.historyIntro')}
             </p>
             <ul className="space-y-1 text-sm">
               {meta.versions.map((v) => (
                 <li key={v.version} className="flex items-center gap-3">
-                  <span className="w-10 font-medium">v{v.version}</span>
-                  <span className="text-gray-500 w-44">{new Date(v.created_at).toLocaleString()}</span>
-                  <span className="flex-1 truncate">{v.note || ''}</span>
+                  <span className="w-10 font-medium">{t('scoringConfig.versionLabel', { version: fmt.number(v.version) })}</span>
+                  <span className="text-gray-500 w-44">{fmt.dateTime(v.created_at)}</span>
+                  <span className="flex-1 truncate" dir="auto">{v.note || ''}</span>
                   {v.version !== meta.version && (
                     <button className="text-blue-600 hover:underline" onClick={() => load(v.version)}>
-                      View
+                      {t('scoringConfig.view')}
                     </button>
                   )}
-                  {v.version === meta.version && <span className="text-xs text-gray-500">shown</span>}
+                  {v.version === meta.version && <span className="text-xs text-gray-500">{t('scoringConfig.shownTag')}</span>}
                 </li>
               ))}
             </ul>
@@ -237,8 +237,10 @@ function Editor() {
 }
 
 export default function ScoringConfigPage() {
+  const { t } = useI18n();
+  const fallbackLoading = t('common.loading');
   return (
-    <Suspense fallback={<div className="p-6 text-gray-500">Loading…</div>}>
+    <Suspense fallback={<div className="p-6 text-gray-500">{fallbackLoading}</div>}>
       <Editor />
     </Suspense>
   );

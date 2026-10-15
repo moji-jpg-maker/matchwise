@@ -10,6 +10,7 @@
 //! * Text inside the data tags is untrusted content, not instructions.
 
 use crate::field::{FieldKind, FieldRegistry};
+use crate::locale::Locale;
 use crate::preferences::{describe_preference, validate_preference, Preference, Strength};
 use crate::profile::{Profile, Provenance, Value};
 use crate::scoring::{Finding, ScoreCard};
@@ -106,7 +107,21 @@ Rules: (1) Use ONLY the information inside the <data> tags. Do not invent facts.
 (3) Never diagnose medical or psychological conditions and never judge attractiveness, intelligence or character. \
 (4) Be neutral and respectful. (5) Answer with one JSON object that follows the requested schema, and nothing else.";
 
+pub const ANSWER_LANGUAGE_FA: &str = "\n\nLanguage: write every free-text value you produce in Persian (Farsi), using the Persian script. \
+This covers explanations, questions, assessments and contradiction descriptions. Keep JSON keys, field keys, enum values, fact ids and evidence quotes exactly as given; never translate evidence.";
+
+fn answer_language(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "",
+        Locale::Fa => ANSWER_LANGUAGE_FA,
+    }
+}
+
 pub fn extraction_prompt(registry: &FieldRegistry, text: &str, include_sensitive: bool) -> (String, String) {
+    extraction_prompt_for(registry, text, include_sensitive, Locale::En)
+}
+
+pub fn extraction_prompt_for(registry: &FieldRegistry, text: &str, include_sensitive: bool, locale: Locale) -> (String, String) {
     let mut schema = String::new();
     for def in registry.defs() {
         if never_for_ai(&def.key) || matches!(def.kind, FieldKind::Records(_)) || (def.sensitive && !include_sensitive) {
@@ -128,7 +143,8 @@ Return JSON: {{\"suggestions\":[{{\"field\":KEY,\"value\":VALUE,\"evidence\":\"e
 \"preferences\":[{{\"field\":KEY,\"op\":\"eq|ne|ge|le|between|in\",\"value\":VALUE,\"value2\":VALUE_OR_NULL,\"strength\":\"required|deal_breaker|preferred|flexible\",\"evidence\":\"exact words\"}}] (what this person says they want in a partner),\
 \"contradictions\":[{{\"description\":\"...\",\"evidence\":[\"exact words\",\"exact words\"]}}],\
 \"missing\":[KEY,...] (important fields the text does not answer),\"questions\":[\"a short question to ask the person\"]}}.\n\
-Only suggest a field when the text states it. Copy evidence exactly.\n\n<data>\n{text}\n</data>"
+Only suggest a field when the text states it. Copy evidence exactly.{language}\n\n<data>\n{text}\n</data>",
+        language = answer_language(locale)
     );
     (SYSTEM_RULES.to_string(), user)
 }
@@ -430,6 +446,10 @@ pub fn build_pair_facts(
 }
 
 pub fn pair_prompt(facts: &[AiFact]) -> (String, String) {
+    pair_prompt_for(facts, Locale::En)
+}
+
+pub fn pair_prompt_for(facts: &[AiFact], locale: Locale) -> (String, String) {
     let list = facts.iter().map(|f| format!("{}: {}", f.id, f.text)).collect::<Vec<_>>().join("\n");
     let user = format!(
         "Below are numbered facts about two people (A and B), the partner preferences they stated (P), and results of a rule-based check (S). \
@@ -437,7 +457,8 @@ Write a short analysis for the matchmaker.\n\
 Return JSON: {{\"why_it_may_work\":[{{\"text\":\"...\",\"refs\":[\"A1\",\"S2\"]}}],\"potential_challenges\":[...same shape...],\"important_differences\":[...same shape...],\
 \"questions_to_discuss\":[{{\"text\":\"...\",\"refs\":[]}}],\"missing_information\":[{{\"text\":\"...\",\"refs\":[...]}}],\"overall_assessment\":{{\"text\":\"2-4 sentences\",\"refs\":[...]}}}}.\n\
 Every statement except questions MUST cite at least one fact id in refs and may only rely on the cited facts. Do not mention facts that are not listed. \
-At most {MAX_ITEMS} items per list. You cannot change the scores or the eligibility; you only explain them.\n\n<data>\n{list}\n</data>"
+At most {MAX_ITEMS} items per list. You cannot change the scores or the eligibility; you only explain them.{language}\n\n<data>\n{list}\n</data>",
+        language = answer_language(locale)
     );
     (SYSTEM_RULES.to_string(), user)
 }

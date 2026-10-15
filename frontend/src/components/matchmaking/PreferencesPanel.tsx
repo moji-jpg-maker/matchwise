@@ -1,5 +1,6 @@
 'use client';
 
+import { fieldLabel } from '@/lib/field-label';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Plus, X } from 'lucide-react';
@@ -24,13 +25,15 @@ import {
   isConditionField,
   toPreference,
 } from '@/lib/conditions';
+import { useI18n } from '@/i18n';
+import type { MessageKey } from '@/i18n/types';
 import { ConditionOp } from '@/types/matchmaking';
 
-const STRENGTHS: { value: Strength; label: string; help: string }[] = [
-  { value: 'required', label: 'Must have', help: 'Candidates that do not satisfy this are excluded' },
-  { value: 'deal_breaker', label: 'Deal-breaker', help: 'Candidates that match this are excluded' },
-  { value: 'preferred', label: 'Preferred', help: 'Raises the score; weight = importance' },
-  { value: 'flexible', label: 'Flexible', help: 'Nice to have; counts half' },
+const STRENGTHS: { value: Strength; label: MessageKey; help: MessageKey }[] = [
+  { value: 'required', label: 'prefsPanel.strengthRequired', help: 'prefsPanel.strengthRequiredHelp' },
+  { value: 'deal_breaker', label: 'prefsPanel.strengthDealBreaker', help: 'prefsPanel.strengthDealBreakerHelp' },
+  { value: 'preferred', label: 'prefsPanel.strengthPreferred', help: 'prefsPanel.strengthPreferredHelp' },
+  { value: 'flexible', label: 'prefsPanel.strengthFlexible', help: 'prefsPanel.strengthFlexibleHelp' },
 ];
 
 const RESULT_STYLE: Record<string, string> = {
@@ -45,6 +48,7 @@ interface Props {
 }
 
 export function PreferencesPanel({ profileId, fields }: Props) {
+  const { t, fmt, locale } = useI18n();
   const searchable = useMemo(() => fields.filter(isConditionField), [fields]);
   const byKey = useMemo(() => Object.fromEntries(fields.map((f) => [f.key, f])), [fields]);
   const numeric = useMemo(() => searchable.filter((f) => kindName(f.kind) === 'number'), [searchable]);
@@ -68,9 +72,9 @@ export function PreferencesPanel({ profileId, fields }: Props) {
       setCandidates(list.filter((p) => p.id !== profileId));
       setDirty(false);
     } catch (e) {
-      toast.error(`Could not load preferences: ${e}`);
+      toast.error(t('prefsPanel.loadError', { error: `${e}` }));
     }
-  }, [profileId, byKey]);
+  }, [profileId, byKey, t]);
 
   useEffect(() => {
     if (fields.length > 0) void load();
@@ -108,7 +112,7 @@ export function PreferencesPanel({ profileId, fields }: Props) {
     for (const r of rows) {
       const def = byKey[r.field];
       if (!def) continue;
-      const p = toPreference(r, def);
+      const p = toPreference(r, def, t, locale);
       if (typeof p === 'string') {
         toast.error(p);
         return;
@@ -117,12 +121,12 @@ export function PreferencesPanel({ profileId, fields }: Props) {
     }
     setSaving(true);
     try {
-      const out = await invoke<Preference[]>('mm_save_preferences', { profileId, items });
+      const out = await invoke<Preference[]>('mm_save_preferences', { profileId, items, locale });
       setSaved(out);
       setRows(out.map((p) => fromPreference(p, byKey)));
       setDirty(false);
       setOutcome(null);
-      toast.success('Preferences saved');
+      toast.success(t('prefsPanel.saved'));
     } catch (e) {
       toast.error(`${e}`);
     } finally {
@@ -133,7 +137,7 @@ export function PreferencesPanel({ profileId, fields }: Props) {
   const check = async () => {
     if (!candidateId) return;
     try {
-      setOutcome(await invoke<MatchOutcome>('mm_evaluate_preferences', { profileId, candidateId }));
+      setOutcome(await invoke<MatchOutcome>('mm_evaluate_preferences', { profileId, candidateId, locale }));
     } catch (e) {
       toast.error(`${e}`);
     }
@@ -141,7 +145,7 @@ export function PreferencesPanel({ profileId, fields }: Props) {
 
   const label = (ruleId: string) => {
     const p = saved.find((x) => x.id === ruleId);
-    return p ? describePreference(p, byKey) : ruleId;
+    return p ? describePreference(p, byKey, t, locale) : ruleId;
   };
 
   const sel = 'border rounded-md px-2 py-1.5 text-sm bg-white';
@@ -150,20 +154,20 @@ export function PreferencesPanel({ profileId, fields }: Props) {
     <div className="bg-white rounded-lg border">
       <div className="p-4 flex items-center justify-between border-b">
         <div>
-          <h2 className="font-medium">Partner preferences</h2>
-          <p className="text-xs text-gray-500">What this person is looking for. Matching uses these as data, not as code.</p>
+          <h2 className="font-medium">{t('prefsPanel.title')}</h2>
+          <p className="text-xs text-gray-500">{t('prefsPanel.intro')}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={addRow} disabled={searchable.length === 0}>
-            <Plus className="w-4 h-4 mr-1" /> Add preference
+            <Plus className="w-4 h-4 me-1" /> {t('prefsPanel.add')}
           </Button>
           <Button size="sm" onClick={save} disabled={!dirty || saving}>
-            {saving ? 'Saving…' : 'Save preferences'}
+            {saving ? t('prefsPanel.saving') : t('prefsPanel.save')}
           </Button>
         </div>
       </div>
 
-      {rows.length === 0 && <p className="p-4 text-sm text-gray-500">No preferences yet.</p>}
+      {rows.length === 0 && <p className="p-4 text-sm text-gray-500">{t('prefsPanel.none')}</p>}
 
       <div className="divide-y">
         {rows.map((r, i) => {
@@ -176,7 +180,7 @@ export function PreferencesPanel({ profileId, fields }: Props) {
           return (
             <div key={i} className="p-4 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm text-gray-500">Partner’s</span>
+                <span className="text-sm text-gray-500">{t('prefsPanel.partners')}</span>
                 <select
                   className={sel}
                   value={r.field}
@@ -186,25 +190,25 @@ export function PreferencesPanel({ profileId, fields }: Props) {
                   }}
                 >
                   {searchable.map((f) => (
-                    <option key={f.key} value={f.key}>{f.label}</option>
+                    <option key={f.key} value={f.key}>{fieldLabel(f, locale)}</option>
                   ))}
                 </select>
                 <select className={sel} value={r.op} onChange={(e) => update(i, { op: e.target.value as ConditionOp })}>
                   {ops.map((o) => (
-                    <option key={o.op} value={o.op}>{o.label}</option>
+                    <option key={o.op} value={o.op}>{t(o.labelKey)}</option>
                   ))}
                 </select>
 
                 {showRel && (
                   <label className="flex items-center gap-1 text-sm">
                     <input type="checkbox" checked={r.rel} onChange={(e) => update(i, { rel: e.target.checked, a: '', b: '' })} />
-                    relative to their own
+                    {t('prefsPanel.relative')}
                   </label>
                 )}
                 {showRel && r.rel && (
                   <select className={sel} value={r.relField} onChange={(e) => update(i, { relField: e.target.value })}>
                     {numeric.map((f) => (
-                      <option key={f.key} value={f.key}>{f.label}</option>
+                      <option key={f.key} value={f.key}>{fieldLabel(f, locale)}</option>
                     ))}
                   </select>
                 )}
@@ -212,22 +216,22 @@ export function PreferencesPanel({ profileId, fields }: Props) {
                 {r.op !== 'exists' && kind === 'number' && (
                   <>
                     {r.rel && <span className="text-sm text-gray-500">+</span>}
-                    <Input className="w-24" type="number" placeholder={r.rel ? 'offset' : ''} value={r.a} onChange={(e) => update(i, { a: e.target.value })} />
+                    <Input className="w-24" dir="ltr" type="number" placeholder={r.rel ? t('prefsPanel.offset') : ''} value={r.a} onChange={(e) => update(i, { a: e.target.value })} />
                     {r.op === 'between' && (
                       <>
-                        <span className="text-sm text-gray-500">and{r.rel ? ' +' : ''}</span>
-                        <Input className="w-24" type="number" placeholder={r.rel ? 'offset' : ''} value={r.b} onChange={(e) => update(i, { b: e.target.value })} />
+                        <span className="text-sm text-gray-500">{t('prefsPanel.and')}{r.rel ? ' +' : ''}</span>
+                        <Input className="w-24" dir="ltr" type="number" placeholder={r.rel ? t('prefsPanel.offset') : ''} value={r.b} onChange={(e) => update(i, { b: e.target.value })} />
                       </>
                     )}
                   </>
                 )}
                 {r.op !== 'exists' && kind === 'text' && (
-                  <Input className="w-56" value={r.a} onChange={(e) => update(i, { a: e.target.value })} />
+                  <Input className="w-56" dir="auto" value={r.a} onChange={(e) => update(i, { a: e.target.value })} />
                 )}
                 {r.op !== 'exists' && kind === 'bool' && (
                   <select className={sel} value={r.a || 'true'} onChange={(e) => update(i, { a: e.target.value })}>
-                    <option value="true">yes</option>
-                    <option value="false">no</option>
+                    <option value="true">{t('profiles.yes')}</option>
+                    <option value="false">{t('profiles.no')}</option>
                   </select>
                 )}
                 {r.op === 'in' && (kind === 'choice' || kind === 'multi_choice') && (
@@ -246,7 +250,7 @@ export function PreferencesPanel({ profileId, fields }: Props) {
                 )}
                 {r.op === 'ne' && kind === 'choice' && (
                   <select className={sel} value={r.a} onChange={(e) => update(i, { a: e.target.value })}>
-                    <option value="">choose…</option>
+                    <option value="">{t('profiles.choose')}</option>
                     {opts.map((o) => (
                       <option key={o} value={o}>{o.replace(/_/g, ' ')}</option>
                     ))}
@@ -255,7 +259,7 @@ export function PreferencesPanel({ profileId, fields }: Props) {
                 <div className="flex-1" />
                 <button
                   className="p-1 rounded hover:bg-gray-100"
-                  aria-label="Remove preference"
+                  aria-label={t('prefsPanel.remove')}
                   onClick={() => {
                     setRows((rs) => rs.filter((_, j) => j !== i));
                     setDirty(true);
@@ -266,22 +270,22 @@ export function PreferencesPanel({ profileId, fields }: Props) {
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <select className={sel} value={r.strength} onChange={(e) => update(i, { strength: e.target.value as Strength })} title={STRENGTHS.find((s) => s.value === r.strength)?.help}>
+                <select className={sel} value={r.strength} onChange={(e) => update(i, { strength: e.target.value as Strength })} title={t(STRENGTHS.find((s) => s.value === r.strength)?.help ?? 'prefsPanel.strengthRequiredHelp')}>
                   {STRENGTHS.map((s) => (
-                    <option key={s.value} value={s.value}>{s.label}</option>
+                    <option key={s.value} value={s.value}>{t(s.label)}</option>
                   ))}
                 </select>
                 {(r.strength === 'preferred' || r.strength === 'flexible') && (
                   <label className="flex items-center gap-1 text-sm">
-                    importance
+                    {t('prefsPanel.importance')}
                     <select className={sel} value={r.importance} onChange={(e) => update(i, { importance: Number(e.target.value) })}>
                       {[1, 2, 3, 4, 5].map((n) => (
-                        <option key={n} value={n}>{n}</option>
+                        <option key={n} value={n}>{fmt.number(n)}</option>
                       ))}
                     </select>
                   </label>
                 )}
-                <Input className="flex-1 min-w-[12rem]" placeholder="Note for the matchmaker (optional)" value={r.note} onChange={(e) => update(i, { note: e.target.value })} />
+                <Input className="flex-1 min-w-[12rem]" dir="auto" placeholder={t('prefsPanel.notePlaceholder')} value={r.note} onChange={(e) => update(i, { note: e.target.value })} />
               </div>
             </div>
           );
@@ -290,33 +294,33 @@ export function PreferencesPanel({ profileId, fields }: Props) {
 
       <div className="p-4 border-t space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium">Check against a candidate</span>
+          <span className="text-sm font-medium">{t('prefsPanel.checkTitle')}</span>
           <select className={sel} value={candidateId} onChange={(e) => { setCandidateId(e.target.value); setOutcome(null); }}>
-            <option value="">choose…</option>
+            <option value="">{t('profiles.choose')}</option>
             {candidates.map((c) => (
-              <option key={c.id} value={c.id}>{c.name || 'Unnamed profile'}{c.age != null ? `, ${c.age}` : ''}</option>
+              <option key={c.id} value={c.id}><bdi>{c.name || t('profiles.unnamed')}</bdi>{c.age != null ? `${t('prefsPanel.ageSeparator')}${fmt.number(c.age)}` : ''}</option>
             ))}
           </select>
-          <Button variant="outline" size="sm" onClick={check} disabled={!candidateId || dirty}>Check</Button>
-          {dirty && <span className="text-xs text-gray-500">Save first to check the saved preferences.</span>}
+          <Button variant="outline" size="sm" onClick={check} disabled={!candidateId || dirty}>{t('prefsPanel.check')}</Button>
+          {dirty && <span className="text-xs text-gray-500">{t('prefsPanel.saveFirst')}</span>}
         </div>
 
         {outcome && (
           <div className="text-sm space-y-2">
             <div className="flex flex-wrap items-center gap-3">
               <span className={`px-2 py-0.5 rounded ${outcome.eligible ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                {outcome.eligible ? 'Eligible' : 'Excluded by a must-have or deal-breaker'}
+                {outcome.eligible ? t('prefsPanel.eligible') : t('prefsPanel.excluded')}
               </span>
-              <span>Score: {outcome.soft_score != null ? `${Math.round(outcome.soft_score)}/100` : 'n/a (nothing to score yet)'}</span>
-              {outcome.needs_info.length > 0 && <span className="text-amber-700">{outcome.needs_info.length} must-have(s) cannot be decided: information missing</span>}
+              <span>{outcome.soft_score != null ? t('prefsPanel.score', { score: fmt.number(Math.round(outcome.soft_score)) }) : t('prefsPanel.scoreNone')}</span>
+              {outcome.needs_info.length > 0 && <span className="text-amber-700">{t('prefsPanel.needsInfo', { count: fmt.number(outcome.needs_info.length) })}</span>}
             </div>
             <ul className="space-y-1">
               {outcome.results.map((res) => (
                 <li key={res.rule_id} className="flex items-center gap-2">
                   <span className={`px-1.5 py-0.5 rounded text-xs ${RESULT_STYLE[res.result]}`}>
-                    {res.result === 'unknown' ? 'unknown' : res.kind === 'hard' ? (res.result === 'true' ? 'ok' : 'violated') : res.result === 'true' ? 'met' : 'not met'}
+                    {res.result === 'unknown' ? t('ruleResult.unknown') : res.kind === 'hard' ? (res.result === 'true' ? t('ruleResult.ok') : t('ruleResult.violated')) : res.result === 'true' ? t('ruleResult.met') : t('ruleResult.notMet')}
                   </span>
-                  <span>{label(res.rule_id)}</span>
+                  <span dir="auto">{label(res.rule_id)}</span>
                 </li>
               ))}
             </ul>

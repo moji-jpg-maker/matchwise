@@ -1,3 +1,6 @@
+import type { Translate } from '@/lib/rules';
+import type { Formatters } from '@/i18n/format';
+
 // ISO 639-1 language codes supported by Whisper
 export const LANGUAGES = [
   { code: 'auto', name: 'Auto Detect (Original Language)' },
@@ -38,3 +41,14 @@ export const LANGUAGES = [
   { code: 'bg', name: 'Bulgarian' },
   { code: 'lt', name: 'Lithuanian' },
 ];
+
+export function getLanguageLabel(
+  language: { code: string; name: string },
+  t: Translate,
+  fmt: Formatters
+): string {
+  if (language.code === 'auto') return t('importDlg.langAuto');
+  if (language.code === 'auto-translate') return t('importDlg.langAutoTranslate');
+  const localized = fmt.languageName(language.code);
+  return localized === language.code ? language.name : localized;
+}

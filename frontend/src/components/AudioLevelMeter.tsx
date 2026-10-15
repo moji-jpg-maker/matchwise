@@ -61,7 +61,7 @@ export function AudioLevelMeter({
   const sizes = sizeClasses[size];
 
   return (
-    <div className={`flex items-center space-x-2 ${className}`}>
+    <div className={`flex items-center space-x-2 rtl:space-x-reverse ${className}`}>
       {/* Device activity indicator */}
       <div className={`w-2 h-2 rounded-full ${
         isActive ? 'bg-green-400 animate-pulse' : 'bg-gray-300'
@@ -98,7 +98,7 @@ export function AudioLevelMeter({
       </div>
 
       {/* Level percentage display */}
-      <div className={`${sizes.text} text-gray-600 font-mono min-w-[3rem] text-right`}>
+      <div className={`${sizes.text} text-gray-600 font-mono min-w-[3rem] text-end`}>
         {rmsPercent}%
       </div>
     </div>
@@ -130,7 +130,7 @@ export function CompactAudioLevelMeter({
   };
 
   return (
-    <div className={`flex items-center space-x-1 ${className}`}>
+    <div className={`flex items-center space-x-1 rtl:space-x-reverse ${className}`}>
       {/* Activity dot */}
       <div className={`w-1.5 h-1.5 rounded-full ${
         isActive ? 'bg-green-400' : 'bg-gray-300'

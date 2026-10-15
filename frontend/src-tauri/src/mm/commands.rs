@@ -1,8 +1,8 @@
 use super::repository::{MmRepository, StoredProfile};
 use crate::state::AppState;
 use matchmaking_core::{
-    conditions_to_expr, evaluate_preferences, preferences_to_ruleset, search, validate_preference, Condition, FieldDef,
-    FieldKind, MatchOutcome, Preference, Profile, Provenance, ValidationIssue, Value,
+    conditions_to_expr, evaluate_preferences, preferences_to_ruleset, search, validate_preference_for, Condition, FieldDef,
+    FieldKind, Locale, MatchOutcome, Preference, Profile, Provenance, ValidationIssue, Value,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -12,32 +12,53 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-fn validate_field_def(def: &FieldDef) -> Result<(), String> {
+fn locale_of(raw: &Option<String>) -> Locale {
+    Locale::parse_or_default(raw.as_deref().unwrap_or_default())
+}
+
+fn profile_not_found(locale: Locale) -> String {
+    locale.pick("Profile not found", "پروفایل پیدا نشد").to_string()
+}
+
+fn validate_field_def(def: &FieldDef, locale: Locale) -> Result<(), String> {
     let ok_key = !def.key.is_empty()
         && def.key.len() <= 64
         && def.key.chars().next().map_or(false, |c| c.is_ascii_lowercase())
         && def.key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     if !ok_key {
-        return Err("Field key must start with a lowercase letter and contain only a-z, 0-9 and _ (max 64 characters)".into());
+        return Err(locale
+            .pick(
+                "Field key must start with a lowercase letter and contain only a-z, 0-9 and _ (max 64 characters)",
+                "کلید فیلد باید با یک حرف کوچک انگلیسی شروع شود و فقط شامل a-z، ارقام 0-9 و _ باشد (حداکثر ۶۴ نویسه)",
+            )
+            .into());
     }
     if def.label.trim().is_empty() {
-        return Err("Field label is required".into());
+        return Err(locale.pick("Field label is required", "برچسب فیلد الزامی است").into());
     }
     if let FieldKind::Choice(o) | FieldKind::MultiChoice(o) = &def.kind {
         if o.is_empty() || o.iter().any(|s| s.trim().is_empty()) {
-            return Err("Choice fields need at least one non-empty option".into());
+            return Err(locale
+                .pick(
+                    "Choice fields need at least one non-empty option",
+                    "فیلدهای انتخابی دست‌کم به یک گزینهٔ غیرخالی نیاز دارند",
+                )
+                .into());
         }
     }
     Ok(())
 }
 
-fn parse_source(s: Option<&str>) -> Result<Provenance, String> {
+fn parse_source(s: Option<&str>, locale: Locale) -> Result<Provenance, String> {
     match s.unwrap_or("matchmaker") {
         "matchmaker" => Ok(Provenance::Matchmaker),
         "user" => Ok(Provenance::User),
         "questionnaire" => Ok(Provenance::Questionnaire),
         "ai_inferred" => Ok(Provenance::AiInferred),
-        other => Err(format!("unknown source '{other}'")),
+        other => Err(match locale {
+            Locale::En => format!("unknown source '{other}'"),
+            Locale::Fa => format!("منبع «{other}» ناشناخته است"),
+        }),
     }
 }
 
@@ -114,8 +135,8 @@ pub async fn mm_list_fields(state: State<'_, AppState>) -> Result<Vec<FieldDef>,
 }
 
 #[tauri::command]
-pub async fn mm_save_field(state: State<'_, AppState>, def: FieldDef) -> Result<(), String> {
-    validate_field_def(&def)?;
+pub async fn mm_save_field(state: State<'_, AppState>, def: FieldDef, locale: Option<String>) -> Result<(), String> {
+    validate_field_def(&def, locale_of(&locale))?;
     let pool = state.db_manager.pool();
     let order = MmRepository::next_field_order(pool).await.map_err(err)?;
     MmRepository::save_field(pool, &def, order).await.map_err(err)?;
@@ -127,19 +148,21 @@ pub async fn mm_save_field(state: State<'_, AppState>, def: FieldDef) -> Result<
 pub async fn mm_create_profile(
     state: State<'_, AppState>,
     values: Option<BTreeMap<String, Value>>,
+    locale: Option<String>,
 ) -> Result<ProfileView, String> {
+    let locale = locale_of(&locale);
     let pool = state.db_manager.pool();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let mut profile = Profile::new(uuid::Uuid::new_v4().to_string());
     let mut keys = vec![];
     for (k, v) in values.unwrap_or_default() {
-        reg.validate_value(&k, &v).map_err(|e| format!("{k}: {e}"))?;
+        reg.validate_value_for(&k, &v, locale).map_err(|e| format!("{k}: {e}"))?;
         profile.set(&k, v, Provenance::Matchmaker);
         keys.push(k);
     }
     MmRepository::insert_profile(pool, &profile).await.map_err(err)?;
     MmRepository::audit(pool, "create", "profile", &profile.id, Some(&keys.join(","))).await;
-    let sp = MmRepository::get_profile(pool, &profile.id).await.map_err(err)?.ok_or("profile vanished")?;
+    let sp = MmRepository::get_profile(pool, &profile.id).await.map_err(err)?.ok_or(locale.pick("Profile not found", "پروفایل پیدا نشد"))?;
     Ok(view(sp, &reg))
 }
 
@@ -157,16 +180,18 @@ pub async fn mm_update_profile_fields(
     id: String,
     values: BTreeMap<String, Option<Value>>,
     source: Option<String>,
+    locale: Option<String>,
 ) -> Result<UpdateResult, String> {
+    let locale = locale_of(&locale);
     let pool = state.db_manager.pool();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let source = parse_source(source.as_deref())?;
-    let mut sp = MmRepository::get_profile(pool, &id).await.map_err(err)?.ok_or("Profile not found")?;
+    let source = parse_source(source.as_deref(), locale)?;
+    let mut sp = MmRepository::get_profile(pool, &id).await.map_err(err)?.ok_or_else(|| profile_not_found(locale))?;
     let (mut changed, mut rejected) = (vec![], vec![]);
     for (k, v) in values {
         match v {
             Some(v) => {
-                reg.validate_value(&k, &v).map_err(|e| format!("{k}: {e}"))?;
+                reg.validate_value_for(&k, &v, locale).map_err(|e| format!("{k}: {e}"))?;
                 if sp.profile.set(&k, v, source) { changed.push(k) } else { rejected.push(k) }
             }
             None => {
@@ -184,15 +209,16 @@ pub async fn mm_update_profile_fields(
         MmRepository::update_profile_data(pool, &sp.profile).await.map_err(err)?;
         MmRepository::audit(pool, "update", "profile", &id, Some(&changed.join(","))).await;
     }
-    let sp = MmRepository::get_profile(pool, &id).await.map_err(err)?.ok_or("Profile not found")?;
+    let sp = MmRepository::get_profile(pool, &id).await.map_err(err)?.ok_or_else(|| profile_not_found(locale))?;
     Ok(UpdateResult { profile: view(sp, &reg), rejected })
 }
 
 #[tauri::command]
-pub async fn mm_get_profile(state: State<'_, AppState>, id: String) -> Result<ProfileView, String> {
+pub async fn mm_get_profile(state: State<'_, AppState>, id: String, locale: Option<String>) -> Result<ProfileView, String> {
+    let locale = locale_of(&locale);
     let pool = state.db_manager.pool();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let sp = MmRepository::get_profile(pool, &id).await.map_err(err)?.ok_or("Profile not found")?;
+    let sp = MmRepository::get_profile(pool, &id).await.map_err(err)?.ok_or_else(|| profile_not_found(locale))?;
     Ok(view(sp, &reg))
 }
 
@@ -213,14 +239,24 @@ pub async fn mm_search_profiles(
     conditions: Vec<Condition>,
     include_unknown: Option<bool>,
     include_deactivated: Option<bool>,
+    locale: Option<String>,
 ) -> Result<Vec<SearchResultRow>, String> {
+    let locale = locale_of(&locale);
     let pool = state.db_manager.pool();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     for c in &conditions {
         match reg.get(&c.field) {
-            None => return Err(format!("unknown field '{}'", c.field)),
+            None => {
+                return Err(match locale {
+                    Locale::En => format!("unknown field '{}'", c.field),
+                    Locale::Fa => format!("فیلد «{}» ناشناخته است", c.field),
+                })
+            }
             Some(d) if matches!(d.kind, FieldKind::Records(_)) => {
-                return Err(format!("'{}' cannot be used as a search condition", d.label))
+                return Err(match locale {
+                    Locale::En => format!("'{}' cannot be used as a search condition", d.label),
+                    Locale::Fa => format!("«{}» را نمی‌توان به‌عنوان شرط جست‌وجو به کار برد", d.label),
+                })
             }
             Some(_) => {}
         }
@@ -243,11 +279,16 @@ pub async fn mm_search_profiles(
 
 /// Deactivate (hide from search/matching, keep data) or reactivate a profile.
 #[tauri::command]
-pub async fn mm_set_profile_active(state: State<'_, AppState>, id: String, active: bool) -> Result<(), String> {
+pub async fn mm_set_profile_active(
+    state: State<'_, AppState>,
+    id: String,
+    active: bool,
+    locale: Option<String>,
+) -> Result<(), String> {
     let pool = state.db_manager.pool();
     let n = MmRepository::set_status(pool, &id, if active { "active" } else { "deactivated" }).await.map_err(err)?;
     if n == 0 {
-        return Err("Profile not found".into());
+        return Err(profile_not_found(locale_of(&locale)));
     }
     MmRepository::audit(pool, if active { "reactivate" } else { "deactivate" }, "profile", &id, None).await;
     Ok(())
@@ -255,11 +296,11 @@ pub async fn mm_set_profile_active(state: State<'_, AppState>, id: String, activ
 
 /// Permanently delete a profile.
 #[tauri::command]
-pub async fn mm_delete_profile(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn mm_delete_profile(state: State<'_, AppState>, id: String, locale: Option<String>) -> Result<(), String> {
     let pool = state.db_manager.pool();
     let n = MmRepository::delete_profile(pool, &id).await.map_err(err)?;
     if n == 0 {
-        return Err("Profile not found".into());
+        return Err(profile_not_found(locale_of(&locale)));
     }
     MmRepository::audit(pool, "delete", "profile", &id, None).await;
     Ok(())
@@ -279,12 +320,17 @@ pub async fn mm_save_preferences(
     state: State<'_, AppState>,
     profile_id: String,
     items: Vec<Preference>,
+    locale: Option<String>,
 ) -> Result<Vec<Preference>, String> {
+    let locale = locale_of(&locale);
     let pool = state.db_manager.pool();
     if items.len() > MAX_PREFERENCES {
-        return Err(format!("At most {MAX_PREFERENCES} preferences per profile"));
+        return Err(match locale {
+            Locale::En => format!("At most {MAX_PREFERENCES} preferences per profile"),
+            Locale::Fa => format!("حداکثر {} ترجیح برای هر پروفایل مجاز است", matchmaking_core::localize_digits(locale, &MAX_PREFERENCES.to_string())),
+        });
     }
-    MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+    MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or_else(|| profile_not_found(locale))?;
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let mut items = items;
     let mut seen = std::collections::BTreeSet::new();
@@ -293,9 +339,9 @@ pub async fn mm_save_preferences(
             p.id = uuid::Uuid::new_v4().to_string();
         }
         if !seen.insert(p.id.clone()) {
-            return Err("Duplicate preference id".into());
+            return Err(locale.pick("Duplicate preference id", "شناسهٔ ترجیح تکراری است").into());
         }
-        validate_preference(p, &reg)?;
+        validate_preference_for(p, &reg, locale)?;
     }
     preferences_to_ruleset(&items, 1)?; // must compile into rules
     MmRepository::save_preferences(pool, &profile_id, &items).await.map_err(err)?;
@@ -311,10 +357,15 @@ pub async fn mm_evaluate_preferences(
     state: State<'_, AppState>,
     profile_id: String,
     candidate_id: String,
+    locale: Option<String>,
 ) -> Result<MatchOutcome, String> {
+    let locale = locale_of(&locale);
     let pool = state.db_manager.pool();
-    let owner = MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or("Profile not found")?;
-    let cand = MmRepository::get_profile(pool, &candidate_id).await.map_err(err)?.ok_or("Candidate not found")?;
+    let owner = MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or_else(|| profile_not_found(locale))?;
+    let cand = MmRepository::get_profile(pool, &candidate_id)
+        .await
+        .map_err(err)?
+        .ok_or_else(|| locale.pick("Candidate not found", "نامزد پیدا نشد").to_string())?;
     let prefs = MmRepository::get_preferences(pool, &profile_id).await.map_err(err)?;
     evaluate_preferences(&prefs, &owner.profile, &cand.profile)
 }

@@ -3,8 +3,9 @@ use super::repository::MmRepository;
 use super::scoring_config_repo::ScoringConfigRepo;
 use crate::state::AppState;
 use matchmaking_core::{
-    apply_responses, can_record_outcome, can_record_responses, score_pair, validate_text, validate_transition, Interest, MatchStatus,
+    apply_responses, can_record_outcome, can_record_responses, score_pair, validate_text_for, validate_transition_for, Interest, MatchStatus,
     Outcome, RuleSet, ScoringConfig, TransitionContext, TransitionRequest,
+    describe_preference_for, localize_scorecard_json, FindingSource, Locale,
 };
 use serde::Serialize;
 use serde_json::Value as Json;
@@ -94,9 +95,36 @@ fn eligible_of(card: &Option<Json>) -> bool {
     card.as_ref().and_then(|c| c.get("eligible")).and_then(|e| e.as_bool()).unwrap_or(false)
 }
 
-async fn detail(pool: &SqlitePool, id: &str) -> Result<MatchDetail, String> {
-    let m = MatchRepo::get(pool, id).await.map_err(err)?.ok_or("Match not found")?;
-    let snap = MatchRepo::latest_snapshot(pool, id).await.map_err(err)?;
+async fn localized_scorecard(pool: &SqlitePool, card: &mut Json, a_id: &str, b_id: &str, locale: Locale) -> Result<(), String> {
+    if locale == Locale::En {
+        return Ok(());
+    }
+    let registry = MmRepository::registry(pool).await.map_err(err)?;
+    let mut texts: BTreeMap<(String, String), String> = BTreeMap::new();
+    for (who, profile_id) in [("a", a_id), ("b", b_id)] {
+        for preference in MmRepository::get_preferences(pool, profile_id).await.map_err(err)? {
+            if preference.note.as_deref().map_or(true, |note| note.trim().is_empty()) {
+                texts.insert((who.to_string(), preference.id.clone()), describe_preference_for(&preference, &registry, locale));
+            }
+        }
+    }
+    localize_scorecard_json(card, locale, &|source, id| {
+        let who = if source == FindingSource::PreferenceA { "a" } else { "b" };
+        texts.get(&(who.to_string(), id.to_string())).cloned()
+    });
+    Ok(())
+}
+
+fn locale_of(raw: &Option<String>) -> Locale {
+    Locale::parse_or_default(raw.as_deref().unwrap_or_default())
+}
+
+async fn detail(pool: &SqlitePool, id: &str, locale: Locale) -> Result<MatchDetail, String> {
+    let m = MatchRepo::get(pool, id).await.map_err(err)?.ok_or(locale.pick("Match not found", "تطبیق پیدا نشد"))?;
+    let mut snap = MatchRepo::latest_snapshot(pool, id).await.map_err(err)?;
+    if let Some(snapshot) = snap.as_mut() {
+        localized_scorecard(pool, &mut snapshot.scorecard, &m.profile_a, &m.profile_b, locale).await?;
+    }
     let rule_set_name = MmRepository::get_rule_set_name(pool, &m.rule_set_id).await.map_err(err)?;
     // The config that judged the newest snapshot, resolved from the snapshot's own record rather than from the rule
     // set: a stored scorecard names the version it was judged by, and that is what the view must report.
@@ -155,13 +183,16 @@ async fn detail(pool: &SqlitePool, id: &str) -> Result<MatchDetail, String> {
     })
 }
 
-fn check_weights(w: &BTreeMap<String, f64>) -> Result<(), String> {
+fn check_weights(w: &BTreeMap<String, f64>, locale: Locale) -> Result<(), String> {
     if w.len() > 30 {
-        return Err("Too many weight adjustments".into());
+        return Err(locale.pick("Too many weight adjustments", "تعداد تنظیم‌های وزن بیش از حد است").into());
     }
     for (k, v) in w {
         if k.trim().is_empty() || !v.is_finite() || !(0.0..=10.0).contains(v) {
-            return Err(format!("The weight for '{k}' must be between 0 and 10"));
+            return Err(match locale {
+                Locale::En => format!("The weight for '{k}' must be between 0 and 10"),
+                Locale::Fa => format!("وزن «{k}» باید بین ۰ و ۱۰ باشد"),
+            });
         }
     }
     Ok(())
@@ -198,8 +229,8 @@ async fn scorecard_json(
     serde_json::to_value(compute_scorecard(pool, set, config, a_id, b_id, weights).await?).map_err(err)
 }
 
-async fn require_match(pool: &SqlitePool, id: &str) -> Result<MatchRow, String> {
-    MatchRepo::get(pool, id).await.map_err(err)?.ok_or_else(|| "Match not found".to_string())
+async fn require_match(pool: &SqlitePool, id: &str, locale: Locale) -> Result<MatchRow, String> {
+    MatchRepo::get(pool, id).await.map_err(err)?.ok_or_else(|| locale.pick("Match not found", "تطبیق پیدا نشد").to_string())
 }
 
 /// Find the record for a pair of people, if one exists.
@@ -218,21 +249,22 @@ pub async fn mm_create_match(
     profile_b: String,
     rule_set_id: String,
     source_profile: Option<String>,
+    locale: Option<String>,
 ) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
     if profile_a == profile_b {
-        return Err("A match needs two different people".into());
+        return Err(locale_of(&locale).pick("A match needs two different people", "تطبیق به دو نفر متفاوت نیاز دارد").into());
     }
     if let Some(existing) = MatchRepo::find_by_pair(pool, &profile_a, &profile_b).await.map_err(err)? {
-        return detail(pool, &existing.id).await;
+        return detail(pool, &existing.id, locale_of(&locale)).await;
     }
     for id in [&profile_a, &profile_b] {
-        let p = MmRepository::get_profile(pool, id).await.map_err(err)?.ok_or("Profile not found")?;
+        let p = MmRepository::get_profile(pool, id).await.map_err(err)?.ok_or(locale_of(&locale).pick("Profile not found", "پروفایل پیدا نشد"))?;
         if p.status != "active" {
-            return Err("Deactivated profiles cannot be matched".into());
+            return Err(locale_of(&locale).pick("Deactivated profiles cannot be matched", "پروفایل‌های غیرفعال را نمی‌توان تطبیق داد").into());
         }
     }
-    let (_, set, _) = MmRepository::get_rule_set(pool, &rule_set_id, None).await.map_err(err)?.ok_or("Rule set not found")?;
+    let (_, set, _) = MmRepository::get_rule_set(pool, &rule_set_id, None).await.map_err(err)?.ok_or(locale_of(&locale).pick("Rule set not found", "مجموعه قوانین پیدا نشد"))?;
     let config = ScoringConfigRepo::effective_for_rule_set(pool, &rule_set_id).await.map_err(err)?;
     let (a, b) = super::match_repo::pair_key(&profile_a, &profile_b);
     let card = scorecard_json(pool, &set, &config.definition, &a, &b, &BTreeMap::new()).await?;
@@ -252,7 +284,7 @@ pub async fn mm_create_match(
     .await
     .map_err(err)?;
     MmRepository::audit(pool, "create_match", "match", &id, Some(status.as_str())).await;
-    detail(pool, &id).await
+    detail(pool, &id, locale_of(&locale)).await
 }
 
 #[derive(Serialize)]
@@ -315,8 +347,8 @@ pub async fn mm_match_counts(state: State<'_, AppState>) -> Result<BTreeMap<Stri
 }
 
 #[tauri::command]
-pub async fn mm_get_match(state: State<'_, AppState>, id: String) -> Result<MatchDetail, String> {
-    detail(state.db_manager.pool(), &id).await
+pub async fn mm_get_match(state: State<'_, AppState>, id: String, locale: Option<String>) -> Result<MatchDetail, String> {
+    detail(state.db_manager.pool(), &id, locale_of(&locale)).await
 }
 
 /// Move a match along its lifecycle. Approving or recommending a pair the rules exclude needs `override_reason`;
@@ -329,9 +361,10 @@ pub async fn mm_transition_match(
     reason: Option<String>,
     override_reason: Option<String>,
     outcome: Option<Outcome>,
+    locale: Option<String>,
 ) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    let m = require_match(pool, &id).await?;
+    let m = require_match(pool, &id, locale_of(&locale)).await?;
     let snap = MatchRepo::latest_snapshot(pool, &id).await.map_err(err)?;
     let ctx = TransitionContext {
         current: m.status,
@@ -341,7 +374,7 @@ pub async fn mm_transition_match(
         outcome: m.outcome,
     };
     let req = TransitionRequest { reason, override_reason, outcome };
-    let plan = validate_transition(&ctx, to_status, &req)?;
+    let plan = validate_transition_for(&ctx, to_status, &req, locale_of(&locale))?;
     let override_text = if plan.override_used { req.override_reason.as_ref().map(|s| s.trim().to_string()) } else { None };
     let detail_text = match (&plan.reason, &override_text) {
         (Some(r), Some(o)) => Some(format!("{r}\nOverride: {o}")),
@@ -353,20 +386,25 @@ pub async fn mm_transition_match(
     // The global audit log keeps the move, never the free text.
     MmRepository::audit(pool, "match_transition", "match", &id, Some(&format!("{} -> {}{}", m.status.as_str(), to_status.as_str(), if plan.override_used { " (override)" } else { "" }))).await;
     crate::telegram::notify::after_status_change(pool, &id, m.status, to_status).await;
-    detail(pool, &id).await
+    detail(pool, &id, locale_of(&locale)).await
 }
 
 /// Record one person's answer and let it move the match. Used by the app and by the Telegram bot, so both
 /// follow the same rules and trigger the same notifications. Returns the status before and after.
-pub(crate) async fn set_response_inner(pool: &SqlitePool, id: &str, side: &str, response: Interest) -> Result<(MatchStatus, MatchStatus), String> {
-    let m = require_match(pool, id).await?;
+pub(crate) async fn set_response_inner(pool: &SqlitePool, id: &str, side: &str, response: Interest, locale: Locale) -> Result<(MatchStatus, MatchStatus), String> {
+    let m = require_match(pool, id, locale).await?;
     if !can_record_responses(m.status) {
-        return Err("Responses can only be recorded while an introduction is in progress".into());
+        return Err(locale
+            .pick(
+                "Responses can only be recorded while an introduction is in progress",
+                "پاسخ‌ها را فقط در زمانی می‌توان ثبت کرد که معرفی در جریان است",
+            )
+            .into());
     }
     let (a, b) = match side {
         "a" => (response, m.b_response),
         "b" => (m.a_response, response),
-        _ => return Err("side must be 'a' or 'b'".into()),
+        _ => return Err(locale.pick("side must be 'a' or 'b'", "سمت باید «a» یا «b» باشد").into()),
     };
     let next = apply_responses(m.status, a, b);
     MatchRepo::record_responses(pool, id, m.status, a, b, next, side).await.map_err(err)?;
@@ -380,62 +418,67 @@ pub(crate) async fn set_response_inner(pool: &SqlitePool, id: &str, side: &str, 
 
 /// Record whether a person is interested in the introduction. Two "yes" answers advance the match; a "no" ends it.
 #[tauri::command]
-pub async fn mm_set_response(state: State<'_, AppState>, id: String, side: String, response: Interest) -> Result<MatchDetail, String> {
+pub async fn mm_set_response(state: State<'_, AppState>, id: String, side: String, response: Interest, locale: Option<String>) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    set_response_inner(pool, &id, &side, response).await?;
-    detail(pool, &id).await
+    set_response_inner(pool, &id, &side, response, locale_of(&locale)).await?;
+    detail(pool, &id, locale_of(&locale)).await
 }
 
 /// Record what happened (first conversation, first meeting, relationship formed, ...). This is the label later learning uses.
 #[tauri::command]
-pub async fn mm_record_outcome(state: State<'_, AppState>, id: String, outcome: Outcome) -> Result<MatchDetail, String> {
+pub async fn mm_record_outcome(state: State<'_, AppState>, id: String, outcome: Outcome, locale: Option<String>) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    let m = require_match(pool, &id).await?;
+    let m = require_match(pool, &id, locale_of(&locale)).await?;
     if !can_record_outcome(m.status) {
-        return Err("An outcome can be recorded once contact has been exchanged, or when a person declined".into());
+        return Err(locale_of(&locale)
+            .pick(
+                "An outcome can be recorded once contact has been exchanged, or when a person declined",
+                "نتیجه را می‌توان پس از تبادل اطلاعات تماس یا هنگام انصراف یکی از طرفین ثبت کرد",
+            )
+            .into());
     }
     MatchRepo::set_outcome(pool, &id, outcome).await.map_err(err)?;
     MmRepository::audit(pool, "match_outcome", "match", &id, Some(outcome.as_str())).await;
-    detail(pool, &id).await
+    detail(pool, &id, locale_of(&locale)).await
 }
 
 /// Mark that more information is needed (with what is needed), or clear the hold with `reason = None`.
 #[tauri::command]
-pub async fn mm_set_match_hold(state: State<'_, AppState>, id: String, reason: Option<String>) -> Result<MatchDetail, String> {
+pub async fn mm_set_match_hold(state: State<'_, AppState>, id: String, reason: Option<String>, locale: Option<String>) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    let m = require_match(pool, &id).await?;
+    let m = require_match(pool, &id, locale_of(&locale)).await?;
     let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
-    validate_text("The request", &reason)?;
+    validate_text_for(locale_of(&locale).pick("The request", "درخواست"), &reason, locale_of(&locale))?;
     if m.status.is_terminal() && reason.is_some() {
-        return Err("This match is finished".into());
+        return Err(locale_of(&locale).pick("This match is finished", "این تطبیق پایان یافته است").into());
     }
     MatchRepo::set_hold(pool, &id, reason.as_deref()).await.map_err(err)?;
     MmRepository::audit(pool, if reason.is_some() { "match_info_requested" } else { "match_hold_cleared" }, "match", &id, None).await;
-    detail(pool, &id).await
+    detail(pool, &id, locale_of(&locale)).await
 }
 
 #[tauri::command]
-pub async fn mm_add_match_note(state: State<'_, AppState>, id: String, text: String) -> Result<MatchDetail, String> {
+pub async fn mm_add_match_note(state: State<'_, AppState>, id: String, text: String, locale: Option<String>) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    require_match(pool, &id).await?;
+    require_match(pool, &id, locale_of(&locale)).await?;
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Err("A note cannot be empty".into());
+        return Err(locale_of(&locale).pick("A note cannot be empty", "یادداشت نمی‌تواند خالی باشد").into());
     }
-    validate_text("The note", &Some(text.clone()))?;
+    validate_text_for(locale_of(&locale).pick("The note", "یادداشت"), &Some(text.clone()), locale_of(&locale))?;
     MatchRepo::add_note(pool, &id, &text).await.map_err(err)?;
     MmRepository::audit(pool, "match_note", "match", &id, None).await;
-    detail(pool, &id).await
+    detail(pool, &id, locale_of(&locale)).await
 }
 
 /// Hide a match from the default lists (it is kept, and can be shown again).
 #[tauri::command]
-pub async fn mm_set_match_hidden(state: State<'_, AppState>, id: String, hidden: bool) -> Result<MatchDetail, String> {
+pub async fn mm_set_match_hidden(state: State<'_, AppState>, id: String, hidden: bool, locale: Option<String>) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    require_match(pool, &id).await?;
+    require_match(pool, &id, locale_of(&locale)).await?;
     MatchRepo::set_hidden(pool, &id, hidden).await.map_err(err)?;
     MmRepository::audit(pool, if hidden { "match_hidden" } else { "match_unhidden" }, "match", &id, None).await;
-    detail(pool, &id).await
+    detail(pool, &id, locale_of(&locale)).await
 }
 
 /// Re-score a match with the current profile data and store a new snapshot (the old ones are kept). With
@@ -447,18 +490,19 @@ pub async fn mm_rescore_match(
     id: String,
     use_latest_rule_set: Option<bool>,
     weights: Option<BTreeMap<String, f64>>,
+    locale: Option<String>,
 ) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    let m = require_match(pool, &id).await?;
+    let m = require_match(pool, &id, locale_of(&locale)).await?;
     if m.status.is_terminal() {
-        return Err("This match is finished".into());
+        return Err(locale_of(&locale).pick("This match is finished", "این تطبیق پایان یافته است").into());
     }
     let version = if use_latest_rule_set.unwrap_or(false) { None } else { Some(m.rule_set_version) };
-    let (meta, set, _) = MmRepository::get_rule_set(pool, &m.rule_set_id, version).await.map_err(err)?.ok_or("Rule set version not found")?;
+    let (meta, set, _) = MmRepository::get_rule_set(pool, &m.rule_set_id, version).await.map_err(err)?.ok_or(locale_of(&locale).pick("Rule set version not found", "نسخه مجموعه قوانین پیدا نشد"))?;
     let config = ScoringConfigRepo::effective_for_rule_set(pool, &m.rule_set_id).await.map_err(err)?;
     let new_weights = match &weights {
         Some(w) => {
-            check_weights(w)?;
+            check_weights(w, locale_of(&locale))?;
             w.clone()
         }
         None => m.weight_overrides.clone(),
@@ -480,5 +524,5 @@ pub async fn mm_rescore_match(
     .await
     .map_err(err)?;
     MmRepository::audit(pool, "match_rescore", "match", &id, Some(trigger)).await;
-    detail(pool, &id).await
+    detail(pool, &id, locale_of(&locale)).await
 }

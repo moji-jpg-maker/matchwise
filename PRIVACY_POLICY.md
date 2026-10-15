@@ -1,5 +1,7 @@
 # Matchwise Privacy Notice (DRAFT -- needs review before any real use)
 
+> Persian translation pending: this notice is English only. The in-app cloud AI consent text has a Persian draft (`CLOUD_CONSENT_TEXT_FA`) that needs legal review.
+
 This draft describes how the code currently behaves. It is not legal advice; have it reviewed for your jurisdiction
 (for example GDPR if you handle EU residents' data) before collecting real profiles.
 

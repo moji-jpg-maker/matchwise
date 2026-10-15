@@ -266,3 +266,22 @@ fn analysis_drops_statements_that_try_to_decide_a_score_or_status() {
     assert_eq!(an.questions_to_discuss.len(), 1, "an ordinary question is not a verdict");
     assert_eq!(an.dropped.len(), 3, "{:?}", an.dropped);
 }
+
+#[test]
+fn prompts_ask_for_persian_free_text_without_changing_the_contract() {
+    let reg = default_registry();
+    let text = "She does not smoke.";
+    let (english_system, english_user) = extraction_prompt(&reg, text, false);
+    let (persian_system, persian_user) = extraction_prompt_for(&reg, text, false, Locale::Fa);
+    assert_eq!(english_system, persian_system);
+    assert_eq!(extraction_prompt_for(&reg, text, false, Locale::En).1, english_user);
+    assert!(!english_user.contains("Persian"));
+    assert!(persian_user.starts_with(&english_user[..english_user.find("<data>").unwrap() - 2]));
+    assert!(persian_user.contains("Persian") && persian_user.contains("never translate evidence"));
+    assert!(persian_user.ends_with("<data>\nShe does not smoke.\n</data>"));
+    let facts = vec![AiFact { id: "A1".into(), source: "A".into(), text: "Person A smokes".into() }];
+    let (_, english_pair) = pair_prompt(&facts);
+    let (_, persian_pair) = pair_prompt_for(&facts, Locale::Fa);
+    assert!(!english_pair.contains("Persian") && persian_pair.contains("Persian"));
+    assert!(persian_pair.contains("A1: Person A smokes"));
+}

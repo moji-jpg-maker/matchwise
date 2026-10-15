@@ -11,6 +11,7 @@ export type FieldKind =
 export interface FieldDef {
   key: string;
   label: string;
+  label_fa?: string;
   kind: FieldKind;
   sensitive: boolean;
   required: boolean;

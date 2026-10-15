@@ -5,6 +5,7 @@
 //! (the downloader, the file on disk and the sidecar), through `summary_model`.
 
 use crate::summary::summary_engine::{self, models::SamplingParams, GenerationOverrides};
+use matchmaking_core::Locale;
 use serde::Serialize;
 use std::path::Path;
 
@@ -43,6 +44,18 @@ const MODELS: &[MmModelDef] = &[
         recommended: false,
     },
 ];
+
+impl MmModelDef {
+    pub fn note_for(&self, locale: Locale) -> &'static str {
+        match (self.id, locale) {
+            (_, Locale::En) => self.note,
+            ("qwen3.5:4b", Locale::Fa) => "بهترین کیفیت میان مدل‌های داخلی برای خواندن متن آزاد و توضیح تطبیق‌ها. حدود ۴ گیگابایت حافظه لازم دارد.",
+            ("qwen3.5:2b", Locale::Fa) => "سبک‌تر و سریع‌تر، با جزئیات بیشتری که از قلم می‌افتد. برای رایانه‌های معمولی.",
+            ("gemma3:4b", Locale::Fa) => "جایگزینی با اندازه‌ای مشابه. آن را روی یادداشت‌های خودتان با Qwen مقایسه کنید.",
+            (_, Locale::Fa) => self.note,
+        }
+    }
+}
 
 pub fn models() -> &'static [MmModelDef] {
     MODELS
@@ -143,6 +156,20 @@ pub struct ProviderInfo {
     pub model_from_list: bool,
 }
 
+pub fn provider_catalog_for(locale: Locale) -> Vec<ProviderInfo> {
+    let mut catalog = provider_catalog();
+    for info in catalog.iter_mut() {
+        info.label = match info.id {
+            "none" => locale.pick("Off", "خاموش"),
+            "builtin" => locale.pick("Built-in (on this computer)", "داخلی (روی این رایانه)"),
+            "ollama" => locale.pick("Ollama (local)", "Ollama (محلی)"),
+            "openai_compatible" => locale.pick("OpenAI-compatible", "سازگار با OpenAI"),
+            _ => info.label,
+        };
+    }
+    catalog
+}
+
 pub fn provider_catalog() -> Vec<ProviderInfo> {
     vec![
         ProviderInfo { id: "none", label: "Off", default_url: "", always_local: true, needs_key: false, model_from_list: false },
@@ -182,24 +209,31 @@ pub struct ReadinessInput<'a> {
 }
 
 pub fn readiness(i: &ReadinessInput<'_>) -> (Readiness, Option<String>) {
-    use super::settings::{check_gate, BUILTIN};
+    readiness_for(i, Locale::En)
+}
+
+pub fn readiness_for(i: &ReadinessInput<'_>, locale: Locale) -> (Readiness, Option<String>) {
+    use super::settings::{check_gate_for, gate_block, GateBlock, BUILTIN};
     if i.config.provider == "none" {
-        return (Readiness::Disabled, Some("AI is turned off. Choose a provider on the AI page.".into()));
+        return (Readiness::Disabled, Some(locale.pick("AI is turned off. Choose a provider on the AI page.", "هوش مصنوعی خاموش است. در صفحه هوش مصنوعی یک ارائه‌دهنده انتخاب کنید.").into()));
     }
-    match check_gate(i.config, i.consent, i.has_key) {
+    match check_gate_for(i.config, i.consent, i.has_key, locale) {
         Err(reason) => {
-            let kind = if reason.contains("API key") {
-                Readiness::NeedsKey
-            } else if reason.contains("cloud notice") {
-                Readiness::NeedsConsent
-            } else {
-                Readiness::Invalid
+            let kind = match gate_block(i.config, i.consent, i.has_key) {
+                Some(GateBlock::NeedsKey) => Readiness::NeedsKey,
+                Some(GateBlock::NeedsConsent) => Readiness::NeedsConsent,
+                Some(GateBlock::Off) => Readiness::Disabled,
+                _ => Readiness::Invalid,
             };
             (kind, Some(reason))
         }
-        Ok(_) if i.config.provider == BUILTIN && i.model_file != Some(ModelFile::Downloaded) => {
-            (Readiness::ModelMissing, Some(format!("The model '{}' is not downloaded yet. Download it on the AI page.", i.config.model)))
-        }
+        Ok(_) if i.config.provider == BUILTIN && i.model_file != Some(ModelFile::Downloaded) => (
+            Readiness::ModelMissing,
+            Some(match locale {
+                Locale::En => format!("The model '{}' is not downloaded yet. Download it on the AI page.", i.config.model),
+                Locale::Fa => format!("مدل «{}» هنوز دانلود نشده است. آن را در صفحه هوش مصنوعی دانلود کنید.", i.config.model),
+            }),
+        ),
         Ok(_) => (Readiness::Ready, None),
     }
 }

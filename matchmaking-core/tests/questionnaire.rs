@@ -166,3 +166,57 @@ fn instruments_round_trip_as_json_and_starter_personality_rules_are_off() {
     let card = score_pair(&set, &ScoringConfig::default(), &a, &Profile::new("b"), &[], &[]).unwrap();
     assert_eq!(card.dimensions.iter().find(|d| d.key == "personality").unwrap().status, DimStatus::NotAssessed);
 }
+
+#[test]
+fn evidence_and_dimension_labels_follow_the_locale() {
+    use matchmaking_core::{dimension_catalog, Locale};
+    assert_eq!(EvidenceLevel::MatchmakerDefined.label_for(Locale::En), EvidenceLevel::MatchmakerDefined.label());
+    assert!(EvidenceLevel::AdaptedInstrument.label_for(Locale::Fa).contains("اقتباس"));
+    for def in dimension_catalog() {
+        assert_ne!(def.label_for(Locale::Fa), def.label, "{}", def.key);
+        assert!(!def.description_for(Locale::Fa).is_empty());
+    }
+}
+
+#[test]
+fn scorecard_findings_are_described_in_persian_for_starter_rules() {
+    use matchmaking_core::{default_ruleset, localize_scorecard_json, Locale, Profile, ScoringConfig};
+    let set = default_ruleset();
+    let mut card = score_pair(&set, &ScoringConfig::default(), &Profile::new("a"), &Profile::new("b"), &[], &[]).unwrap();
+    let mut json = serde_json::to_value(&card).unwrap();
+    card.localize(Locale::Fa, &|_, _| None);
+    localize_scorecard_json(&mut json, Locale::Fa, &|_, _| None);
+    let all = card.strengths.iter().chain(&card.concerns).chain(&card.unknowns).collect::<Vec<_>>();
+    assert!(!all.is_empty());
+    assert!(all.iter().all(|f| f.description.chars().any(|c| ('\u{0600}'..='\u{06FF}').contains(&c))));
+    assert_eq!(json["dimensions"][0]["label"], "سن و مرحله زندگی");
+    assert_eq!(card.dimensions[0].label, "سن و مرحله زندگی");
+}
+
+#[test]
+fn answer_and_instrument_errors_follow_the_locale() {
+    use matchmaking_core::{validate_answer_for, validate_instrument_for, FieldRegistry, Locale};
+    let mini = builtin_mini_ipip();
+    let range = validate_answer_for(&mini, "q1", 99, Locale::Fa).unwrap_err();
+    assert!(range.contains("پاسخ باید بین"));
+    assert!(validate_answer_for(&mini, "nope", 3, Locale::En).unwrap_err().contains("There is no item"));
+    let mut broken = mini.clone();
+    broken.items.clear();
+    let issues = validate_instrument_for(&broken, &FieldRegistry::default(), Locale::Fa);
+    assert!(issues.iter().any(|issue| issue.contains("گویه")));
+}
+
+#[test]
+fn the_shipped_instrument_reads_in_persian_without_changing_its_structure() {
+    let english = builtin_mini_ipip();
+    let persian = english.clone().localized(matchmaking_core::Locale::Fa);
+    assert_ne!(persian.name, english.name);
+    assert_eq!(persian.key, english.key);
+    assert_eq!(persian.items.len(), english.items.len());
+    for (fa_item, en_item) in persian.items.iter().zip(&english.items) {
+        assert_ne!(fa_item.text, en_item.text);
+        assert_eq!((&fa_item.id, &fa_item.subscale, fa_item.reverse), (&en_item.id, &en_item.subscale, en_item.reverse));
+    }
+    assert!(persian.subscales.iter().all(|sub| sub.label.chars().any(|ch| ('\u{0600}'..='\u{06FF}').contains(&ch))));
+    assert_eq!(english.clone().localized(matchmaking_core::Locale::En).name, english.name);
+}

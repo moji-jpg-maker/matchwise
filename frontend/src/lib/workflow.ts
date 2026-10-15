@@ -1,4 +1,6 @@
 import { Interest, MatchEvent, MatchStatus, Outcome } from '@/types/matchmaking';
+import type { Translate } from '@/lib/conditions';
+import type { MessageKey } from '@/i18n/types';
 
 export const PIPELINE: MatchStatus[] = [
   'identified',
@@ -15,62 +17,61 @@ export const PIPELINE: MatchStatus[] = [
 
 export const TERMINAL: MatchStatus[] = ['closed', 'rejected', 'declined', 'stopped'];
 
-export const STATUS_LABEL: Record<MatchStatus, string> = {
-  identified: 'Identified',
-  recommended: 'Recommended',
-  reviewed: 'Reviewed',
-  approved: 'Approved',
-  introduction_proposed: 'Introduction proposed',
-  both_interested: 'Both interested',
-  contact_exchanged: 'Contact exchanged',
-  conversation: 'Conversation',
-  meeting: 'Meeting',
-  feedback: 'Feedback',
-  closed: 'Closed',
-  rejected: 'Rejected',
-  declined: 'Declined',
-  stopped: 'Stopped',
+export const STATUS_KEY: Record<MatchStatus, MessageKey> = {
+  identified: 'workflow.status.identified',
+  recommended: 'workflow.status.recommended',
+  reviewed: 'workflow.status.reviewed',
+  approved: 'workflow.status.approved',
+  introduction_proposed: 'workflow.status.introduction_proposed',
+  both_interested: 'workflow.status.both_interested',
+  contact_exchanged: 'workflow.status.contact_exchanged',
+  conversation: 'workflow.status.conversation',
+  meeting: 'workflow.status.meeting',
+  feedback: 'workflow.status.feedback',
+  closed: 'workflow.status.closed',
+  rejected: 'workflow.status.rejected',
+  declined: 'workflow.status.declined',
+  stopped: 'workflow.status.stopped',
 };
 
-/** Label for the button that moves a match to `to`. */
-export const ACTION_LABEL: Record<MatchStatus, string> = {
-  identified: 'Mark as identified',
-  recommended: 'Recommend',
-  reviewed: 'Mark as reviewed',
-  approved: 'Approve',
-  introduction_proposed: 'Propose introduction',
-  both_interested: 'Both interested',
-  contact_exchanged: 'Contact exchanged',
-  conversation: 'Conversation started',
-  meeting: 'Meeting held',
-  feedback: 'Feedback received',
-  closed: 'Close match',
-  rejected: 'Reject',
-  declined: 'Declined by a person',
-  stopped: 'Stopped',
+export const ACTION_KEY: Record<MatchStatus, MessageKey> = {
+  identified: 'workflow.action.identified',
+  recommended: 'workflow.action.recommended',
+  reviewed: 'workflow.action.reviewed',
+  approved: 'workflow.action.approved',
+  introduction_proposed: 'workflow.action.introduction_proposed',
+  both_interested: 'workflow.action.both_interested',
+  contact_exchanged: 'workflow.action.contact_exchanged',
+  conversation: 'workflow.action.conversation',
+  meeting: 'workflow.action.meeting',
+  feedback: 'workflow.action.feedback',
+  closed: 'workflow.action.closed',
+  rejected: 'workflow.action.rejected',
+  declined: 'workflow.action.declined',
+  stopped: 'workflow.action.stopped',
 };
 
 /** Moves that end or undo the match are styled as cautions. */
 export const NEGATIVE: MatchStatus[] = ['rejected', 'declined', 'stopped'];
 
-export const OUTCOME_LABEL: Record<Outcome, string> = {
-  interested: 'Interested',
-  not_interested: 'Not interested',
-  first_conversation: 'First conversation',
-  first_meeting: 'First meeting',
-  continued: 'Continued',
-  stopped: 'Stopped',
-  relationship_formed: 'Relationship formed',
-  married: 'Married',
-  unknown: 'Unknown',
+export const OUTCOME_KEY: Record<Outcome, MessageKey> = {
+  interested: 'workflow.outcome.interested',
+  not_interested: 'workflow.outcome.not_interested',
+  first_conversation: 'workflow.outcome.first_conversation',
+  first_meeting: 'workflow.outcome.first_meeting',
+  continued: 'workflow.outcome.continued',
+  stopped: 'workflow.outcome.stopped',
+  relationship_formed: 'workflow.outcome.relationship_formed',
+  married: 'workflow.outcome.married',
+  unknown: 'workflow.outcome.unknown',
 };
 
-export const OUTCOMES = Object.keys(OUTCOME_LABEL) as Outcome[];
+export const OUTCOMES = Object.keys(OUTCOME_KEY) as Outcome[];
 
-export const INTEREST_LABEL: Record<Interest, string> = {
-  unknown: 'No answer yet',
-  interested: 'Interested',
-  not_interested: 'Not interested',
+export const INTEREST_KEY: Record<Interest, MessageKey> = {
+  unknown: 'workflow.interest.unknown',
+  interested: 'workflow.interest.interested',
+  not_interested: 'workflow.interest.not_interested',
 };
 
 export const STATUS_CHIP: Record<MatchStatus, string> = {
@@ -90,33 +91,36 @@ export const STATUS_CHIP: Record<MatchStatus, string> = {
   stopped: 'bg-orange-100 text-orange-800',
 };
 
-const label = (s: string | null) => (s ? STATUS_LABEL[s as MatchStatus] ?? s : '');
+const statusText = (t: Translate, status: string | null) =>
+  status ? (status in STATUS_KEY ? t(STATUS_KEY[status as MatchStatus]) : status) : '';
 
 /** Plain-language line for the history timeline. Free-text reasons are shown separately, under the line. */
-export function describeEvent(e: MatchEvent): string {
+export function describeEvent(e: MatchEvent, t: Translate): string {
   switch (e.kind) {
     case 'created':
-      return `Tracked as ${label(e.to_status).toLowerCase()}`;
+      return t('workflow.event.created', { status: statusText(t, e.to_status) });
     case 'status_changed':
-      return `${label(e.from_status)} → ${label(e.to_status)}${e.actor === 'system' ? ' (automatic)' : ''}`;
+      return `${statusText(t, e.from_status)} → ${statusText(t, e.to_status)}${e.actor === 'system' ? t('workflow.event.automatic') : ''}`;
     case 'response_recorded':
-      return 'Interest recorded';
-    case 'outcome_recorded':
-      return `Outcome recorded: ${OUTCOME_LABEL[(e.detail ?? 'unknown') as Outcome] ?? e.detail}`;
+      return t('workflow.event.responseRecorded');
+    case 'outcome_recorded': {
+      const outcome = e.detail ?? 'unknown';
+      return t('workflow.event.outcomeRecorded', { outcome: outcome in OUTCOME_KEY ? t(OUTCOME_KEY[outcome as Outcome]) : outcome });
+    }
     case 'info_requested':
-      return 'More information requested';
+      return t('workflow.event.infoRequested');
     case 'hold_cleared':
-      return 'Information request cleared';
+      return t('workflow.event.holdCleared');
     case 'note_added':
-      return 'Note added';
+      return t('workflow.event.noteAdded');
     case 'hidden':
-      return 'Hidden from lists';
+      return t('workflow.event.hidden');
     case 'unhidden':
-      return 'Shown in lists again';
+      return t('workflow.event.unhidden');
     case 'rescore':
-      return 'Re-scored';
+      return t('workflow.event.rescore');
     case 'weights_adjusted':
-      return 'Dimension weights adjusted and re-scored';
+      return t('workflow.event.weightsAdjusted');
     default:
       return e.kind;
   }

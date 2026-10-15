@@ -1,8 +1,9 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
+import { useT } from '@/i18n';
 
 /**
  * Ollama download state synchronized with backend
@@ -34,6 +35,9 @@ export const useOllamaDownload = () => {
 };
 
 export function OllamaDownloadProvider({ children }: { children: React.ReactNode }) {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map());
   const [downloadingModels, setDownloadingModels] = useState<Set<string>>(new Set());
 
@@ -78,8 +82,8 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
             const { modelName } = event.payload;
             console.log(`✅ [OllamaDownloadContext] Download complete for ${modelName}`);
 
-            toast.success(`Model ${modelName} downloaded!`, {
-              description: 'Model is now ready to use',
+            toast.success(tRef.current('ollamaDl.ready', { model: modelName }), {
+              description: tRef.current('ollamaDl.readyDesc'),
               duration: 4000
             });
 
@@ -106,7 +110,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
             const { modelName, error } = event.payload;
             console.error(`❌ [OllamaDownloadContext] Download error for ${modelName}:`, error);
 
-            toast.error(`Download failed: ${modelName}`, {
+            toast.error(tRef.current('ollamaDl.failed', { model: modelName }), {
               description: error,
               duration: 6000
             });

@@ -5,6 +5,7 @@
 //! kept in the credential store, HTTPS, and sensitive fields stay out unless the consent says otherwise.
 
 use super::backend::{is_local_url, Kind};
+use matchmaking_core::Locale;
 use crate::telegram::repo::{delete_meta, get_meta, set_meta};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -15,6 +16,15 @@ pub const CLOUD_CONSENT_TEXT: &str = "Using a cloud AI provider sends text about
 Matchwise removes names, phone numbers, e-mail addresses, @handles, links and long numbers before sending, and never sends contact details, full names, dates of birth or (unless you tick the box below) sensitive fields such as health, finances or religion. \
 This cleaning is automatic and not perfect: free text can still identify someone.\n\n\
 Only agree if you have a lawful basis and your candidates' consent to this kind of processing, and if you accept the provider's own terms. You can withdraw this consent at any time.";
+
+pub const CLOUD_CONSENT_TEXT_FA: &str = "استفاده از یک ارائه‌دهنده هوش مصنوعی ابری یعنی متن مربوط به داوطلبان شما به سرورهای آن ارائه‌دهنده ارسال می‌شود؛ بیرون از این رایانه و خارج از کنترل Matchwise.\n\n\
+Matchwise پیش از ارسال، نام‌ها، شماره‌های تلفن، نشانی‌های ایمیل، شناسه‌های @، پیوندها و عددهای طولانی را حذف می‌کند و هرگز اطلاعات تماس، نام کامل، تاریخ تولد یا (مگر اینکه کادر زیر را علامت بزنید) فیلدهای حساس مانند سلامت، وضعیت مالی یا دین را نمی‌فرستد. \
+این پاک‌سازی خودکار است و بی‌نقص نیست: متن آزاد هنوز می‌تواند هویت کسی را آشکار کند.\n\n\
+فقط در صورتی موافقت کنید که مبنای قانونی و رضایت داوطلبان خود را برای این نوع پردازش دارید و شرایط خود ارائه‌دهنده را می‌پذیرید. هر زمان می‌توانید این رضایت را پس بگیرید.";
+
+pub fn consent_text_for(locale: Locale) -> &'static str {
+    locale.pick(CLOUD_CONSENT_TEXT, CLOUD_CONSENT_TEXT_FA)
+}
 
 fn yes() -> bool {
     true
@@ -65,6 +75,10 @@ pub fn kind_of(provider: &str) -> Option<Kind> {
 pub const BUILTIN: &str = "builtin";
 
 pub fn validate_config(c: &AiConfig) -> Result<(), String> {
+    validate_config_for(c, Locale::En)
+}
+
+pub fn validate_config_for(c: &AiConfig, locale: Locale) -> Result<(), String> {
     if c.provider == "none" {
         return Ok(());
     }
@@ -72,21 +86,32 @@ pub fn validate_config(c: &AiConfig) -> Result<(), String> {
         return if super::models::find_model(&c.model).is_some() {
             Ok(())
         } else {
-            Err(format!("'{}' is not a built-in model MatchWise offers", c.model))
+            Err(match locale {
+                Locale::En => format!("'{}' is not a built-in model MatchWise offers", c.model),
+                Locale::Fa => format!("«{}» مدل داخلی ارائه‌شده در MatchWise نیست", c.model),
+            })
         };
     }
     if kind_of(&c.provider).is_none() {
-        return Err(format!("Unknown AI provider '{}'", c.provider));
+        return Err(match locale {
+            Locale::En => format!("Unknown AI provider '{}'", c.provider),
+            Locale::Fa => format!("ارائه‌دهنده هوش مصنوعی «{}» ناشناخته است", c.provider),
+        });
     }
     if c.model.trim().is_empty() || c.model.len() > 100 {
-        return Err("Enter the model name (for example the one shown by `ollama list`)".into());
+        return Err(locale.pick("Enter the model name (for example the one shown by `ollama list`)", "نام مدل را وارد کنید (مثلاً همان که `ollama list` نشان می‌دهد)").into());
     }
     let url = c.base_url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) || url.contains(char::is_whitespace) || url.len() > 300 {
-        return Err("The address must start with http:// or https:// and contain no spaces".into());
+        return Err(locale.pick("The address must start with http:// or https:// and contain no spaces", "نشانی باید با http:// یا https:// شروع شود و فاصله نداشته باشد").into());
     }
     if !is_local_url(url) && url.starts_with("http://") {
-        return Err("A provider outside this computer must use https:// so data and keys are encrypted in transit".into());
+        return Err(locale
+            .pick(
+                "A provider outside this computer must use https:// so data and keys are encrypted in transit",
+                "ارائه‌دهنده‌ای بیرون از این رایانه باید از https:// استفاده کند تا داده‌ها و کلیدها هنگام انتقال رمزگذاری شوند",
+            )
+            .into());
     }
     Ok(())
 }
@@ -170,10 +195,41 @@ pub struct Mode {
 
 /// May a model be used right now, and under which privacy mode? Checked before every call.
 pub fn check_gate(config: &AiConfig, consent: Option<&CloudConsent>, has_key: bool) -> Result<Mode, String> {
+    check_gate_for(config, consent, has_key, Locale::En)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateBlock {
+    Off,
+    Invalid,
+    NeedsConsent,
+    NeedsKey,
+}
+
+pub fn gate_block(config: &AiConfig, consent: Option<&CloudConsent>, has_key: bool) -> Option<GateBlock> {
     if config.provider == "none" {
-        return Err("AI is turned off. Choose a provider on the AI page.".into());
+        return Some(GateBlock::Off);
     }
-    validate_config(config)?;
+    if validate_config(config).is_err() {
+        return Some(GateBlock::Invalid);
+    }
+    if config.provider == BUILTIN || is_local_url(&config.base_url) {
+        return None;
+    }
+    if consent.filter(|c| c.version == CLOUD_CONSENT_VERSION).is_none() {
+        return Some(GateBlock::NeedsConsent);
+    }
+    if config.provider == "anthropic" && !has_key {
+        return Some(GateBlock::NeedsKey);
+    }
+    None
+}
+
+pub fn check_gate_for(config: &AiConfig, consent: Option<&CloudConsent>, has_key: bool, locale: Locale) -> Result<Mode, String> {
+    if config.provider == "none" {
+        return Err(locale.pick("AI is turned off. Choose a provider on the AI page.", "هوش مصنوعی خاموش است. در صفحه هوش مصنوعی یک ارائه‌دهنده انتخاب کنید.").into());
+    }
+    validate_config_for(config, locale)?;
     if config.provider == BUILTIN {
         return Ok(Mode { is_cloud: false, include_sensitive: config.local_include_sensitive });
     }
@@ -182,9 +238,12 @@ pub fn check_gate(config: &AiConfig, consent: Option<&CloudConsent>, has_key: bo
     }
     let consent = consent
         .filter(|c| c.version == CLOUD_CONSENT_VERSION)
-        .ok_or("This provider is outside your computer. Read and accept the cloud notice on the AI page first.")?;
+        .ok_or(locale.pick(
+            "This provider is outside your computer. Read and accept the cloud notice on the AI page first.",
+            "این ارائه‌دهنده بیرون از رایانه شماست. ابتدا اطلاعیه ابری را در صفحه هوش مصنوعی بخوانید و بپذیرید.",
+        ))?;
     if config.provider == "anthropic" && !has_key {
-        return Err("Add the provider's API key on the AI page first.".into());
+        return Err(locale.pick("Add the provider's API key on the AI page first.", "ابتدا کلید API ارائه‌دهنده را در صفحه هوش مصنوعی اضافه کنید.").into());
     }
     Ok(Mode { is_cloud: true, include_sensitive: consent.include_sensitive })
 }

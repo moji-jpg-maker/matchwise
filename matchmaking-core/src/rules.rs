@@ -176,6 +176,20 @@ fn eval_rule(set: &RuleSet, r: &Rule, a: &Profile, b: &Profile, direction: Direc
     make(true, res, trace)
 }
 
+impl MatchOutcome {
+    /// Rewrites the descriptions of the starter rules for `locale`; rules the matchmaker wrote are left as typed.
+    pub fn localize(&mut self, locale: crate::locale::Locale) {
+        if locale == crate::locale::Locale::En {
+            return;
+        }
+        for result in &mut self.results {
+            if let Some(text) = crate::defaults::default_rule_description_fa(&result.rule_id) {
+                result.description = text.to_string();
+            }
+        }
+    }
+}
+
 fn label(r: &RuleResult) -> String {
     match r.direction {
         Direction::Pair => r.rule_id.clone(),

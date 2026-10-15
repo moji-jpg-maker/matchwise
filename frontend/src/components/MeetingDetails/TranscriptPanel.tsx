@@ -5,6 +5,7 @@ import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { useMemo } from 'react';
+import { useT } from '@/i18n';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -49,18 +50,19 @@ export function TranscriptPanel({
   meetingFolderPath,
   onRefetchTranscripts,
 }: TranscriptPanelProps) {
+  const t = useT();
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
     if (usePagination && segments) {
       return segments;
     }
     // Convert transcripts to segments for virtualization
-    return transcripts.map(t => ({
-      id: t.id,
-      timestamp: t.audio_start_time ?? 0,
-      endTime: t.audio_end_time,
-      text: t.text,
-      confidence: t.confidence,
+    return transcripts.map(transcript => ({
+      id: transcript.id,
+      timestamp: transcript.audio_start_time ?? 0,
+      endTime: transcript.audio_end_time,
+      text: transcript.text,
+      confidence: transcript.confidence,
     }));
   }, [transcripts, usePagination, segments]);
 
@@ -101,7 +103,8 @@ export function TranscriptPanel({
       {!isRecording && convertedSegments.length > 0 && (
         <div className="p-1 border-t border-gray-200">
           <textarea
-            placeholder="Add context for AI summary. For example people involved, meeting overview, objective etc..."
+            placeholder={t('meetingPage.promptPlaceholder')}
+            dir="auto"
             className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm min-h-[80px] resize-y"
             value={customPrompt}
             onChange={(e) => onPromptChange(e.target.value)}

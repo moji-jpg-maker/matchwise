@@ -1,31 +1,34 @@
+import { fieldLabel } from '@/lib/field-label';
+import type { Locale } from '@/i18n/types';
+import type { MessageKey } from '@/i18n';
 import { Condition, ConditionOp, FieldDef, Preference, Strength, Value, kindName } from '@/types/matchmaking';
 
 /** Operators offered per field kind (records fields are never searchable). */
-export const OPS_BY_KIND: Record<string, { op: ConditionOp; label: string }[]> = {
+export const OPS_BY_KIND: Record<string, { op: ConditionOp; labelKey: MessageKey }[]> = {
   number: [
-    { op: 'between', label: 'between' },
-    { op: 'eq', label: '=' },
-    { op: 'ge', label: '≥' },
-    { op: 'le', label: '≤' },
-    { op: 'exists', label: 'is filled in' },
+    { op: 'between', labelKey: 'conditions.opBetween' },
+    { op: 'eq', labelKey: 'conditions.opEq' },
+    { op: 'ge', labelKey: 'conditions.opGe' },
+    { op: 'le', labelKey: 'conditions.opLe' },
+    { op: 'exists', labelKey: 'conditions.opExists' },
   ],
   text: [
-    { op: 'eq', label: 'is' },
-    { op: 'ne', label: 'is not' },
-    { op: 'exists', label: 'is filled in' },
+    { op: 'eq', labelKey: 'conditions.opIs' },
+    { op: 'ne', labelKey: 'conditions.opIsNot' },
+    { op: 'exists', labelKey: 'conditions.opExists' },
   ],
   bool: [
-    { op: 'eq', label: 'is' },
-    { op: 'exists', label: 'is filled in' },
+    { op: 'eq', labelKey: 'conditions.opIs' },
+    { op: 'exists', labelKey: 'conditions.opExists' },
   ],
   choice: [
-    { op: 'in', label: 'is any of' },
-    { op: 'ne', label: 'is not' },
-    { op: 'exists', label: 'is filled in' },
+    { op: 'in', labelKey: 'conditions.opAnyOf' },
+    { op: 'ne', labelKey: 'conditions.opIsNot' },
+    { op: 'exists', labelKey: 'conditions.opExists' },
   ],
   multi_choice: [
-    { op: 'in', label: 'includes any of' },
-    { op: 'exists', label: 'is filled in' },
+    { op: 'in', labelKey: 'conditions.opIncludesAny' },
+    { op: 'exists', labelKey: 'conditions.opExists' },
   ],
 };
 
@@ -44,13 +47,16 @@ export function defaultOp(def: FieldDef): ConditionOp {
 }
 
 /** Turn a form row into a condition, or return a message describing what is missing. */
-export function toCondition(r: Row, def: FieldDef): Condition | string {
+export type Translate = (key: MessageKey, params?: Record<string, string | number>) => string;
+
+export function toCondition(r: Row, def: FieldDef, t: Translate, locale: Locale = 'en'): Condition | string {
+  const fieldName = fieldLabel(def, locale);
   const kind = kindName(def.kind);
   if (r.op === 'exists') return { field: r.field, op: 'exists' };
   if (kind === 'number') {
-    if (r.a.trim() === '' || Number.isNaN(Number(r.a))) return `${def.label}: enter a number`;
+    if (r.a.trim() === '' || Number.isNaN(Number(r.a))) return t('conditions.enterNumber', { field: fieldName });
     if (r.op === 'between') {
-      if (r.b.trim() === '' || Number.isNaN(Number(r.b))) return `${def.label}: enter an upper bound`;
+      if (r.b.trim() === '' || Number.isNaN(Number(r.b))) return t('conditions.enterUpper', { field: fieldName });
       return { field: r.field, op: 'between', value: Number(r.a), value2: Number(r.b) };
     }
     return { field: r.field, op: r.op, value: Number(r.a) };
@@ -58,13 +64,13 @@ export function toCondition(r: Row, def: FieldDef): Condition | string {
   if (kind === 'bool') return { field: r.field, op: r.op, value: r.a === 'true' };
   if (kind === 'choice' || kind === 'multi_choice') {
     if (r.op === 'in') {
-      if (r.multi.length === 0) return `${def.label}: pick at least one option`;
+      if (r.multi.length === 0) return t('conditions.pickAtLeastOne', { field: fieldName });
       return { field: r.field, op: 'in', value: r.multi };
     }
-    if (!r.a) return `${def.label}: pick an option`;
+    if (!r.a) return t('conditions.pickOption', { field: fieldName });
     return { field: r.field, op: r.op, value: r.a };
   }
-  if (r.a.trim() === '') return `${def.label}: enter a value`;
+  if (r.a.trim() === '') return t('conditions.enterValue', { field: fieldName });
   return { field: r.field, op: r.op, value: r.a.trim() as Value };
 }
 
@@ -80,11 +86,12 @@ export interface PrefRow extends Row {
 
 const toNum = (s: string) => (s.trim() === '' ? 0 : Number(s));
 
-export function toPreference(r: PrefRow, def: FieldDef): Preference | string {
+export function toPreference(r: PrefRow, def: FieldDef, t: Translate, locale: Locale = 'en'): Preference | string {
+  const fieldName = fieldLabel(def, locale);
   let condition: Condition | string;
   if (r.rel && kindName(def.kind) === 'number' && r.op !== 'exists') {
     if (Number.isNaN(toNum(r.a)) || (r.op === 'between' && (r.b.trim() === '' || Number.isNaN(Number(r.b)))))
-      return `${def.label}: offsets must be numbers`;
+      return t('conditions.offsetsNumbers', { field: fieldName });
     condition =
       r.op === 'between'
         ? {
@@ -95,7 +102,7 @@ export function toPreference(r: PrefRow, def: FieldDef): Preference | string {
           }
         : { field: r.field, op: r.op, value_rel: { field: r.relField, offset: toNum(r.a) } };
   } else {
-    condition = toCondition(r, def);
+    condition = toCondition(r, def, t, locale);
   }
   if (typeof condition === 'string') return condition;
   return { id: r.id, condition, strength: r.strength, importance: r.importance, note: r.note.trim() || null };
@@ -137,16 +144,16 @@ export function fromPreference(p: Preference, defs: Record<string, FieldDef>): P
 }
 
 /** Human-readable one-line description, used when showing evaluation results. */
-export function describePreference(p: Preference, defs: Record<string, FieldDef>): string {
+export function describePreference(p: Preference, defs: Record<string, FieldDef>, t: Translate, locale: Locale = 'en'): string {
   const c = p.condition;
-  const label = defs[c.field]?.label ?? c.field;
-  const opLabel = (OPS_BY_KIND[defs[c.field] ? kindName(defs[c.field].kind) : 'text'] ?? []).find((o) => o.op === c.op)?.label ?? c.op;
+  const label = defs[c.field] ? fieldLabel(defs[c.field], locale) : c.field;
+  const opLabel = (OPS_BY_KIND[defs[c.field] ? kindName(defs[c.field].kind) : 'text'] ?? []).find((o) => o.op === c.op)?.labelKey ?? null;
+  const opText = opLabel ? t(opLabel) : c.op;
   const rel = (r: { field: string; offset: number }) =>
-    `own ${defs[r.field]?.label ?? r.field}${r.offset === 0 ? '' : r.offset > 0 ? ` + ${r.offset}` : ` − ${Math.abs(r.offset)}`}`;
+    `${t('conditions.own', { field: defs[r.field] ? fieldLabel(defs[r.field], locale) : r.field })}${r.offset === 0 ? '' : r.offset > 0 ? ` + ${r.offset}` : ` − ${Math.abs(r.offset)}`}`;
   const val = (v: Value | null | undefined) => (Array.isArray(v) ? (v as string[]).join(', ') : String(v ?? ''));
   const lo = c.value_rel ? rel(c.value_rel) : val(c.value);
   const hi = c.value2_rel ? rel(c.value2_rel) : val(c.value2);
-  const body = c.op === 'exists' ? '' : c.op === 'between' ? ` ${lo} and ${hi}` : ` ${lo}`;
-  const prefix = p.strength === 'deal_breaker' ? 'Deal-breaker: partner’s ' : 'Partner’s ';
-  return `${prefix}${label} ${opLabel}${body}`;
+  const body = c.op === 'exists' ? '' : c.op === 'between' ? ` ${lo} ${t('conditions.and')} ${hi}` : ` ${lo}`;
+  return t(p.strength === 'deal_breaker' ? 'conditions.dealBreaker' : 'conditions.partner', { field: label, operator: opText, body });
 }

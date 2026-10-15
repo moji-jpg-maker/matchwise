@@ -8,9 +8,14 @@ use super::service::{self, Decision, ExtractionView, PairView, Session};
 use super::settings::{self, AiConfig, CloudConsent, Mode};
 use crate::mm::repository::MmRepository;
 use crate::state::AppState;
+use matchmaking_core::Locale;
 use serde::Serialize;
 use sqlx::SqlitePool;
 use tauri::State;
+
+fn locale_of(raw: Option<String>) -> Locale {
+    Locale::parse_or_default(raw.as_deref().unwrap_or_default())
+}
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -18,15 +23,19 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 
 /// Gate, key and backend for one request. Shared with the bulk-intake commands, which read the gate once per run.
 pub(crate) async fn prepare(pool: &SqlitePool) -> Result<(AiConfig, Mode, Box<dyn LlmBackend>), String> {
+    prepare_for(pool, Locale::En).await
+}
+
+pub(crate) async fn prepare_for(pool: &SqlitePool, locale: Locale) -> Result<(AiConfig, Mode, Box<dyn LlmBackend>), String> {
     let config = settings::load_config(pool).await?;
     let consent = settings::load_consent(pool).await?;
     let key = settings::load_key().ok().flatten().map(|(k, _)| k);
-    let mode = settings::check_gate(&config, consent.as_ref(), key.is_some())?;
+    let mode = settings::check_gate_for(&config, consent.as_ref(), key.is_some(), locale)?;
     if config.provider == settings::BUILTIN {
         let backend: Box<dyn LlmBackend> = Box::new(BuiltinBackend::new(config.model.trim()));
         return Ok((config, mode, backend));
     }
-    let kind = settings::kind_of(&config.provider).ok_or("Unknown AI provider")?;
+    let kind = settings::kind_of(&config.provider).ok_or_else(|| locale.pick("Unknown AI provider", "ارائه‌دهندهٔ هوش مصنوعی ناشناخته است").to_string())?;
     // a key is only ever sent to the provider it was stored for, and never to a local server that does not need one
     let key = if config.provider == "ollama" { None } else { key };
     let backend: Box<dyn LlmBackend> = Box::new(HttpBackend::new(kind, &config.base_url, &config.model, key));
@@ -61,13 +70,13 @@ pub struct BuiltinModelView {
     pub size_mb: u64,
 }
 
-fn builtin_models_view() -> Vec<BuiltinModelView> {
+fn builtin_models_view(locale: Locale) -> Vec<BuiltinModelView> {
     models::models()
         .iter()
         .map(|m| BuiltinModelView {
             id: m.id,
             label: m.label,
-            note: m.note,
+            note: m.note_for(locale),
             recommended: m.recommended,
             file: super::backend::app_data_dir().map_or(ModelFile::NotDownloaded, |d| models::model_file_state(d, m)),
             size_mb: crate::summary::summary_engine::get_model_by_name(m.summary_model).map_or(0, |x| x.size_mb as u64),
@@ -75,23 +84,23 @@ fn builtin_models_view() -> Vec<BuiltinModelView> {
         .collect()
 }
 
-async fn settings_view(pool: &SqlitePool) -> Result<AiSettingsView, String> {
+async fn settings_view(pool: &SqlitePool, locale: Locale) -> Result<AiSettingsView, String> {
     let config = settings::load_config(pool).await?;
     let consent = settings::load_consent(pool).await?;
     let key = settings::load_key().ok().flatten();
-    let gate = settings::check_gate(&config, consent.as_ref(), key.is_some());
+    let gate = settings::check_gate_for(&config, consent.as_ref(), key.is_some(), locale);
     let model_file = models::find_model(&config.model).and_then(|m| super::backend::app_data_dir().map(|d| models::model_file_state(d, m)));
-    let (readiness, reason) = models::readiness(&ReadinessInput { config: &config, consent: consent.as_ref(), has_key: key.is_some(), model_file });
+    let (readiness, reason) = models::readiness_for(&ReadinessInput { config: &config, consent: consent.as_ref(), has_key: key.is_some(), model_file }, locale);
     Ok(AiSettingsView {
         is_cloud: config.provider != "none" && config.provider != settings::BUILTIN && !is_local_url(&config.base_url),
         has_key: key.is_some(),
         key_source: key.as_ref().map(|(_, s)| s.to_string()),
         consent,
-        consent_text: settings::CLOUD_CONSENT_TEXT.to_string(),
+        consent_text: settings::consent_text_for(locale).to_string(),
         consent_version: settings::CLOUD_CONSENT_VERSION,
-        default_urls: models::provider_catalog().iter().map(|p| (p.id.to_string(), p.default_url.to_string())).collect(),
-        catalog: models::provider_catalog(),
-        builtin_models: builtin_models_view(),
+        default_urls: models::provider_catalog_for(locale).iter().map(|p| (p.id.to_string(), p.default_url.to_string())).collect(),
+        catalog: models::provider_catalog_for(locale),
+        builtin_models: builtin_models_view(locale),
         ready: readiness == Readiness::Ready,
         not_ready_reason: reason,
         readiness,
@@ -101,8 +110,8 @@ async fn settings_view(pool: &SqlitePool) -> Result<AiSettingsView, String> {
 }
 
 #[tauri::command]
-pub async fn ai_get_settings(state: State<'_, AppState>) -> Result<AiSettingsView, String> {
-    settings_view(state.db_manager.pool()).await
+pub async fn ai_get_settings(state: State<'_, AppState>, locale: Option<String>) -> Result<AiSettingsView, String> {
+    settings_view(state.db_manager.pool(), locale_of(locale)).await
 }
 
 #[tauri::command]
@@ -112,38 +121,42 @@ pub async fn ai_save_settings(
     model: String,
     base_url: Option<String>,
     local_include_sensitive: bool,
+    locale: Option<String>,
 ) -> Result<AiSettingsView, String> {
+    let locale = locale_of(locale);
     let pool = state.db_manager.pool();
     let provider = models::normalize_provider(&provider);
     let base = base_url.map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).unwrap_or_else(|| settings::default_base_url(&provider).to_string());
     let config = AiConfig { provider, model: model.trim().to_string(), base_url: base, local_include_sensitive };
-    settings::validate_config(&config)?;
+    settings::validate_config_for(&config, locale)?;
     settings::save_config(pool, &config).await?;
     MmRepository::audit(pool, "ai_settings_changed", "settings", "ai", Some(&config.provider)).await;
-    settings_view(pool).await
+    settings_view(pool, locale).await
 }
 
 #[tauri::command]
-pub async fn ai_save_key(state: State<'_, AppState>, key: String) -> Result<AiSettingsView, String> {
+pub async fn ai_save_key(state: State<'_, AppState>, key: String, locale: Option<String>) -> Result<AiSettingsView, String> {
+    let locale = locale_of(locale);
     let key = key.trim().to_string();
     if key.is_empty() || key.len() > 400 || key.contains(char::is_whitespace) {
-        return Err("That does not look like an API key".into());
+        return Err(locale.pick("That does not look like an API key", "این شبیه یک کلید API نیست").to_string());
     }
     settings::store_key(&key)?;
     MmRepository::audit(state.db_manager.pool(), "ai_key_saved", "settings", "ai", None).await;
-    settings_view(state.db_manager.pool()).await
+    settings_view(state.db_manager.pool(), locale).await
 }
 
 #[tauri::command]
-pub async fn ai_clear_key(state: State<'_, AppState>) -> Result<AiSettingsView, String> {
+pub async fn ai_clear_key(state: State<'_, AppState>, locale: Option<String>) -> Result<AiSettingsView, String> {
     settings::delete_key();
     MmRepository::audit(state.db_manager.pool(), "ai_key_removed", "settings", "ai", None).await;
-    settings_view(state.db_manager.pool()).await
+    settings_view(state.db_manager.pool(), locale_of(locale)).await
 }
 
 /// Record (or withdraw) the organization's consent to send redacted text to a provider outside this computer.
 #[tauri::command]
-pub async fn ai_set_cloud_consent(state: State<'_, AppState>, accept: bool, include_sensitive: bool) -> Result<AiSettingsView, String> {
+pub async fn ai_set_cloud_consent(state: State<'_, AppState>, accept: bool, include_sensitive: bool, locale: Option<String>) -> Result<AiSettingsView, String> {
+    let locale = locale_of(locale);
     let pool = state.db_manager.pool();
     if accept {
         settings::save_consent(pool, include_sensitive).await?;
@@ -152,7 +165,7 @@ pub async fn ai_set_cloud_consent(state: State<'_, AppState>, accept: bool, incl
         settings::clear_consent(pool).await?;
         MmRepository::audit(pool, "ai_cloud_consent_withdrawn", "settings", "ai", None).await;
     }
-    settings_view(pool).await
+    settings_view(pool, locale).await
 }
 
 #[derive(Serialize)]
@@ -163,9 +176,9 @@ pub struct TestResult {
 
 /// A harmless fixed request to check the address, key and model name.
 #[tauri::command]
-pub async fn ai_test_connection(state: State<'_, AppState>) -> Result<TestResult, String> {
+pub async fn ai_test_connection(state: State<'_, AppState>, locale: Option<String>) -> Result<TestResult, String> {
     let pool = state.db_manager.pool();
-    let (config, mode, backend) = prepare(pool).await?;
+    let (config, mode, backend) = prepare_for(pool, locale_of(locale)).await?;
     let (system, user) = ("Reply with one JSON object.".to_string(), "Return {\"ok\": true}".to_string());
     let res = backend.complete(&system, &user, true).await;
     let _ = repo::log_call(pool, "test", &config.provider, &config.model, mode, None, None, system.len() + user.len(), res.as_ref().map(|r| r.len()).unwrap_or(0), res.is_ok(), res.as_ref().err().map(|e| e.to_string()).as_deref(), None).await;
@@ -182,18 +195,20 @@ pub struct PromptPreview {
 }
 
 #[tauri::command]
-pub async fn ai_preview_extraction(state: State<'_, AppState>, profile_id: String, extra_text: Option<String>) -> Result<PromptPreview, String> {
+pub async fn ai_preview_extraction(state: State<'_, AppState>, profile_id: String, extra_text: Option<String>, locale: Option<String>) -> Result<PromptPreview, String> {
     let pool = state.db_manager.pool();
-    let (_, mode, _) = prepare(pool).await?;
-    let (system, user) = service::preview_extraction(pool, &profile_id, extra_text.as_deref(), mode).await?;
+    let locale = locale_of(locale);
+    let (_, mode, _) = prepare_for(pool, locale).await?;
+    let (system, user) = service::preview_extraction(pool, &profile_id, extra_text.as_deref(), mode, locale).await?;
     Ok(PromptPreview { system, user, is_cloud: mode.is_cloud, include_sensitive: mode.include_sensitive })
 }
 
 #[tauri::command]
-pub async fn ai_extract_profile(state: State<'_, AppState>, profile_id: String, extra_text: Option<String>) -> Result<ExtractionView, String> {
+pub async fn ai_extract_profile(state: State<'_, AppState>, profile_id: String, extra_text: Option<String>, locale: Option<String>) -> Result<ExtractionView, String> {
     let pool = state.db_manager.pool();
-    let (config, mode, backend) = prepare(pool).await?;
-    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode };
+    let locale = locale_of(locale);
+    let (config, mode, backend) = prepare_for(pool, locale).await?;
+    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale };
     service::extract_profile(pool, &s, &profile_id, extra_text.as_deref()).await
 }
 
@@ -204,29 +219,32 @@ pub async fn ai_pending_suggestions(state: State<'_, AppState>, profile_id: Stri
 
 /// `decision` is "accept", "accept_verified" or "reject".
 #[tauri::command]
-pub async fn ai_decide_suggestion(state: State<'_, AppState>, id: i64, decision: String) -> Result<(), String> {
+pub async fn ai_decide_suggestion(state: State<'_, AppState>, id: i64, decision: String, locale: Option<String>) -> Result<(), String> {
+    let locale = locale_of(locale);
     let d = match decision.as_str() {
         "accept" => Decision::Accept,
         "accept_verified" => Decision::AcceptVerified,
         "reject" => Decision::Reject,
-        _ => return Err("decision must be accept, accept_verified or reject".into()),
+        _ => return Err(locale.pick("decision must be accept, accept_verified or reject", "تصمیم باید accept، accept_verified یا reject باشد").to_string()),
     };
-    service::decide_suggestion(state.db_manager.pool(), id, d).await
+    service::decide_suggestion(state.db_manager.pool(), id, d, locale).await
 }
 
 #[tauri::command]
-pub async fn ai_preview_match(state: State<'_, AppState>, match_id: String) -> Result<PromptPreview, String> {
+pub async fn ai_preview_match(state: State<'_, AppState>, match_id: String, locale: Option<String>) -> Result<PromptPreview, String> {
     let pool = state.db_manager.pool();
-    let (_, mode, _) = prepare(pool).await?;
-    let (system, user) = service::preview_pair(pool, &match_id, mode).await?;
+    let locale = locale_of(locale);
+    let (_, mode, _) = prepare_for(pool, locale).await?;
+    let (system, user) = service::preview_pair(pool, &match_id, mode, locale).await?;
     Ok(PromptPreview { system, user, is_cloud: mode.is_cloud, include_sensitive: mode.include_sensitive })
 }
 
 #[tauri::command]
-pub async fn ai_analyse_match(state: State<'_, AppState>, match_id: String) -> Result<PairView, String> {
+pub async fn ai_analyse_match(state: State<'_, AppState>, match_id: String, locale: Option<String>) -> Result<PairView, String> {
     let pool = state.db_manager.pool();
-    let (config, mode, backend) = prepare(pool).await?;
-    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode };
+    let locale = locale_of(locale);
+    let (config, mode, backend) = prepare_for(pool, locale).await?;
+    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale };
     service::analyse_pair(pool, &s, &match_id).await
 }
 

@@ -30,6 +30,8 @@ pub struct User {
     pub username: Option<String>,
     #[serde(default)]
     pub first_name: Option<String>,
+    #[serde(default)]
+    pub language_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

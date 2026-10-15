@@ -3,8 +3,8 @@ use super::repository::{MmRepository, RuleSetRow};
 use super::scoring_config_repo::ScoringConfigRepo;
 use crate::state::AppState;
 use matchmaking_core::{
-    dimension_catalog, evaluate_match, score_pair, validate_ruleset, Direction, DimensionDef, Finding, HardStatus, MatchEvaluation,
-    RuleIssue, RuleSet, ScoreCard,
+    dimension_catalog, evaluate_match, score_pair, validate_ruleset_for, Direction, DimensionDef, Finding, HardStatus, MatchEvaluation,
+    Locale, RuleIssue, RuleSet, ScoreCard,
 };
 use serde::Serialize;
 use tauri::State;
@@ -94,9 +94,10 @@ pub async fn mm_get_rule_set(state: State<'_, AppState>, id: String, version: Op
 
 /// Live validation for the editor: nothing is saved.
 #[tauri::command]
-pub async fn mm_validate_rule_set(state: State<'_, AppState>, definition: RuleSet) -> Result<Vec<RuleIssue>, String> {
+pub async fn mm_validate_rule_set(state: State<'_, AppState>, definition: RuleSet, locale: Option<String>) -> Result<Vec<RuleIssue>, String> {
     let reg = MmRepository::registry(state.db_manager.pool()).await.map_err(err)?;
-    Ok(validate_ruleset(&definition, &reg))
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
+    Ok(validate_ruleset_for(&definition, &reg, locale))
 }
 
 /// Create a rule set (`id` = None) or save a new version of an existing one. Refuses to save anything
@@ -110,14 +111,16 @@ pub async fn mm_save_rule_set(
     definition: RuleSet,
     scoring_config_id: Option<String>,
     note: Option<String>,
+    locale: Option<String>,
 ) -> Result<RuleSetView, String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
     let pool = state.db_manager.pool();
     let name = name.trim().to_string();
     let description = description.unwrap_or_default();
     let mut definition = definition;
     definition.name = name.clone();
     let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let issues = validate_ruleset(&definition, &reg);
+    let issues = validate_ruleset_for(&definition, &reg, locale);
     if !issues.is_empty() {
         let shown: Vec<String> = issues
             .iter()
@@ -190,8 +193,9 @@ pub struct MatchView {
 }
 
 #[tauri::command]
-pub async fn mm_dimension_catalog() -> Result<Vec<DimensionDef>, String> {
-    Ok(dimension_catalog())
+pub async fn mm_dimension_catalog(locale: Option<String>) -> Result<Vec<DimensionDef>, String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
+    Ok(dimension_catalog().into_iter().map(|def| def.localized(locale)).collect())
 }
 
 #[tauri::command]
@@ -201,6 +205,7 @@ pub async fn mm_score_pair(
     profile_a: String,
     profile_b: String,
     version: Option<u32>,
+    locale: Option<String>,
 ) -> Result<MatchView, String> {
     let pool = state.db_manager.pool();
     let (_, set, _) = MmRepository::get_rule_set(pool, &rule_set_id, version).await.map_err(err)?.ok_or("Rule set not found")?;
@@ -209,9 +214,26 @@ pub async fn mm_score_pair(
     let a_prefs = MmRepository::get_preferences(pool, &profile_a).await.map_err(err)?;
     let b_prefs = MmRepository::get_preferences(pool, &profile_b).await.map_err(err)?;
     let config = ScoringConfigRepo::config_for_rule_set(pool, &rule_set_id).await.map_err(err)?;
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
+    let mut scorecard = score_pair(&set, &config, &a.profile, &b.profile, &a_prefs, &b_prefs)?;
+    let registry = MmRepository::registry(pool).await.map_err(err)?;
+    let texts = |prefs: &[matchmaking_core::Preference]| -> std::collections::BTreeMap<String, String> {
+        prefs
+            .iter()
+            .filter(|p| p.note.as_deref().map_or(true, |n| n.trim().is_empty()))
+            .map(|p| (p.id.clone(), matchmaking_core::describe_preference_for(p, &registry, locale)))
+            .collect()
+    };
+    let (a_texts, b_texts) = (texts(&a_prefs), texts(&b_prefs));
+    scorecard.localize(locale, &|source, id| match source {
+        matchmaking_core::FindingSource::PreferenceA => a_texts.get(id).cloned(),
+        _ => b_texts.get(id).cloned(),
+    });
+    let mut evaluation = evaluate_match(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)?;
+    evaluation.localize(locale);
     Ok(MatchView {
-        scorecard: score_pair(&set, &config, &a.profile, &b.profile, &a_prefs, &b_prefs)?,
-        evaluation: evaluate_match(&set, &a.profile, &b.profile, &a_prefs, &b_prefs)?,
+        scorecard,
+        evaluation,
     })
 }
 

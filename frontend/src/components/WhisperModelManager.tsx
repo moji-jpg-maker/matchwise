@@ -7,13 +7,30 @@ import {
   ModelInfo,
   ModelStatus,
   getModelIcon,
+  ModelAccuracy,
+  ProcessingSpeed,
   formatFileSize,
   getModelPerformanceBadge,
   isQuantizedModel,
   getModelTagline,
   WhisperAPI
 } from '../lib/whisper';
+import { useI18n } from '@/i18n';
+import type { MessageKey } from '@/i18n/types';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+
+const ACCURACY_KEY: Record<ModelAccuracy, MessageKey> = {
+  High: 'whisperMgr.accHigh',
+  Good: 'whisperMgr.accGood',
+  Decent: 'whisperMgr.accDecent',
+};
+
+const SPEED_KEY: Record<ProcessingSpeed, MessageKey> = {
+  Slow: 'whisperMgr.speedSlow',
+  Medium: 'whisperMgr.speedMedium',
+  Fast: 'whisperMgr.speedFast',
+  'Very Fast': 'whisperMgr.speedVeryFast',
+};
 
 interface ModelManagerProps {
   selectedModel?: string;
@@ -28,6 +45,9 @@ export function ModelManager({
   className = '',
   autoSave = false
 }: ModelManagerProps) {
+  const { t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -118,8 +138,8 @@ export function ModelManager({
           progressThrottleRef.current.delete(modelName);
           toast.info(
             model.status === 'Available'
-              ? `${getDisplayName(modelName)} download completed before cancellation`
-              : `${getDisplayName(modelName)} download cancelled`,
+              ? tRef.current('whisperMgr.completedBeforeCancel', { name: getDisplayName(modelName) })
+              : tRef.current('modelMgr.downloadCancelled', { name: getDisplayName(modelName) }),
             { duration: 3000 }
           );
           return;
@@ -173,9 +193,9 @@ export function ModelManager({
         setInitialized(true);
       } catch (err) {
         console.error('Failed to initialize Whisper:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load models');
-        toast.error('Failed to load transcription models', {
-          description: err instanceof Error ? err.message : 'Unknown error',
+        setError(err instanceof Error ? err.message : tRef.current('modelMgr.loadFail'));
+        toast.error(tRef.current('modelMgr.loadListFail'), {
+          description: err instanceof Error ? err.message : tRef.current('modelMgr.unknownError'),
           duration: 5000
         });
       } finally {
@@ -250,8 +270,8 @@ export function ModelManager({
           // Clean up throttle data
           progressThrottleRef.current.delete(modelName);
 
-          toast.success(`${getModelIcon(model?.accuracy || 'Good')} ${displayName} ready!`, {
-            description: 'Model downloaded and ready to use',
+          toast.success(`${getModelIcon(model?.accuracy || 'Good')} ${tRef.current('modelMgr.toastReady', { name: displayName })}`, {
+            description: tRef.current('modelMgr.toastReadyDesc'),
             duration: 4000
           });
 
@@ -291,11 +311,11 @@ export function ModelManager({
           // Clean up throttle data
           progressThrottleRef.current.delete(modelName);
 
-          toast.error(`Failed to download ${displayName}`, {
+          toast.error(tRef.current('modelMgr.downloadFail', { name: displayName }), {
             description: error,
             duration: 6000,
             action: {
-              label: 'Retry',
+              label: tRef.current('modelMgr.retry'),
               onClick: () => downloadModel(modelName)
             }
           });
@@ -337,8 +357,8 @@ export function ModelManager({
       const outcome = await WhisperAPI.cancelDownload(modelName);
       if (outcome === 'pending') {
         reconcileCancellation(modelName);
-        toast.info(`Cancelling ${displayName}...`, {
-          description: 'The download is still shutting down. Retry will be available when cleanup completes.',
+        toast.info(t('modelMgr.cancelling', { name: displayName }), {
+          description: t('modelMgr.cancellingDesc'),
           duration: 4000
         });
         return;
@@ -349,8 +369,8 @@ export function ModelManager({
       reconcileCancellation(modelName);
     } catch (err) {
       console.error('Failed to cancel download:', err);
-      toast.error('Failed to cancel download', {
-        description: err instanceof Error ? err.message : 'Unknown error',
+      toast.error(t('modelMgr.cancelFail'), {
+        description: err instanceof Error ? err.message : t('modelMgr.unknownError'),
         duration: 4000
       });
     }
@@ -374,8 +394,8 @@ export function ModelManager({
         )
       );
 
-      toast.info(`Downloading ${displayName}...`, {
-        description: 'This may take a few minutes',
+      toast.info(t('modelMgr.downloading', { name: displayName }), {
+        description: t('modelMgr.downloadingDesc'),
         duration: 5000
       });
 
@@ -388,7 +408,7 @@ export function ModelManager({
         return newSet;
       });
 
-      const errorMessage = err instanceof Error ? err.message : 'Download failed';
+      const errorMessage = err instanceof Error ? err.message : t('modelMgr.downloadFailedMsg');
       setModels(prev =>
         prev.map(model =>
           model.name === modelName ? { ...model, status: { Error: errorMessage } } : model
@@ -409,7 +429,7 @@ export function ModelManager({
     }
 
     const displayName = getDisplayName(modelName);
-    toast.success(`Switched to ${displayName}`, {
+    toast.success(t('modelMgr.switched', { name: displayName }), {
       duration: 3000
     });
   };
@@ -424,8 +444,8 @@ export function ModelManager({
       const modelList = await WhisperAPI.getAvailableModels();
       setModels(modelList);
 
-      toast.success(`${displayName} deleted`, {
-        description: 'Model removed to free up space',
+      toast.success(t('modelMgr.deleted', { name: displayName }), {
+        description: t('modelMgr.deletedDesc'),
         duration: 3000
       });
 
@@ -435,27 +455,27 @@ export function ModelManager({
       }
     } catch (err) {
       console.error('Failed to delete model:', err);
-      toast.error(`Failed to delete ${displayName}`, {
-        description: err instanceof Error ? err.message : 'Delete failed',
+      toast.error(t('modelMgr.deleteFail', { name: displayName }), {
+        description: err instanceof Error ? err.message : t('modelMgr.deleteFailedMsg'),
         duration: 4000
       });
     }
   };
 
   const getDisplayName = (modelName: string): string => {
-    const modelNameMapping: { [key: string]: string } = {
-      "small": "Small",
-      "medium-q5_0": "Medium",
-      "large-v3-q5_0": "Large V3 Compressed",
-      "large-v3-turbo": "Large V3 Turbo",
-      "large-v3": "Large V3"
+    const modelNameMapping: Record<string, MessageKey> = {
+      "small": "whisperMgr.nameSmall",
+      "medium-q5_0": "whisperMgr.nameMedium",
+      "large-v3-q5_0": "whisperMgr.nameLargeV3Compressed",
+      "large-v3-turbo": "whisperMgr.nameLargeV3Turbo",
+      "large-v3": "whisperMgr.nameLargeV3"
     };
 
     const basicModelNames = ["small", "medium-q5_0", "large-v3-q5_0", "large-v3-turbo", "large-v3"];
     if (basicModelNames.includes(modelName)) {
-      return modelNameMapping[modelName] || modelName;
+      return tRef.current(modelNameMapping[modelName]);
     }
-    return `Whisper ${modelName}`;
+    return tRef.current('whisperMgr.nameFallback', { name: modelName });
   };
 
   if (loading) {
@@ -473,8 +493,8 @@ export function ModelManager({
   if (error) {
     return (
       <div className={`bg-red-50 border border-red-200 rounded-lg p-4 ${className}`}>
-        <p className="text-sm text-red-800">Failed to load models</p>
-        <p className="text-xs text-red-600 mt-1">{error}</p>
+        <p className="text-sm text-red-800">{t('modelMgr.loadFail')}</p>
+        <p className="text-xs text-red-600 mt-1" dir="auto">{error}</p>
       </div>
     );
   }
@@ -517,7 +537,7 @@ export function ModelManager({
         <Accordion type="single" collapsible className="w-full">
           <AccordionItem value="advanced-models">
             <AccordionTrigger>
-              <span className='text-lg'>Advanced Models</span>
+              <span className='text-lg'>{t('whisperMgr.advanced')}</span>
             </AccordionTrigger>
             <AccordionContent>
               <div className="space-y-3 pt-4">
@@ -553,7 +573,7 @@ export function ModelManager({
           animate={{ opacity: 1, y: 0 }}
           className="text-xs text-gray-500 text-center pt-2"
         >
-          Using {getDisplayName(selectedModel)} for transcription
+          {t('modelMgr.using', { name: getDisplayName(selectedModel) })}
         </motion.div>
       )}
     </div>
@@ -586,6 +606,7 @@ function ModelCard({
   isCancelling,
   displayName
 }: ModelCardProps) {
+  const { t, fmt } = useI18n();
   const [isHovered, setIsHovered] = useState(false);
 
   const isAvailable = model.status === 'Available';
@@ -620,8 +641,8 @@ function ModelCard({
     >
       {/* Recommended Badge */}
       {isRecommended && (
-        <div className="absolute -top-2 -right-2 bg-blue-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">
-          Recommended
+        <div className="absolute -top-2 -end-2 bg-blue-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">
+          {t('modelMgr.recommended')}
         </div>
       )}
 
@@ -631,9 +652,9 @@ function ModelCard({
             {/* Model Name and Tagline */}
             <div className="flex items-center gap-2 flex-wrap mb-2">
               <span className="text-2xl">{getModelIcon(model.accuracy)}</span>
-              <h3 className="font-semibold text-gray-900">{displayName}</h3>
+              <h3 className="font-semibold text-gray-900"><bdi>{displayName}</bdi></h3>
               <span className="text-sm text-gray-500">•</span>
-              <span className="text-sm text-gray-500">{getModelTagline(model.name, model.speed, model.accuracy)}</span>
+              <span className="text-sm text-gray-500">{getModelTagline(model.name, model.speed, model.accuracy, t)}</span>
               {isSelected && isAvailable && (
                 <motion.span
                   initial={{ scale: 0 }}
@@ -650,35 +671,35 @@ function ModelCard({
                     ? 'bg-orange-100 text-orange-700'
                     : 'bg-gray-100 text-gray-700'
                   }`}>
-                  {getModelPerformanceBadge(model.name).label}
+                  {t(getModelPerformanceBadge(model.name).labelKey)}
                 </span>
               )}
             </div>
 
             {/* Model Specs */}
-            <div className="flex items-center space-x-4 text-sm text-gray-600 ml-9 mt-1.5">
-              <span className="flex items-center space-x-1">
+            <div className="flex items-center space-x-4 rtl:space-x-reverse text-sm text-gray-600 ms-9 mt-1.5">
+              <span className="flex items-center space-x-1 rtl:space-x-reverse">
                 <span>📦</span>
-                <span>{formatFileSize(model.size_mb)}</span>
+                <span>{formatFileSize(model.size_mb, t, fmt.number)}</span>
               </span>
-              <span className="flex items-center space-x-1">
+              <span className="flex items-center space-x-1 rtl:space-x-reverse">
                 <span>🎯</span>
-                <span>{model.accuracy} accuracy</span>
+                <span>{t(ACCURACY_KEY[model.accuracy])}</span>
               </span>
-              <span className="flex items-center space-x-1">
+              <span className="flex items-center space-x-1 rtl:space-x-reverse">
                 <span>⚡</span>
-                <span>{model.speed} processing</span>
+                <span>{t(SPEED_KEY[model.speed])}</span>
               </span>
             </div>
           </div>
 
           {/* Status/Action */}
-          <div className="ml-4 flex items-center gap-2">
+          <div className="ms-4 flex items-center gap-2">
             {isAvailable && (
               <>
                 <div className="flex items-center gap-1.5 text-green-600">
                   <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span className="text-xs font-medium">Ready</span>
+                  <span className="text-xs font-medium">{t('modelMgr.badgeReady')}</span>
                 </div>
                 <AnimatePresence>
                   {isHovered && (
@@ -692,7 +713,7 @@ function ModelCard({
                         onDelete();
                       }}
                       className="text-gray-400 hover:text-red-600 transition-colors p-1"
-                      title="Delete model to free up space"
+                      title={t('modelMgr.deleteTitle')}
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -711,7 +732,7 @@ function ModelCard({
                 }}
                 className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors"
               >
-                Download
+                {t('modelMgr.download')}
               </button>
             )}
 
@@ -723,7 +744,7 @@ function ModelCard({
                 }}
                 className="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-red-700 transition-colors"
               >
-                Retry
+                {t('modelMgr.retry')}
               </button>
             )}
 
@@ -736,7 +757,7 @@ function ModelCard({
                   }}
                   className="bg-orange-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-orange-700 transition-colors"
                 >
-                  Delete
+                  {t('modelMgr.delete')}
                 </button>
                 <button
                   onClick={(e) => {
@@ -745,7 +766,7 @@ function ModelCard({
                   }}
                   className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors"
                 >
-                  Re-download
+                  {t('modelMgr.redownload')}
                 </button>
               </div>
             )}
@@ -763,15 +784,15 @@ function ModelCard({
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-blue-600">
-                  {isCancelling ? 'Cancelling…' : 'Downloading...'}
+                  {isCancelling ? t('modelMgr.cancellingLabel') : t('modelMgr.downloadingLabel')}
                 </span>
                 {!isCancelling && (
-                  <span className="text-sm font-semibold text-blue-600">{Math.round(downloadProgress)}%</span>
+                  <span className="text-sm font-semibold text-blue-600">{fmt.percent(Math.round(downloadProgress) / 100)}</span>
                 )}
               </div>
               {isCancelling ? (
                 <span className="text-xs text-gray-500 font-medium px-2 py-1">
-                  Cancellation requested
+                  {t('modelMgr.cancelRequested')}
                 </span>
               ) : (
                 <button
@@ -780,9 +801,9 @@ function ModelCard({
                     onCancel();
                   }}
                   className="text-xs text-gray-600 hover:text-red-600 font-medium transition-colors px-2 py-1 rounded hover:bg-red-50"
-                  title="Cancel download"
+                  title={t('modelMgr.cancelTitle')}
                 >
-                  Cancel
+                  {t('modelMgr.cancel')}
                 </button>
               )}
             </div>
@@ -797,10 +818,10 @@ function ModelCard({
             <p className="text-xs text-gray-500 mt-1">
               {model.size_mb ? (
                 <>
-                  {formatFileSize(model.size_mb * downloadProgress / 100)} / {formatFileSize(model.size_mb)}
+                  {t('modelMgr.sizeProgress', { done: formatFileSize(model.size_mb * downloadProgress / 100, t, fmt.number), total: formatFileSize(model.size_mb, t, fmt.number) })}
                 </>
               ) : (
-                'Downloading...'
+                t('modelMgr.downloadingLabel')
               )}
             </p>
           </motion.div>

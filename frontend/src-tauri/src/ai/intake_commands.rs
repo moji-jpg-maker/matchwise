@@ -134,6 +134,7 @@ pub(crate) async fn run_batch(
             provider: config.provider.clone(),
             model: config.model.clone(),
             mode: *mode,
+            locale: matchmaking_core::Locale::En,
         }),
         Err(_) => None,
     };
@@ -381,7 +382,7 @@ pub(crate) async fn run_accept_all(
             .await
             .map_err(err)?;
         for sug in pending {
-            match service::decide_suggestion(pool, sug.id, Decision::Accept).await {
+            match service::decide_suggestion(pool, sug.id, Decision::Accept, matchmaking_core::Locale::En).await {
                 Ok(()) => {
                     report.accepted += 1;
                     report.fields.push(sug.field);

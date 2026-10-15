@@ -12,19 +12,22 @@ import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { BetaSettings } from '@/components/BetaSettings';
 import { AiSettingsPanel } from '@/components/AiSettings';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useT } from '@/i18n';
+import type { MessageKey } from '@/i18n/types';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
 // Tabs configuration (constant)
 const TABS = [
-  { value: 'general', label: 'General', icon: Settings2 },
-  { value: 'recording', label: 'Recordings', icon: Mic },
-  { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
-  { value: 'summaryModels', label: 'Meeting summaries', icon: SparkleIcon },
-  { value: 'ai', label: 'AI assistant', icon: Sparkles },
-  { value: 'beta', label: 'Beta', icon: FlaskConical }
-] as const;
+  { value: 'general', labelKey: 'settings.tabGeneral', icon: Settings2 },
+  { value: 'recording', labelKey: 'settings.tabRecording', icon: Mic },
+  { value: 'Transcriptionmodels', labelKey: 'settings.tabTranscription', icon: DatabaseIcon },
+  { value: 'summaryModels', labelKey: 'settings.tabSummaries', icon: SparkleIcon },
+  { value: 'ai', labelKey: 'settings.tabAi', icon: Sparkles },
+  { value: 'beta', labelKey: 'settings.tabBeta', icon: FlaskConical }
+] as const satisfies readonly { value: string; labelKey: MessageKey; icon: unknown }[];
 
 function SettingsContent() {
+  const t = useT();
   const router = useRouter();
   const searchParams = useSearchParams();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
@@ -78,10 +81,10 @@ function SettingsContent() {
               onClick={() => router.back()}
               className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
             >
-              <ArrowLeft className="w-5 h-5" />
-              <span>Back</span>
+              <ArrowLeft className="w-5 h-5 rtl-mirror" />
+              <span>{t('settings.back')}</span>
             </button>
-            <h1 className="text-3xl font-bold">Settings</h1>
+            <h1 className="text-3xl font-bold">{t('settings.title')}</h1>
           </div>
         </div>
       </div>
@@ -102,7 +105,7 @@ function SettingsContent() {
                     className="flex items-center gap-2 px-6 py-4 bg-transparent rounded-none border-0 data-[state=active]:bg-transparent data-[state=active]:text-blue-600 data-[state=active]:shadow-none text-gray-600 hover:text-gray-900 relative z-10"
                   >
                     <Icon className="w-4 h-4" />
-                    {tab.label}
+                    {t(tab.labelKey)}
                   </TabsTrigger>
                 );
               })}

@@ -3,6 +3,7 @@
 use super::types::Keyboard;
 use crate::mm::repository::ORG;
 use chrono::{Duration, Utc};
+use matchmaking_core::Locale;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -75,6 +76,7 @@ pub struct Link {
     /// Agreed to the current version of the notice.
     pub consented: bool,
     pub notifications_enabled: bool,
+    pub locale: Locale,
 }
 
 fn row_to_link(r: &sqlx::sqlite::SqliteRow) -> Link {
@@ -87,10 +89,11 @@ fn row_to_link(r: &sqlx::sqlite::SqliteRow) -> Link {
         linked_at: r.get("linked_at"),
         consented: at.is_some() && version == Some(CONSENT_VERSION),
         notifications_enabled: r.get::<i64, _>("notifications_enabled") != 0,
+        locale: Locale::parse_or_default(&r.get::<String, _>("language")),
     }
 }
 
-const LINK_COLS: &str = "profile_id, chat_id, username, linked_at, consent_version, consented_at, notifications_enabled";
+const LINK_COLS: &str = "profile_id, chat_id, username, linked_at, consent_version, consented_at, notifications_enabled, language";
 
 pub async fn link_by_chat(pool: &SqlitePool, chat_id: i64) -> Result<Option<Link>, sqlx::Error> {
     let r = sqlx::query(&format!("SELECT {LINK_COLS} FROM mm_telegram_links WHERE chat_id = ?")).bind(chat_id).fetch_optional(pool).await?;
@@ -109,7 +112,7 @@ pub enum LinkError {
     Db(String),
 }
 
-pub async fn create_link(pool: &SqlitePool, profile_id: &str, chat_id: i64, user_id: i64, username: Option<&str>) -> Result<(), LinkError> {
+pub async fn create_link(pool: &SqlitePool, profile_id: &str, chat_id: i64, user_id: i64, username: Option<&str>, locale: Locale) -> Result<(), LinkError> {
     let db = |e: sqlx::Error| LinkError::Db(e.to_string());
     if link_by_profile(pool, profile_id).await.map_err(db)?.is_some() {
         return Err(LinkError::ProfileHasChat);
@@ -117,8 +120,8 @@ pub async fn create_link(pool: &SqlitePool, profile_id: &str, chat_id: i64, user
     if link_by_chat(pool, chat_id).await.map_err(db)?.is_some() {
         return Err(LinkError::ChatHasProfile);
     }
-    sqlx::query("INSERT INTO mm_telegram_links (profile_id, chat_id, telegram_user_id, username, linked_at) VALUES (?, ?, ?, ?, ?)")
-        .bind(profile_id).bind(chat_id).bind(user_id).bind(username).bind(now_str())
+    sqlx::query("INSERT INTO mm_telegram_links (profile_id, chat_id, telegram_user_id, username, linked_at, language) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(profile_id).bind(chat_id).bind(user_id).bind(username).bind(now_str()).bind(locale.code())
         .execute(pool).await.map_err(db)?;
     Ok(())
 }
@@ -126,6 +129,11 @@ pub async fn create_link(pool: &SqlitePool, profile_id: &str, chat_id: i64, user
 pub async fn set_consent(pool: &SqlitePool, profile_id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE mm_telegram_links SET consent_version = ?, consented_at = ? WHERE profile_id = ?")
         .bind(CONSENT_VERSION).bind(now_str()).bind(profile_id).execute(pool).await?;
+    Ok(())
+}
+
+pub async fn set_language(pool: &SqlitePool, profile_id: &str, locale: Locale) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE mm_telegram_links SET language = ? WHERE profile_id = ?").bind(locale.code()).bind(profile_id).execute(pool).await?;
     Ok(())
 }
 

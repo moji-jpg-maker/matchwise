@@ -7,6 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
 import { useConfig } from "@/contexts/ConfigContext";
 import { useRecordingState } from "@/contexts/RecordingStateContext";
+import { useT } from "@/i18n";
 
 type modalType = "modelSettings" | "deviceSettings" | "languageSettings" | "modelSelector" | "errorAlert" | "chunkDropWarning";
 
@@ -39,7 +40,7 @@ export function SettingsModals({
   messages,
   onClose,
 }: SettingsModalsProps) {
-  // Contexts
+  const t = useT();
   const {
     modelConfig,
     setModelConfig,
@@ -65,7 +66,7 @@ export function SettingsModals({
         <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
           {/* Header */}
           <div className="flex justify-between items-center p-6 border-b">
-            <h3 className="text-xl font-semibold text-gray-900">Preferences</h3>
+            <h3 className="text-xl font-semibold text-gray-900">{t("settingsModal.prefs")}</h3>
             <button
               onClick={() => onClose("modelSettings")
               }
@@ -84,13 +85,13 @@ export function SettingsModals({
 
             {/* Divider */}
             <div className="border-t pt-8">
-              <h4 className="text-lg font-semibold text-gray-900 mb-4">AI Model Configuration</h4>
+              <h4 className="text-lg font-semibold text-gray-900 mb-4">{t("settingsModal.aiConfig")}</h4>
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Summarization Model
+                    {t("settingsModal.sumModel")}
                   </label>
-                  <div className="flex space-x-2">
+                  <div className="flex space-x-2 rtl:space-x-reverse">
                     <select
                       className="px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                       value={modelConfig.provider}
@@ -103,7 +104,7 @@ export function SettingsModals({
                         });
                       }}
                     >
-                      <option value="builtin-ai">Built-in AI</option>
+                      <option value="builtin-ai">{t("settingsModal.builtin")}</option>
                       <option value="claude">Claude</option>
                       <option value="groq">Groq</option>
                       <option value="ollama">Ollama</option>
@@ -126,13 +127,13 @@ export function SettingsModals({
                 </div>
                 {modelConfig.provider === 'ollama' && (
                   <div>
-                    <h4 className="text-lg font-bold mb-4">Available Ollama Models</h4>
+                    <h4 className="text-lg font-bold mb-4">{t("settingsModal.ollamaModels")}</h4>
                     {error && (
-                      <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+                      <div dir="auto" className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
                         {error}
                       </div>
                     )}
-                    <div className="grid gap-4 max-h-[400px] overflow-y-auto pr-2">
+                    <div className="grid gap-4 max-h-[400px] overflow-y-auto pe-2">
                       {models.map((model) => (
                         <div
                           key={model.id}
@@ -140,9 +141,9 @@ export function SettingsModals({
                             }`}
                           onClick={() => setModelConfig((prev: ModelConfig) => ({ ...prev, model: model.name }))}
                         >
-                          <h3 className="font-bold">{model.name}</h3>
-                          <p className="text-gray-600">Size: {model.size}</p>
-                          <p className="text-gray-600">Modified: {model.modified}</p>
+                          <h3 className="font-bold" dir="ltr">{model.name}</h3>
+                          <p className="text-gray-600">{t("settingsModal.size", { value: model.size })}</p>
+                          <p className="text-gray-600">{t("settingsModal.modified", { value: model.modified })}</p>
                         </div>
                       ))}
                     </div>
@@ -158,7 +159,7 @@ export function SettingsModals({
               onClick={() => onClose('modelSettings')}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
-              Done
+              {t("settingsModal.done")}
             </button>
           </div>
         </div>
@@ -170,7 +171,7 @@ export function SettingsModals({
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">Audio Device Settings</h3>
+            <h3 className="text-lg font-semibold text-gray-900">{t("settingsModal.deviceTitle")}</h3>
             <button
               onClick={() => onClose('deviceSettings')}
               className="text-gray-500 hover:text-gray-700"
@@ -190,16 +191,16 @@ export function SettingsModals({
           <div className="mt-6 flex justify-end">
             <button
               onClick={() => {
-                const micDevice = selectedDevices.micDevice || 'Default';
-                const systemDevice = selectedDevices.systemDevice || 'Default';
-                toast.success("Devices selected", {
-                  description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
+                const micDevice = selectedDevices.micDevice || t('settingsModal.defaultDevice');
+                const systemDevice = selectedDevices.systemDevice || t('settingsModal.defaultDevice');
+                toast.success(t("settingsModal.devicesSelected"), {
+                  description: t("settingsModal.devicesDesc", { mic: micDevice, system: systemDevice })
                 });
                 onClose('deviceSettings');
               }}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
-              Done
+              {t("settingsModal.done")}
             </button>
           </div>
         </div>
@@ -211,7 +212,7 @@ export function SettingsModals({
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">Language Settings</h3>
+            <h3 className="text-lg font-semibold text-gray-900">{t("settingsModal.langTitle")}</h3>
             <button
               onClick={() => onClose('languageSettings')}
               className="text-gray-500 hover:text-gray-700"
@@ -234,7 +235,7 @@ export function SettingsModals({
               onClick={() => onClose('languageSettings')}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
-              Done
+              {t("settingsModal.done")}
             </button>
           </div>
         </div>
@@ -248,7 +249,7 @@ export function SettingsModals({
           {/* Fixed Header */}
           <div className="flex justify-between items-center p-6 pb-4 border-b border-gray-200">
             <h3 className="text-lg font-semibold text-gray-900">
-              {messages.modelSelector ? 'Speech Recognition Setup Required' : 'Transcription Model Settings'}
+              {messages.modelSelector ? t('settingsModal.setupRequired') : t('settingsModal.transcriptionSettings')}
             </h3>
             <button
               onClick={() => onClose('modelSelector')}
@@ -283,8 +284,8 @@ export function SettingsModals({
                 <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
               </label>
               <div>
-                <p className="text-sm font-medium text-gray-700">Show Confidence Indicators</p>
-                <p className="text-xs text-gray-500">Display colored dots showing transcription confidence quality</p>
+                <p className="text-sm font-medium text-gray-700">{t('settingsModal.confidence')}</p>
+                <p className="text-xs text-gray-500">{t('settingsModal.confidenceDesc')}</p>
               </div>
             </div>
 
@@ -292,7 +293,7 @@ export function SettingsModals({
               onClick={() => onClose('modelSelector')}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
             >
-              {messages.modelSelector ? 'Cancel' : 'Done'}
+              {messages.modelSelector ? t('common.cancel') : t('settingsModal.done')}
             </button>
           </div>
         </div>
@@ -303,14 +304,14 @@ export function SettingsModals({
     {modals.errorAlert && (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <Alert className="max-w-md mx-4 border-red-200 bg-white shadow-xl">
-          <AlertTitle className="text-red-800">Recording Stopped</AlertTitle>
+          <AlertTitle className="text-red-800">{t("settingsModal.recordingStopped")}</AlertTitle>
           <AlertDescription className="text-red-700">
-            {messages.errorAlert}
+            <span dir="auto">{messages.errorAlert}</span>
             <button
               onClick={() => onClose('errorAlert')}
-              className="ml-2 text-red-600 hover:text-red-800 underline"
+              className="ms-2 text-red-600 hover:text-red-800 underline"
             >
-              Dismiss
+              {t("settingsModal.dismiss")}
             </button>
           </AlertDescription>
         </Alert>
@@ -321,14 +322,14 @@ export function SettingsModals({
     {modals.chunkDropWarning && (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <Alert className="max-w-lg mx-4 border-yellow-200 bg-white shadow-xl">
-          <AlertTitle className="text-yellow-800">Transcription Performance Warning</AlertTitle>
+          <AlertTitle className="text-yellow-800">{t("settingsModal.perfWarning")}</AlertTitle>
           <AlertDescription className="text-yellow-700">
-            {messages.chunkDropWarning}
+            <span dir="auto">{messages.chunkDropWarning}</span>
             <button
               onClick={() => onClose('chunkDropWarning')}
-              className="ml-2 text-yellow-600 hover:text-yellow-800 underline"
+              className="ms-2 text-yellow-600 hover:text-yellow-800 underline"
             >
-              Dismiss
+              {t("settingsModal.dismiss")}
             </button>
           </AlertDescription>
         </Alert>

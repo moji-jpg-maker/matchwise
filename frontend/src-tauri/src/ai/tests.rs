@@ -67,7 +67,7 @@ impl LlmBackend for Mock {
 }
 
 fn session<'a>(m: &'a Mock, is_cloud: bool, include_sensitive: bool) -> Session<'a> {
-    Session { backend: m, provider: "mock".into(), model: "mock-1".into(), mode: Mode { is_cloud, include_sensitive } }
+    Session { backend: m, provider: "mock".into(), model: "mock-1".into(), mode: Mode { is_cloud, include_sensitive }, locale: matchmaking_core::Locale::En }
 }
 
 // ------------------------------------------------------------------ the gate
@@ -226,12 +226,12 @@ async fn accepting_a_suggestion_records_ai_provenance_and_never_overrides_people
     let view = service::extract_profile(&pool, &session(&m, false, true), "p1", None).await.unwrap();
     let by_field = |f: &str, kind: &str| view.suggestions.iter().find(|s| s.field == f && s.kind == kind).unwrap().id;
 
-    service::decide_suggestion(&pool, by_field("smoking", "field"), Decision::Accept).await.unwrap();
+    service::decide_suggestion(&pool, by_field("smoking", "field"), Decision::Accept, matchmaking_core::Locale::En).await.unwrap();
     let p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
     assert_eq!(p.profile.get("smoking"), Some(&txt("never")));
     assert_eq!(p.profile.fields["smoking"].source, Provenance::AiInferred);
     // double-deciding is refused
-    assert!(service::decide_suggestion(&pool, by_field("smoking", "field"), Decision::Accept).await.is_err());
+    assert!(service::decide_suggestion(&pool, by_field("smoking", "field"), Decision::Accept, matchmaking_core::Locale::En).await.is_err());
 
     // a value the matchmaker later enters replaces the AI one (and a later AI value could not)
     let mut p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
@@ -243,15 +243,15 @@ async fn accepting_a_suggestion_records_ai_provenance_and_never_overrides_people
     p.profile.set("occupation", txt("Teacher"), Provenance::User);
     MmRepository::update_profile_data(&pool, &p.profile).await.unwrap();
     let occ = by_field("occupation", "field");
-    let e = service::decide_suggestion(&pool, occ, Decision::Accept).await.unwrap_err();
+    let e = service::decide_suggestion(&pool, occ, Decision::Accept, matchmaking_core::Locale::En).await.unwrap_err();
     assert!(e.contains("already entered"), "{e}");
-    service::decide_suggestion(&pool, occ, Decision::AcceptVerified).await.unwrap();
+    service::decide_suggestion(&pool, occ, Decision::AcceptVerified, matchmaking_core::Locale::En).await.unwrap();
     let p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
     assert_eq!(p.profile.get("occupation"), Some(&txt("Nurse")));
     assert_eq!(p.profile.fields["occupation"].source, Provenance::Matchmaker);
 
     // preferences are appended with a fresh id and pass the same validation as typed ones
-    service::decide_suggestion(&pool, by_field("smoking", "preference"), Decision::Accept).await.unwrap();
+    service::decide_suggestion(&pool, by_field("smoking", "preference"), Decision::Accept, matchmaking_core::Locale::En).await.unwrap();
     let prefs = MmRepository::get_preferences(&pool, "p1").await.unwrap();
     assert_eq!(prefs.len(), 1);
     assert!(!prefs[0].id.is_empty());
@@ -271,14 +271,14 @@ async fn rejecting_and_superseding_suggestions() {
     sara(&pool).await;
     let m = Mock::with(vec![GOOD, GOOD]);
     let first = service::extract_profile(&pool, &session(&m, false, true), "p1", None).await.unwrap();
-    service::decide_suggestion(&pool, first.suggestions[0].id, Decision::Reject).await.unwrap();
+    service::decide_suggestion(&pool, first.suggestions[0].id, Decision::Reject, matchmaking_core::Locale::En).await.unwrap();
     assert!(repo::get_suggestion(&pool, first.suggestions[0].id).await.unwrap().unwrap().status == "rejected");
     let second = service::extract_profile(&pool, &session(&m, false, true), "p1", None).await.unwrap();
     // the new run replaces what was still pending; the rejected one stays as history
     let pending = repo::pending_suggestions(&pool, "p1").await.unwrap();
     assert_eq!(pending.len(), second.suggestions.len());
     assert!(pending.iter().all(|s| second.suggestions.iter().any(|n| n.id == s.id)));
-    assert!(service::decide_suggestion(&pool, first.suggestions[1].id, Decision::Accept).await.is_err(), "superseded suggestions cannot be accepted");
+    assert!(service::decide_suggestion(&pool, first.suggestions[1].id, Decision::Accept, matchmaking_core::Locale::En).await.is_err(), "superseded suggestions cannot be accepted");
 }
 
 // ------------------------------------------------------------------ pair analysis
@@ -329,7 +329,7 @@ async fn pair_analysis_is_grounded_stored_and_goes_stale() {
     assert!(service::latest_pair_analysis(&pool, &match_id).await.unwrap().unwrap().stale);
 
     // the preview shows exactly the prompt that would be sent
-    let (system, user) = service::preview_pair(&pool, &match_id, Mode { is_cloud: true, include_sensitive: false }).await.unwrap();
+    let (system, user) = service::preview_pair(&pool, &match_id, Mode { is_cloud: true, include_sensitive: false }, matchmaking_core::Locale::En).await.unwrap();
     assert!(system.contains("untrusted") && user.contains("Doctor") && !user.contains("Rezaei"));
     // a match with no analysis yet
     assert!(service::latest_pair_analysis(&pool, "nope").await.unwrap().is_none());
@@ -550,7 +550,7 @@ async fn a_person_owned_value_is_refused_by_both_a_single_accept_and_the_batch_a
     let pending = repo::pending_suggestions(&pool, &profile_id).await.unwrap();
     let occupation = pending.iter().find(|s| s.field == "occupation").unwrap();
     assert!(
-        service::decide_suggestion(&pool, occupation.id, Decision::Accept)
+        service::decide_suggestion(&pool, occupation.id, Decision::Accept, matchmaking_core::Locale::En)
             .await
             .unwrap_err()
             .contains("already entered")
@@ -758,6 +758,7 @@ async fn the_per_profile_extraction_reads_the_stored_intake_note() {
             is_cloud: true,
             include_sensitive: false,
         },
+        matchmaking_core::Locale::En,
     )
     .await
     .unwrap();
@@ -1137,7 +1138,7 @@ mod selection {
         let match_id = tracked_pair(&pool).await;
         let before = MatchRepo::get(&pool, &match_id).await.unwrap().unwrap();
         let m = Mock::with(vec![pair_reply()]);
-        let s = Session { backend: &m, provider: config.provider.clone(), model: config.model.clone(), mode };
+        let s = Session { backend: &m, provider: config.provider.clone(), model: config.model.clone(), mode, locale: matchmaking_core::Locale::En };
         let view = service::analyse_pair(&pool, &s, &match_id).await.unwrap();
         assert_eq!(view.model, "llama3");
         let stored = service::latest_pair_analysis(&pool, &match_id).await.unwrap().expect("stored");
@@ -1166,8 +1167,31 @@ mod selection {
         let pool = test_pool().await;
         make_profile(&pool, "p1", &[("full_name", txt("Sara Example"))]).await;
         let rec = Recorder::default();
-        let s = Session { backend: &rec, provider: "mock".into(), model: "m".into(), mode: Mode { is_cloud: false, include_sensitive: true } };
+        let s = Session { backend: &rec, provider: "mock".into(), model: "m".into(), mode: Mode { is_cloud: false, include_sensitive: true }, locale: matchmaking_core::Locale::En };
         let _ = service::extract_profile(&pool, &s, "p1", Some("She likes hiking and wants children.")).await;
         assert_eq!(rec.0.lock().unwrap().first(), Some(&TaskProfile::Extraction));
+    }
+}
+
+#[test]
+fn gate_and_readiness_messages_read_in_persian() {
+    use super::{models, settings};
+    use matchmaking_core::Locale;
+    let config = AiConfig { provider: "none".into(), model: String::new(), base_url: String::new(), local_include_sensitive: false };
+    let en = settings::check_gate(&config, None, false).unwrap_err();
+    let fa = settings::check_gate_for(&config, None, false, Locale::Fa).unwrap_err();
+    assert_ne!(en, fa);
+    assert!(fa.chars().any(|c| ('\u{0600}'..='\u{06FF}').contains(&c)));
+    assert_eq!(settings::consent_text_for(Locale::En), settings::CLOUD_CONSENT_TEXT);
+    assert_ne!(settings::consent_text_for(Locale::Fa), settings::CLOUD_CONSENT_TEXT);
+}
+
+#[test]
+fn builtin_model_notes_read_in_persian() {
+    use super::models;
+    use matchmaking_core::Locale;
+    for model in models::models() {
+        assert_eq!(model.note_for(Locale::En), model.note);
+        assert_ne!(model.note_for(Locale::Fa), model.note);
     }
 }

@@ -1,5 +1,6 @@
 'use client';
 
+import { fieldLabel } from '@/lib/field-label';
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
@@ -15,16 +16,19 @@ import { MatchesPanel } from '@/components/matchmaking/MatchesPanel';
 import { TelegramPanel } from '@/components/matchmaking/TelegramPanel';
 import { AiPanel } from '@/components/matchmaking/AiPanel';
 import { QuestionnairePanel } from '@/components/matchmaking/QuestionnairePanel';
+import { useI18n } from '@/i18n';
+import type { MessageKey } from '@/i18n/types';
 
-const SOURCE_LABEL: Record<string, string> = {
-  user: 'entered by the candidate',
-  matchmaker: 'entered by a matchmaker',
-  questionnaire: 'from a questionnaire',
-  ai_inferred: 'suggested by AI: please verify',
+const SOURCE_KEY: Record<string, MessageKey> = {
+  user: 'profile.sourceUser',
+  matchmaker: 'profile.sourceMatchmaker',
+  questionnaire: 'profile.sourceQuestionnaire',
+  ai_inferred: 'profile.sourceAi',
 };
 
 function ProfileEditor() {
   const router = useRouter();
+  const { t, fmt, locale } = useI18n();
   const id = useSearchParams().get('id');
   const [fields, setFields] = useState<FieldDef[]>([]);
   const [profile, setProfile] = useState<ProfileView | null>(null);
@@ -40,7 +44,7 @@ function ProfileEditor() {
     try {
       const [f, p] = await Promise.all([
         invoke<FieldDef[]>('mm_list_fields'),
-        invoke<ProfileView>('mm_get_profile', { id }),
+        invoke<ProfileView>('mm_get_profile', { id, locale }),
       ]);
       setFields(f);
       setProfile(p);
@@ -48,9 +52,9 @@ function ProfileEditor() {
       invoke<string | null>('mm_intake_note', { id }).then(setIntakeNote).catch(() => setIntakeNote(null));
     } catch (e) {
       setLoadError(`${e}`);
-      toast.error(`Could not load profile: ${e}`);
+      toast.error(t('profile.loadToast', { error: `${e}` }));
     }
-  }, [id]);
+  }, [id, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -64,27 +68,27 @@ function ProfileEditor() {
   }, [dirty]);
 
   useEffect(() => {
-    setNavigationGuard(dirty ? 'You have unsaved changes. Leave without saving?' : null);
+    setNavigationGuard(dirty ? t('profile.unsavedConfirm') : null);
     return () => setNavigationGuard(null);
-  }, [dirty]);
+  }, [dirty, t]);
 
   const goTo = (path: string) => {
-    if (dirty && !window.confirm('You have unsaved changes. Leave without saving?')) return;
+    if (dirty && !window.confirm(t('profile.unsavedConfirm'))) return;
     router.push(path);
   };
 
-  if (!id) return <div className="p-6">No profile selected.</div>;
+  if (!id) return <div className="p-6">{t('profile.noneSelected')}</div>;
   if (loadError && !profile)
     return (
       <div className="p-6 space-y-3">
-        <div className="text-red-700">Could not load this profile: {loadError}</div>
+        <div className="text-red-700">{t('profile.loadFailed', { error: loadError })}</div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => void load()}>Retry</Button>
-          <Button variant="ghost" onClick={() => router.push('/profiles')}>Back to profiles</Button>
+          <Button variant="outline" onClick={() => void load()}>{t('profiles.retry')}</Button>
+          <Button variant="ghost" onClick={() => router.push('/profiles')}>{t('profile.backToProfiles')}</Button>
         </div>
       </div>
     );
-  if (!profile) return <div className="p-6 text-gray-500">Loading…</div>;
+  if (!profile) return <div className="p-6 text-gray-500">{t('common.loading')}</div>;
 
   const current = (key: string): Value | undefined => {
     if (key in draft) return draft[key] ?? undefined;
@@ -95,11 +99,11 @@ function ProfileEditor() {
   const save = async () => {
     setSaving(true);
     try {
-      const res = await invoke<UpdateResult>('mm_update_profile_fields', { id, values: draft, source: 'matchmaker' });
+      const res = await invoke<UpdateResult>('mm_update_profile_fields', { id, values: draft, source: 'matchmaker', locale });
       setProfile(res.profile);
       setDraft({});
-      if (res.rejected.length) toast.warning(`Not changed (protected by a higher-trust source): ${res.rejected.join(', ')}`);
-      else toast.success('Saved');
+      if (res.rejected.length) toast.warning(t('profile.rejected', { fields: res.rejected.join(', ') }));
+      else toast.success(t('profile.saved'));
     } catch (e) {
       toast.error(`${e}`);
     } finally {
@@ -109,7 +113,7 @@ function ProfileEditor() {
 
   const toggleActive = async () => {
     try {
-      await invoke('mm_set_profile_active', { id, active: profile.status !== 'active' });
+      await invoke('mm_set_profile_active', { id, active: profile.status !== 'active', locale });
       await load();
     } catch (e) {
       toast.error(`${e}`);
@@ -118,7 +122,7 @@ function ProfileEditor() {
 
   const remove = async () => {
     try {
-      await invoke('mm_delete_profile', { id });
+      await invoke('mm_delete_profile', { id, locale });
       router.push('/profiles');
     } catch (e) {
       toast.error(`${e}`);
@@ -130,21 +134,21 @@ function ProfileEditor() {
     const v = current(def.key);
     const clearOnEmpty = (s: string, make: (s: string) => Value) => setField(def.key, s === '' ? null : make(s));
     if (kind === 'number')
-      return <Input type="number" value={typeof v === 'number' ? String(v) : ''} onChange={(e) => clearOnEmpty(e.target.value, Number)} />;
+      return <Input type="number" dir="ltr" value={typeof v === 'number' ? String(v) : ''} onChange={(e) => clearOnEmpty(e.target.value, Number)} />;
     if (kind === 'bool')
       return (
         <select className="border rounded-md px-2 py-2 text-sm bg-white w-full" value={typeof v === 'boolean' ? String(v) : ''}
           onChange={(e) => clearOnEmpty(e.target.value, (s) => s === 'true')}>
-          <option value="">not set</option>
-          <option value="true">yes</option>
-          <option value="false">no</option>
+          <option value="">{t('profile.notSet')}</option>
+          <option value="true">{t('profiles.yes')}</option>
+          <option value="false">{t('profiles.no')}</option>
         </select>
       );
     if (kind === 'choice')
       return (
         <select className="border rounded-md px-2 py-2 text-sm bg-white w-full" value={typeof v === 'string' ? v : ''}
           onChange={(e) => clearOnEmpty(e.target.value, (s) => s)}>
-          <option value="">not set</option>
+          <option value="">{t('profile.notSet')}</option>
           {kindOptions(def.kind).map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       );
@@ -171,7 +175,8 @@ function ProfileEditor() {
         <RecordsInput
           defs={recordFields(def.kind)}
           entries={entries}
-          entryLabel={def.key === 'children' ? 'Child' : 'Entry'}
+          entryLabel={def.key === 'children' ? t('profile.entryChild') : t('profile.entryGeneric')}
+          addLabel={def.key === 'children' ? t('profile.addChild') : t('profile.addEntry')}
           onChange={(next) => setField(def.key, next)}
         />
       );
@@ -184,25 +189,25 @@ function ProfileEditor() {
       <div className="max-w-3xl mx-auto p-6 space-y-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button onClick={() => goTo('/profiles')} className="p-2 rounded-lg hover:bg-gray-200" aria-label="Back">
-              <ArrowLeft className="w-5 h-5" />
+            <button onClick={() => goTo('/profiles')} className="p-2 rounded-lg hover:bg-gray-200" aria-label={t('profiles.back')}>
+              <ArrowLeft className="w-5 h-5 rtl-mirror" />
             </button>
             <h1 className="text-2xl font-semibold">
-              {(profile.fields['full_name']?.value as string) || 'Unnamed profile'}
+              {(profile.fields['full_name']?.value as string) || t('profiles.unnamed')}
             </h1>
-            {profile.status === 'deactivated' && <span className="text-xs px-2 py-0.5 rounded bg-gray-200">deactivated</span>}
+            {profile.status === 'deactivated' && <span className="text-xs px-2 py-0.5 rounded bg-gray-200">{t('profiles.deactivated')}</span>}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => goTo(`/matches?profile=${encodeURIComponent(id)}`)}>Tracked matches</Button>
-            <Button onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</Button>
+            <Button variant="outline" onClick={() => goTo(`/matches?profile=${encodeURIComponent(id)}`)}>{t('profile.trackedMatches')}</Button>
+            <Button onClick={save} disabled={!dirty || saving}>{saving ? t('profile.saving') : t('profile.saveChanges')}</Button>
           </div>
         </div>
 
         <div className="bg-white rounded-lg border p-4 text-sm flex items-center justify-between">
           <div>
-            Completeness: {profile.completeness != null ? `${Math.round(profile.completeness * 100)}%` : 'n/a'}
+            {t('profile.completeness', { value: profile.completeness != null ? fmt.percent(profile.completeness) : t('profile.notAvailable') })}
             {profile.missing_required.length > 0 && (
-              <span className="text-gray-500"> · missing: {profile.missing_required.join(', ')}</span>
+              <span className="text-gray-500">{t('profile.missing', { fields: profile.missing_required.join(', ') })}</span>
             )}
           </div>
         </div>
@@ -215,9 +220,9 @@ function ProfileEditor() {
 
         {intakeNote && (
           <div className="bg-white rounded-lg border p-4 text-sm">
-            <div className="font-medium">Intake source text</div>
-            <p className="text-xs text-gray-500">The raw text this profile was created from. Read-only: it is the source, not a field, and the AI reads it as an intake note.</p>
-            <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-gray-700 max-h-60 overflow-auto">{intakeNote}</pre>
+            <div className="font-medium">{t('profile.intakeTitle')}</div>
+            <p className="text-xs text-gray-500">{t('profile.intakeDesc')}</p>
+            <pre dir="auto" className="mt-2 whitespace-pre-wrap font-sans text-xs text-gray-700 max-h-60 overflow-auto">{intakeNote}</pre>
           </div>
         )}
 
@@ -228,10 +233,10 @@ function ProfileEditor() {
               <div key={def.key} className="p-4 grid grid-cols-3 gap-4 items-start">
                 <div>
                   <div className="text-sm font-medium">
-                    {def.label}{def.required && <span className="text-red-500"> *</span>}
+                    {fieldLabel(def, locale)}{def.required && <span className="text-red-500"> *</span>}
                   </div>
-                  {def.sensitive && <div className="text-xs text-gray-500">sensitive</div>}
-                  {src && !(def.key in draft) && <div className="text-xs text-gray-400">{SOURCE_LABEL[src]}</div>}
+                  {def.sensitive && <div className="text-xs text-gray-500">{t('profile.sensitive')}</div>}
+                  {src && !(def.key in draft) && <div className="text-xs text-gray-400">{SOURCE_KEY[src] ? t(SOURCE_KEY[src]) : src}</div>}
                 </div>
                 <div className="col-span-2">{input(def)}</div>
               </div>
@@ -251,17 +256,17 @@ function ProfileEditor() {
 
         <div className="flex items-center justify-between pt-2">
           <Button variant="outline" onClick={toggleActive}>
-            {profile.status === 'active' ? 'Deactivate profile' : 'Reactivate profile'}
+            {profile.status === 'active' ? t('profile.deactivate') : t('profile.reactivate')}
           </Button>
           {confirmDelete ? (
             <div className="flex items-center gap-2 text-sm">
-              <span>Permanently delete this profile?</span>
-              <Button variant="destructive" size="sm" onClick={remove}>Delete</Button>
-              <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+              <span>{t('profile.confirmDelete')}</span>
+              <Button variant="destructive" size="sm" onClick={remove}>{t('common.delete')}</Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>{t('common.cancel')}</Button>
             </div>
           ) : (
             <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
-              <Trash2 className="w-4 h-4 mr-1" /> Delete
+              <Trash2 className="w-4 h-4 me-1" /> {t('common.delete')}
             </Button>
           )}
         </div>
@@ -271,8 +276,10 @@ function ProfileEditor() {
 }
 
 export default function ProfilePage() {
+  const { t } = useI18n();
+  const fallbackLoading = t('common.loading');
   return (
-    <Suspense fallback={<div className="p-6 text-gray-500">Loading…</div>}>
+    <Suspense fallback={<div className="p-6 text-gray-500">{fallbackLoading}</div>}>
       <ProfileEditor />
     </Suspense>
   );

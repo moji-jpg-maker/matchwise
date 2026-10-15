@@ -7,6 +7,7 @@ import { Label } from './ui/label';
 import { Eye, EyeOff, Lock, Unlock } from 'lucide-react';
 import { ModelManager } from './WhisperModelManager';
 import { ParakeetModelManager } from './ParakeetModelManager';
+import { useT } from '@/i18n';
 
 
 export interface TranscriptModelProps {
@@ -22,6 +23,7 @@ export interface TranscriptSettingsProps {
 }
 
 export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelConfig, onModelSelect }: TranscriptSettingsProps) {
+    const t = useT();
     const [apiKey, setApiKey] = useState<string | null>(transcriptModelConfig.apiKey || null);
     const [showApiKey, setShowApiKey] = useState<boolean>(false);
     const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
@@ -104,9 +106,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 <div className="space-y-4 pb-6">
                     <div>
                         <Label className="block text-sm font-medium text-gray-700 mb-1">
-                            Transcript Model
+                            {t('settings.transcript.modelLabel')}
                         </Label>
-                        <div className="flex space-x-2 mx-1">
+                        <div className="flex space-x-2 rtl:space-x-reverse mx-1">
                             <Select
                                 value={uiProvider}
                                 onValueChange={(value) => {
@@ -118,11 +120,11 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 }}
                             >
                                 <SelectTrigger className='focus:ring-1 focus:ring-blue-500 focus:border-blue-500'>
-                                    <SelectValue placeholder="Select provider" />
+                                    <SelectValue placeholder={t('settings.transcript.selectProvider')} />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="parakeet">⚡ Parakeet (Recommended - Real-time / Accurate)</SelectItem>
-                                    <SelectItem value="localWhisper">🏠 Local Whisper (High Accuracy)</SelectItem>
+                                    <SelectItem value="parakeet">{t('settings.transcript.parakeet')}</SelectItem>
+                                    <SelectItem value="localWhisper">{t('settings.transcript.localWhisper')}</SelectItem>
                                     {/* <SelectItem value="deepgram">☁️ Deepgram (Backup)</SelectItem>
                                     <SelectItem value="elevenLabs">☁️ ElevenLabs</SelectItem>
                                     <SelectItem value="groq">☁️ Groq</SelectItem>
@@ -139,7 +141,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     }}
                                 >
                                     <SelectTrigger className='focus:ring-1 focus:ring-blue-500 focus:border-blue-500'>
-                                        <SelectValue placeholder="Select model" />
+                                        <SelectValue placeholder={t('settings.transcript.selectModel')} />
                                     </SelectTrigger>
                                     <SelectContent>
                                         {modelOptions[uiProvider].map((model) => (
@@ -176,18 +178,19 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                     {requiresApiKey && (
                         <div>
                             <Label className="block text-sm font-medium text-gray-700 mb-1">
-                                API Key
+                                {t('settings.transcript.apiKey')}
                             </Label>
                             <div className="relative mx-1">
                                 <Input
                                     type={showApiKey ? "text" : "password"}
-                                    className={`pr-24 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 ${isApiKeyLocked ? 'bg-gray-100 cursor-not-allowed' : ''
+                                    className={`pe-24 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 ${isApiKeyLocked ? 'bg-gray-100 cursor-not-allowed' : ''
                                         }`}
                                     value={apiKey || ''}
                                     onChange={(e) => setApiKey(e.target.value)}
                                     disabled={isApiKeyLocked}
                                     onClick={handleInputClick}
-                                    placeholder="Enter your API key"
+                                    placeholder={t('settings.transcript.apiKeyPlaceholder')}
+                                    dir="ltr"
                                 />
                                 {isApiKeyLocked && (
                                     <div
@@ -195,7 +198,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                         className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-50 rounded-md cursor-not-allowed"
                                     />
                                 )}
-                                <div className="absolute inset-y-0 right-0 pr-1 flex items-center">
+                                <div className="absolute inset-y-0 end-0 pe-1 flex items-center">
                                     <Button
                                         type="button"
                                         variant="ghost"
@@ -203,7 +206,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                         onClick={() => setIsApiKeyLocked(!isApiKeyLocked)}
                                         className={`transition-colors duration-200 ${isLockButtonVibrating ? 'animate-vibrate text-red-500' : ''
                                             }`}
-                                        title={isApiKeyLocked ? "Unlock to edit" : "Lock to prevent editing"}
+                                        title={isApiKeyLocked ? t('settings.transcript.unlockToEdit') : t('settings.transcript.lockToPrevent')}
                                     >
                                         {isApiKeyLocked ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
                                     </Button>

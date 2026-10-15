@@ -42,33 +42,35 @@ export interface ParakeetEngineState {
   error: string | null;
 }
 
+export type ParakeetTranslate = (key: MessageKey, params?: Record<string, string | number>) => string;
+
 // User-friendly model display configuration
 export interface ModelDisplayInfo {
-  friendlyName: string;
+  nameKey: MessageKey;
   icon: string;
-  tagline: string;
+  taglineKey: MessageKey;
   recommended?: boolean;
   tier: 'fastest' | 'balanced' | 'precise';
 }
 
 export const MODEL_DISPLAY_CONFIG: Record<string, ModelDisplayInfo> = {
   'parakeet-tdt-0.6b-v3-int8': {
-    friendlyName: 'Lightning',
+    nameKey: 'parakeetMgr.nameLightning',
     icon: '⚡',
-    tagline: 'Real time • Best for speed, great accuracy',
+    taglineKey: 'parakeetMgr.tagLightning',
     recommended: true,
     tier: 'fastest'
   },
   'parakeet-tdt-0.6b-v2-int8': {
-    friendlyName: 'Compact',
+    nameKey: 'parakeetMgr.nameCompact',
     icon: '📦',
-    tagline: 'Real time • Smaller size',
+    taglineKey: 'parakeetMgr.tagCompact',
     tier: 'balanced'
   },
   'parakeet-tdt-0.6b-v3-fp32': {
-    friendlyName: 'Precise',
+    nameKey: 'parakeetMgr.namePrecise',
     icon: '🎯',
-    tagline: '20x real-time • Higher accuracy',
+    taglineKey: 'parakeetMgr.tagPrecise',
     tier: 'precise'
   }
 };
@@ -111,9 +113,9 @@ export function getModelIcon(accuracy: ModelAccuracy): string {
 }
 
 // Get user-friendly display name for a model
-export function getModelDisplayName(modelName: string): string {
+export function getModelDisplayName(modelName: string, t: ParakeetTranslate): string {
   const displayInfo = MODEL_DISPLAY_CONFIG[modelName];
-  return displayInfo?.friendlyName || modelName;
+  return displayInfo ? t(displayInfo.nameKey) : modelName;
 }
 
 // Get model display info (icon, tagline, etc.)
@@ -129,11 +131,16 @@ export function getStatusColor(status: ModelStatus): string {
   return 'gray';
 }
 
-export function formatFileSize(sizeMb: number): string {
+export function formatFileSize(
+  sizeMb: number,
+  t: ParakeetTranslate,
+  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string
+): string {
   if (sizeMb >= 1000) {
-    return `${(sizeMb / 1000).toFixed(1)}GB`;
+    const value = formatNumber(sizeMb / 1000, { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+    return t('modelMgr.sizeGb', { value });
   }
-  return `${sizeMb}MB`;
+  return t('modelMgr.sizeMb', { value: formatNumber(sizeMb, { maximumFractionDigits: 1 }) });
 }
 
 // Helper function to check if model is quantized
@@ -163,6 +170,7 @@ export function getRecommendedModel(systemSpecs?: { ram: number; cores: number }
 }
 
 // Tauri command wrappers for Parakeet backend
+import type { MessageKey } from '@/i18n/types';
 import { invoke } from '@tauri-apps/api/core';
 
 export class ParakeetAPI {

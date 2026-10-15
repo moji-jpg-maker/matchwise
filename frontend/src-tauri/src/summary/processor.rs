@@ -182,6 +182,7 @@ pub(crate) fn language_name_from_code(code: &str) -> Option<&'static str> {
         "nl" => Some("Dutch"),
         "pl" => Some("Polish"),
         "ar" => Some("Arabic"),
+        "fa" => Some("Persian"),
         "hi" => Some("Hindi"),
         "ta" => Some("Tamil"),
         "tr" => Some("Turkish"),
@@ -643,6 +644,11 @@ async fn normalize_markdown_to_english(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn persian_has_a_language_name_for_summaries() {
+        assert_eq!(super::language_name_from_code("fa"), Some("Persian"));
+    }
+
     use super::*;
 
     #[test]

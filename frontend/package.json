@@ -6,6 +6,7 @@
     "scripts": {
         "dev": "next dev -p 3118",
         "check:invoke": "node scripts/check-invoke-handlers.js",
+        "check:i18n": "node scripts/check-i18n.js",
         "build": "next build",
         "export": "next export",
         "start": "next start -p 3118",
@@ -32,6 +33,8 @@
         "@blocknote/core": "0.36.0",
         "@blocknote/react": "0.36.0",
         "@blocknote/shadcn": "0.36.0",
+        "@fontsource-variable/source-sans-3": "^5.3.1",
+        "@fontsource-variable/vazirmatn": "^5.3.0",
         "@heroicons/react": "^2.2.0",
         "@hookform/resolvers": "^5.1.1",
         "@radix-ui/react-accordion": "^1.2.12",

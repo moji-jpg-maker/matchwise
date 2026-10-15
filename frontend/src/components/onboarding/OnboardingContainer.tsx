@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ProgressIndicator } from './shared/ProgressIndicator';
 import { useOnboarding } from '@/contexts/OnboardingContext';
+import { useT } from '@/i18n';
 import type { OnboardingContainerProps } from '@/types/onboarding';
 
 export function OnboardingContainer({
@@ -21,6 +22,7 @@ export function OnboardingContainer({
   canGoPrevious = true,
 }: OnboardingContainerProps) {
   const { goToStep, goPrevious, goNext } = useOnboarding();
+  const t = useT();
 
   const handlePrevious = () => {
     if (onPrevious) {
@@ -50,9 +52,10 @@ export function OnboardingContainer({
           <div className="mb-2 relative flex-shrink-0">
             {/* Navigation Buttons */}
             {showNavigation && (
-              <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 flex justify-between pointer-events-none">
+              <div className="absolute top-1/2 -translate-y-1/2 start-0 end-0 flex justify-between pointer-events-none">
                 <button
                   onClick={handlePrevious}
+                  aria-label={t('onboarding.back')}
                   disabled={!canGoPrevious || step === 1}
                   className={cn(
                     'pointer-events-auto w-8 h-8 rounded-full bg-white border border-gray-200 shadow-sm flex items-center justify-center transition-all duration-200',
@@ -61,11 +64,12 @@ export function OnboardingContainer({
                       : 'opacity-0 cursor-not-allowed'
                   )}
                 >
-                  <ChevronLeft className="w-4 h-4" />
+                  <ChevronLeft className="w-4 h-4 rtl-mirror" />
                 </button>
 
                 <button
                   onClick={handleNext}
+                  aria-label={t('onboarding.next')}
                   disabled={!canGoNext || step === totalSteps}
                   className={cn(
                     'pointer-events-auto w-8 h-8 rounded-full bg-white border border-gray-200 shadow-sm flex items-center justify-center transition-all duration-200',
@@ -74,7 +78,7 @@ export function OnboardingContainer({
                       : 'opacity-0 cursor-not-allowed'
                   )}
                 >
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-4 h-4 rtl-mirror" />
                 </button>
               </div>
             )}
@@ -95,7 +99,7 @@ export function OnboardingContainer({
         </div>
 
         {/* Content - Scrollable */}
-        <div className="flex-1 overflow-y-auto pr-2">
+        <div className="flex-1 overflow-y-auto pe-2">
           <div className="space-y-6">{children}</div>
         </div>
       </div>

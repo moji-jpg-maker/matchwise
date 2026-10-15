@@ -10,6 +10,7 @@ import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
+import { useT } from '@/i18n';
 
 /**
  * TranscriptPanel Component
@@ -30,7 +31,7 @@ export function TranscriptPanel({
   isStopping,
   showModal
 }: TranscriptPanelProps) {
-  // Contexts
+  const t = useT();
   const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
   const { transcriptModelConfig } = useConfig();
   const { isRecording, isPaused } = useRecordingState();
@@ -50,23 +51,23 @@ export function TranscriptPanel({
   );
 
   return (
-    <div ref={transcriptContainerRef} className="w-full border-r border-gray-200 bg-white flex flex-col overflow-y-auto">
+    <div ref={transcriptContainerRef} className="w-full border-e border-gray-200 bg-white flex flex-col overflow-y-auto">
       {/* Title area - Sticky header */}
       <div className="sticky top-0 z-10 bg-white p-4 border-gray-200">
         <div className="flex flex-col space-y-3">
           <div className="flex  flex-col space-y-2">
-            <div className="flex justify-center  items-center space-x-2">
+            <div className="flex justify-center  items-center space-x-2 rtl:space-x-reverse">
               <ButtonGroup>
                 {transcripts?.length > 0 && (
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={copyTranscript}
-                    title="Copy Transcript"
+                    title={t('meetingUi.copyTranscript')}
                   >
                     <Copy />
                     <span className='hidden md:inline'>
-                      Copy
+                      {t('meetingUi.copy')}
                     </span>
                   </Button>
                 )}
@@ -75,11 +76,11 @@ export function TranscriptPanel({
                     variant="outline"
                     size="sm"
                     onClick={() => showModal('languageSettings')}
-                    title="Language"
+                    title={t('common.language')}
                   >
                     <GlobeIcon />
                     <span className='hidden md:inline'>
-                      Language
+                      {t('common.language')}
                     </span>
                   </Button>
                 }

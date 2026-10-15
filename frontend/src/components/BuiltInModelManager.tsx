@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { Download, RefreshCw, BadgeAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatSummaryModelSizeLabelFromMb } from '@/lib/onboarding-summary-model';
+import { useI18n } from '@/i18n';
 
 interface ModelInfo {
   name: string;
@@ -40,6 +41,13 @@ export function BuiltInModelManager({
   onModelSelect,
   layout = 'inline',
 }: BuiltInModelManagerProps) {
+  const { t, fmt } = useI18n();
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+  const sizeFormatters = { t, number: fmt.number };
+  const oneDecimal = { maximumFractionDigits: 1, minimumFractionDigits: 1 };
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hasFetched, setHasFetched] = useState<boolean>(false);
@@ -62,7 +70,7 @@ export function BuiltInModelManager({
       }
     } catch (error) {
       console.error('Failed to fetch built-in AI models:', error);
-      toast.error('Failed to load models');
+      toast.error(tRef.current('builtinMgr.loadFail'));
     } finally {
       setIsLoading(false);
       setHasFetched(true);
@@ -127,7 +135,7 @@ export function BuiltInModelManager({
           });
           // Refresh models list
           fetchModels();
-          toast.success(`Model ${model} downloaded successfully`);
+          toast.success(tRef.current('builtinMgr.downloaded', { name: model }));
         }
 
         // Handle cancelled status
@@ -216,7 +224,7 @@ export function BuiltInModelManager({
       }
 
       // For real errors, show toast and remove from downloading
-      toast.error(`Failed to download ${modelName}`);
+      toast.error(t('builtinMgr.downloadFail', { name: modelName }));
 
       setDownloadingModels((prev) => {
         const newSet = new Set(prev);
@@ -232,7 +240,7 @@ export function BuiltInModelManager({
   const cancelDownload = async (modelName: string) => {
     try {
       await invoke('builtin_ai_cancel_download', { modelName });
-      toast.info(`Download of ${modelName} cancelled`);
+      toast.info(t('builtinMgr.cancelled', { name: modelName }));
       setDownloadingModels((prev) => {
         const newSet = new Set(prev);
         newSet.delete(modelName);
@@ -246,11 +254,11 @@ export function BuiltInModelManager({
   const deleteModel = async (modelName: string) => {
     try {
       await invoke('builtin_ai_delete_model', { modelName });
-      toast.success(`Model ${modelName} deleted`);
+      toast.success(t('builtinMgr.deleted', { name: modelName }));
       fetchModels();
     } catch (error) {
       console.error('Failed to delete model:', error);
-      toast.error(`Failed to delete ${modelName}`);
+      toast.error(t('builtinMgr.deleteFail', { name: modelName }));
     }
   };
 
@@ -259,7 +267,7 @@ export function BuiltInModelManager({
     return (
       <div className="text-center py-8 text-muted-foreground">
         <RefreshCw className="mx-auto h-8 w-8 animate-spin mb-2" />
-        Loading models...
+        {t('common.loading')}
       </div>
     );
   }
@@ -269,7 +277,7 @@ export function BuiltInModelManager({
     return (
       <Alert>
         <AlertDescription>
-          No models found. Download a model to get started with Built-in AI.
+          {t('builtinMgr.noModels')}
         </AlertDescription>
       </Alert>
     );
@@ -278,13 +286,13 @@ export function BuiltInModelManager({
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h4 className="text-sm font-bold">Built-in AI Models</h4>
+        <h4 className="text-sm font-bold">{t('builtinMgr.heading')}</h4>
       </div>
 
       <div
         className={cn(
           'grid gap-4',
-          layout === 'dialog' && 'max-h-[50vh] overflow-y-auto pr-2 pb-2'
+          layout === 'dialog' && 'max-h-[50vh] overflow-y-auto pe-2 pb-2'
         )}
       >
         {models.map((model) => {
@@ -319,16 +327,16 @@ export function BuiltInModelManager({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="min-w-0 break-words text-base font-bold leading-snug text-gray-900">{model.display_name || model.name}</span>
+                    <span dir="auto" className="min-w-0 break-words text-base font-bold leading-snug text-gray-900"><bdi>{model.display_name || model.name}</bdi></span>
                     {isAvailable && (
                       <>
                         <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-green-600">
                           <span className="h-2 w-2 rounded-full bg-green-600"></span>
-                          Ready
+                          {t('builtinMgr.ready')}
                         </span>
                         {selectedModel === model.name && (
                           <span className="shrink-0 rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
-                            Selected
+                            {t('builtinMgr.selected')}
                           </span>
                         )}
                       </>
@@ -336,17 +344,17 @@ export function BuiltInModelManager({
                     {isCorrupted && (
                       <span className="flex shrink-0 items-center gap-1 rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
                         <BadgeAlert className="h-3 w-3" />
-                        Corrupted
+                        {t('builtinMgr.corrupted')}
                       </span>
                     )}
                     {isError && (
                       <span className="shrink-0 rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-                        Error
+                        {t('builtinMgr.error')}
                       </span>
                     )}
                   </div>
                 </div>
-                <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:ml-4 sm:w-auto sm:justify-end">
+                <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:ms-4 sm:w-auto sm:justify-end">
                   {/* Not Downloaded - Show Download button */}
                   {isNotDownloaded && !modelIsDownloading && (
                     <Button
@@ -358,8 +366,8 @@ export function BuiltInModelManager({
                         downloadModel(model.name);
                       }}
                     >
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
+                      <Download className="me-2 h-4 w-4" />
+                      {t('builtinMgr.download')}
                     </Button>
                   )}
                   {/* Downloading - Show Cancel button */}
@@ -373,7 +381,7 @@ export function BuiltInModelManager({
                         cancelDownload(model.name);
                       }}
                     >
-                      Cancel
+                      {t('common.cancel')}
                     </Button>
                   )}
                   {/* Error - Show Retry button */}
@@ -387,8 +395,8 @@ export function BuiltInModelManager({
                         downloadModel(model.name);
                       }}
                     >
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Retry
+                      <RefreshCw className="me-2 h-4 w-4" />
+                      {t('builtinMgr.retry')}
                     </Button>
                   )}
                   {/* Corrupted - Show both Retry and Delete buttons */}
@@ -402,8 +410,8 @@ export function BuiltInModelManager({
                           downloadModel(model.name);
                         }}
                       >
-                        <RefreshCw className="mr-2 h-4 w-4" />
-                        Retry
+                        <RefreshCw className="me-2 h-4 w-4" />
+                        {t('builtinMgr.retry')}
                       </Button>
                       <Button
                         variant="outline"
@@ -413,8 +421,8 @@ export function BuiltInModelManager({
                           deleteModel(model.name);
                         }}
                       >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
+                        <Trash2 className="me-2 h-4 w-4" />
+                        {t('common.delete')}
                       </Button>
                     </>
                   )}
@@ -426,7 +434,7 @@ export function BuiltInModelManager({
                         e.stopPropagation();
                         deleteModel(model.name);
                       }}
-                      title="Delete model"
+                      title={t('builtinMgr.deleteTitle')}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -435,19 +443,19 @@ export function BuiltInModelManager({
               </div>
               <div className="text-sm text-gray-600">
                 {model.description && (
-                  <p className="mb-1">{model.description}</p>
+                  <p className="mb-1" dir="auto">{model.description}</p>
                 )}
                 {(isError || isCorrupted) && (
-                  <p className="mb-1 text-xs text-red-600">
+                  <p className="mb-1 text-xs text-red-600" dir="auto">
                     {isError && typeof model.status === 'object' && 'Error' in model.status
                       ? (model.status as any).Error
                       : isCorrupted
-                      ? 'File is corrupted. Retry download or delete.'
-                      : 'An error occurred'}
+                      ? t('builtinMgr.corruptedHint')
+                      : t('builtinMgr.genericError')}
                   </p>
                 )}
                 <div className="text-xs text-gray-500">
-                  <span>{formatSummaryModelSizeLabelFromMb(model.size_mb)} • {model.context_size} tokens</span>
+                  <span>{t('builtinMgr.sizeTokens', { size: formatSummaryModelSizeLabelFromMb(model.size_mb, sizeFormatters), count: fmt.number(model.context_size) })}</span>
                 </div>
                 </div>
               </div>
@@ -456,23 +464,23 @@ export function BuiltInModelManager({
               {modelIsDownloading && progress !== undefined && (
                 <div className="mt-3 pt-3 border-t border-gray-200">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-medium text-gray-900">Downloading...</span>
+                    <span className="text-sm font-medium text-gray-900">{t('builtinMgr.downloading')}</span>
                     <span className="text-sm font-semibold text-gray-900">
-                      {Math.round(progress)}%
+                      {fmt.percent(Math.round(progress) / 100)}
                     </span>
                   </div>
                   <div className="text-sm text-gray-600 mb-2">
                     {progressInfo?.totalMb > 0 ? (
                       <>
-                        {progressInfo.downloadedMb.toFixed(1)} MiB / {progressInfo.totalMb.toFixed(1)} MiB
+                        {t('builtinMgr.progressMib', { done: fmt.number(progressInfo.downloadedMb, oneDecimal), total: fmt.number(progressInfo.totalMb, oneDecimal) })}
                         {progressInfo.speedMbps > 0 && (
-                          <span className="ml-2 text-gray-500">
-                            ({progressInfo.speedMbps.toFixed(1)} MiB/s)
+                          <span className="ms-2 text-gray-500">
+                            {t('builtinMgr.speedMib', { speed: fmt.number(progressInfo.speedMbps, oneDecimal) })}
                           </span>
                         )}
                       </>
                     ) : (
-                      <span>{formatSummaryModelSizeLabelFromMb(model.size_mb)}</span>
+                      <span>{formatSummaryModelSizeLabelFromMb(model.size_mb, sizeFormatters)}</span>
                     )}
                   </div>
                   <div className="w-full h-2.5 bg-gray-200 rounded-full overflow-hidden">

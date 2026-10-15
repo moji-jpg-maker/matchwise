@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --font-source-sans-3: 'Source Sans 3 Variable', 'Source Sans 3';
+  --font-fa: 'Vazirmatn Variable', 'Vazirmatn';
+}
+
+:lang(fa) body {
+  font-family: var(--font-fa), var(--font-source-sans-3), system-ui, sans-serif;
+  line-height: 1.7;
+}
+
+:lang(fa) code,
+:lang(fa) pre,
+.ltr-island {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+[dir='rtl'] .rtl-mirror {
+  transform: scaleX(-1);
+}
+
 @keyframes vibrate {
   0% {
     transform: translate(0);
@@ -205,6 +226,10 @@
 
   .bn-default-styles {
     max-width: none !important;
+  }
+
+  .bn-inline-content {
+    unicode-bidi: plaintext;
   }
 
   /* Disable scrolling on any BlockNote wrapper elements */

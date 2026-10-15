@@ -7,6 +7,11 @@ import {
   isCancelledError,
   startDownloadState,
 } from '../../src/lib/download-progress';
+import { createFormatters } from '../../src/i18n/format';
+import { translate } from '../../src/i18n';
+
+const tEn = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) => translate('en', key, params);
+const tFa = (key: Parameters<typeof translate>[1], params?: Record<string, string | number>) => translate('fa', key, params);
 
 describe('download progress events', () => {
   const start = startDownloadState('m1');
@@ -45,8 +50,9 @@ describe('download progress events', () => {
   });
 
   test('detail text omits unknown parts', () => {
-    expect(formatDownloadDetail(start)).toBe('0%');
-    expect(formatDownloadDetail({ model: 'm1', progress: 42.4, downloadedMb: 310.2, totalMb: 1200, speedMbps: 5.25 })).toBe('42% · 310 / 1200 MiB · 5.3 MiB/s');
+    expect(formatDownloadDetail(start, tEn, createFormatters('en'))).toBe('0%');
+    expect(formatDownloadDetail({ model: 'm1', progress: 42.4, downloadedMb: 310.2, totalMb: 1200, speedMbps: 5.25 }, tEn, createFormatters('en'))).toBe('42% · 310 / 1,200 MiB · 5.3 MiB/s');
+    expect(formatDownloadDetail({ model: 'm1', progress: 42.4, downloadedMb: 310.2, totalMb: 1200, speedMbps: 5.25 }, tFa, createFormatters('fa'))).toContain('۴۲');
   });
 
   test('a CANCELLED: rejection is recognised, other errors are not', () => {

@@ -1,11 +1,27 @@
 use chrono::Utc;
-use matchmaking_core::{FieldDef, FieldRegistry, Preference, Profile, RuleSet};
+use matchmaking_core::{FieldDef, FieldKind, FieldRegistry, Preference, Profile, RuleSet};
 use sqlx::{Row, SqlitePool};
 
 pub const ORG: &str = "default";
 
-/// Version of the default field set. v1 = first M1 release (no `children`), v2 = adds `children`, curated order, v3 = adds the Big Five score fields written by the Mini-IPIP questionnaire.
-const FIELD_SEED_VERSION: i64 = 3;
+/// Version of the default field set. v1 = first M1 release (no `children`), v2 = adds `children`, curated order, v3 = adds the Big Five score fields written by the Mini-IPIP questionnaire, v4 = backfills Persian labels (`label_fa`) on stored default fields.
+const FIELD_SEED_VERSION: i64 = 4;
+
+fn backfill_persian_labels(stored: &mut FieldDef, default: &FieldDef) -> bool {
+    let mut changed = false;
+    if stored.label_fa.is_none() && default.label_fa.is_some() {
+        stored.label_fa = default.label_fa.clone();
+        changed = true;
+    }
+    if let (FieldKind::Records(stored_subs), FieldKind::Records(default_subs)) = (&mut stored.kind, &default.kind) {
+        for sub in stored_subs.iter_mut() {
+            if let Some(default_sub) = default_subs.iter().find(|candidate| candidate.key == sub.key) {
+                changed |= backfill_persian_labels(sub, default_sub);
+            }
+        }
+    }
+    changed
+}
 
 pub struct MmRepository;
 
@@ -50,6 +66,24 @@ impl MmRepository {
                     .bind(&def.key)
                     .execute(&mut *tx)
                     .await?;
+                let stored_json: Option<String> = sqlx::query_scalar("SELECT definition FROM mm_field_definitions WHERE org_id = ? AND key = ?")
+                    .bind(ORG)
+                    .bind(&def.key)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                if let Some(stored_json) = stored_json {
+                    if let Ok(mut stored) = serde_json::from_str::<FieldDef>(&stored_json) {
+                        if backfill_persian_labels(&mut stored, def) {
+                            let updated = serde_json::to_string(&stored).map_err(|e| bad(e.to_string()))?;
+                            sqlx::query("UPDATE mm_field_definitions SET definition = ? WHERE org_id = ? AND key = ?")
+                                .bind(updated)
+                                .bind(ORG)
+                                .bind(&def.key)
+                                .execute(&mut *tx)
+                                .await?;
+                        }
+                    }
+                }
             }
             // Matchmaker-defined fields come after the defaults.
             sqlx::query("UPDATE mm_field_definitions SET sort_order = sort_order + 1000 WHERE org_id = ? AND sort_order < 1000 AND key NOT IN (SELECT value FROM json_each(?))")

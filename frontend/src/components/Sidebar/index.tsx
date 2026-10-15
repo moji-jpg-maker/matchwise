@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Users, ListChecks, HeartHandshake, Send, ClipboardList, Database, Gauge, Inbox } from 'lucide-react';
+import { useI18n } from '@/i18n';
 import { useRouter, usePathname } from 'next/navigation';
 import { confirmNavigation } from '@/lib/navigation-guard';
 import { useSidebar } from './SidebarProvider';
@@ -40,6 +41,8 @@ interface SidebarItem {
 }
 
 const Sidebar: React.FC = () => {
+  const { dir, t } = useI18n();
+  const tooltipSide = dir === 'rtl' ? 'left' : 'right';
   const nextRouter = useRouter();
   const router = useMemo(
     () => ({
@@ -338,8 +341,8 @@ const Sidebar: React.FC = () => {
       const updatedMeetings = meetings.filter((m: CurrentMeeting) => m.id !== itemId);
       setMeetings(updatedMeetings);
       // Show success toast
-      toast.success("Meeting deleted successfully", {
-        description: "All associated data has been removed"
+      toast.success(t('sidebar.deleted'), {
+        description: t('sidebar.deletedDesc')
       });
 
       // If deleting the active meeting, navigate to home
@@ -349,7 +352,7 @@ const Sidebar: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to delete meeting:', error);
-      toast.error("Failed to delete meeting", {
+      toast.error(t('sidebar.deleteFailed'), {
         description: error instanceof Error ? error.message : String(error)
       });
     }
@@ -380,7 +383,7 @@ const Sidebar: React.FC = () => {
 
     // Prevent empty titles
     if (!newTitle) {
-      toast.error("Meeting title cannot be empty");
+      toast.error(t('sidebar.titleEmpty'));
       return;
     }
 
@@ -400,14 +403,14 @@ const Sidebar: React.FC = () => {
       if (currentMeeting?.id === meetingId) {
         setCurrentMeeting({ id: meetingId, title: newTitle });
       }
-      toast.success("Meeting title updated successfully");
+      toast.success(t('sidebar.titleUpdated'));
 
       // Close modal and reset state
       setEditModalState({ isOpen: false, meetingId: null, currentTitle: '' });
       setEditingTitle('');
     } catch (error) {
       console.error('Failed to update meeting title:', error);
-      toast.error("Failed to update meeting title", {
+      toast.error(t('sidebar.titleUpdateFailed'), {
         description: error instanceof Error ? error.message : String(error)
       });
     }
@@ -463,8 +466,8 @@ const Sidebar: React.FC = () => {
                 <Home className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Home</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.home')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -482,8 +485,8 @@ const Sidebar: React.FC = () => {
                 )}
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>{isRecording ? "Recording in progress..." : "Start Recording"}</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{isRecording ? t('sidebar.recordingInProgress') : t('sidebar.startRecording')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -497,8 +500,8 @@ const Sidebar: React.FC = () => {
                   <Upload className="w-5 h-5 text-blue-600" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="right">
-                <p>Import Audio</p>
+              <TooltipContent side={tooltipSide}>
+                <p>{t('nav.importAudio')}</p>
               </TooltipContent>
             </Tooltip>
           )}
@@ -516,8 +519,8 @@ const Sidebar: React.FC = () => {
                 <NotebookPen className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Meeting Notes</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.meetingNotes')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -530,8 +533,8 @@ const Sidebar: React.FC = () => {
                 <ClipboardList className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Questionnaires</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.questionnaires')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -544,8 +547,8 @@ const Sidebar: React.FC = () => {
                 <Send className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Telegram</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.telegram')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -558,8 +561,8 @@ const Sidebar: React.FC = () => {
                 <HeartHandshake className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Matches</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.matches')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -572,8 +575,8 @@ const Sidebar: React.FC = () => {
                 <ListChecks className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Rules</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.rules')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -586,8 +589,8 @@ const Sidebar: React.FC = () => {
                 <Database className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Decision data</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.decisionData')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -600,8 +603,8 @@ const Sidebar: React.FC = () => {
                 <Gauge className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Scoring</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.scoring')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -614,8 +617,8 @@ const Sidebar: React.FC = () => {
                 <Users className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Profiles</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.profiles')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -628,8 +631,8 @@ const Sidebar: React.FC = () => {
                 <Inbox className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Bulk intake</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.bulkIntake')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -643,8 +646,8 @@ const Sidebar: React.FC = () => {
                 <Settings className="w-5 h-5 text-gray-600" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Settings</p>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.settings')}</p>
             </TooltipContent>
           </Tooltip>
 
@@ -695,31 +698,31 @@ const Sidebar: React.FC = () => {
           {item.type === 'folder' ? (
             <>
               {item.id === 'meetings' ? (
-                <Calendar className="w-4 h-4 mr-2" />
+                <Calendar className="w-4 h-4 me-2" />
               ) : item.id === 'notes' ? (
-                <Calendar className="w-4 h-4 mr-2" />
+                <Calendar className="w-4 h-4 me-2" />
               ) : null}
-              <span className={depth === 0 ? "" : "font-medium"}>{item.title}</span>
-              <div className="ml-auto">
+              <span className={depth === 0 ? "" : "font-medium"}>{item.id === 'meetings' ? t('nav.meetingNotes') : item.title}</span>
+              <div className="ms-auto">
                 {isExpanded ? (
                   <ChevronDown className="w-4 h-4 text-gray-500" />
                 ) : (
-                  <ChevronRight className="w-4 h-4 text-gray-500" />
+                  <ChevronRight className="w-4 h-4 text-gray-500 rtl-mirror" />
                 )}
               </div>
               {searchQuery && item.id === 'meetings' && isSearching && (
-                <span className="ml-2 text-xs text-blue-500 animate-pulse">Searching...</span>
+                <span className="ms-2 text-xs text-blue-500 animate-pulse">{t('sidebar.searching')}</span>
               )}
             </>
           ) : (
             <div className="flex flex-col w-full">
               <div className="flex items-center w-full">
                 {isMeetingItem ? (
-                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-gray-100">
+                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full me-2 bg-gray-100">
                     <File className="w-3.5 h-3.5 text-gray-600" />
                   </div>
                 ) : (
-                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-blue-100">
+                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full me-2 bg-blue-100">
                     <Plus className="w-3.5 h-3.5 text-blue-600" />
                   </div>
                 )}
@@ -732,7 +735,7 @@ const Sidebar: React.FC = () => {
                         handleEditStart(item.id, item.title);
                       }}
                       className="hover:text-blue-600 p-1 rounded-md hover:bg-blue-50 flex-shrink-0"
-                      aria-label="Edit meeting title"
+                      aria-label={t('sidebar.editMeetingTitle')}
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
@@ -742,7 +745,7 @@ const Sidebar: React.FC = () => {
                         setDeleteModalState({ isOpen: true, itemId: item.id });
                       }}
                       className="hover:text-red-600 p-1 rounded-md hover:bg-red-50 flex-shrink-0"
-                      aria-label="Delete meeting"
+                      aria-label={t('sidebar.deleteMeeting')}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -752,15 +755,15 @@ const Sidebar: React.FC = () => {
 
               {/* Show transcript match snippet if available */}
               {hasTranscriptMatch && (
-                <div className="mt-1 ml-8 text-xs text-gray-500 bg-yellow-50 p-1.5 rounded border border-yellow-100 line-clamp-2">
-                  <span className="font-medium text-yellow-600">Match:</span> {matchingResult.matchContext}
+                <div className="mt-1 ms-8 text-xs text-gray-500 bg-yellow-50 p-1.5 rounded border border-yellow-100 line-clamp-2">
+                  <span className="font-medium text-yellow-600">{t('sidebar.matchLabel')}</span> {matchingResult.matchContext}
                 </div>
               )}
             </div>
           )}
         </div>
         {item.type === 'folder' && isExpanded && item.children && (
-          <div className="ml-1">
+          <div className="ms-1">
             {item.children.map(child => renderItem(child, depth + 1))}
           </div>
         )}
@@ -769,22 +772,22 @@ const Sidebar: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-0 left-0 h-screen z-40">
+    <div className="fixed top-0 start-0 h-screen z-40">
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}
-        className="absolute -right-6 top-20 z-50 p-1 bg-white hover:bg-gray-100 rounded-full shadow-lg border"
-        style={{ transform: 'translateX(50%)' }}
+        className="absolute -end-6 top-20 z-50 p-1 bg-white hover:bg-gray-100 rounded-full shadow-lg border"
+        style={{ transform: dir === 'rtl' ? 'translateX(-50%)' : 'translateX(50%)' }}
       >
         {isCollapsed ? (
-          <ChevronRightCircle className="w-6 h-6" />
+          <ChevronRightCircle className="w-6 h-6 rtl-mirror" />
         ) : (
-          <ChevronLeftCircle className="w-6 h-6" />
+          <ChevronLeftCircle className="w-6 h-6 rtl-mirror" />
         )}
       </button>
 
       <div
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
+        className={`h-screen bg-white border-e shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
           }`}
       >
         {/*  Header with traffic light spacing */}
@@ -804,7 +807,7 @@ const Sidebar: React.FC = () => {
 
                 <div className="relative mb-1">
                   <InputGroup >
-                    <InputGroupInput placeholder='Search meeting content...' value={searchQuery}
+                    <InputGroupInput placeholder={t('sidebar.searchPlaceholder')} value={searchQuery}
                       onChange={(e) => handleSearchChange(e.target.value)}
                     />
                     <InputGroupAddon>
@@ -835,8 +838,8 @@ const Sidebar: React.FC = () => {
                 onClick={() => router.push('/')}
                 className="p-3  text-lg font-semibold items-center hover:bg-gray-100 h-10   flex mx-3 mt-3 rounded-lg cursor-pointer"
               >
-                <Home className="w-4 h-4 mr-2" />
-                <span>Home</span>
+                <Home className="w-4 h-4 me-2" />
+                <span>{t('nav.home')}</span>
               </div>
             )}
           </div>
@@ -852,10 +855,10 @@ const Sidebar: React.FC = () => {
                     <div
                       className="flex items-center transition-all duration-150 p-3 text-lg font-semibold h-10 mx-3 mt-3 rounded-lg"
                     >
-                      <NotebookPen className="w-4 h-4 mr-2 text-gray-600" />
-                      <span className="text-gray-700">{item.title}</span>
+                      <NotebookPen className="w-4 h-4 me-2 text-gray-600" />
+                      <span className="text-gray-700">{item.id === 'meetings' ? t('nav.meetingNotes') : item.title}</span>
                       {searchQuery && item.id === 'meetings' && isSearching && (
-                        <span className="ml-2 text-xs text-blue-500 animate-pulse">Searching...</span>
+                        <span className="ms-2 text-xs text-blue-500 animate-pulse">{t('sidebar.searching')}</span>
                       )}
                     </div>
                   </div>
@@ -889,13 +892,13 @@ const Sidebar: React.FC = () => {
             >
               {isRecording ? (
                 <>
-                  <Square className="w-4 h-4 mr-2" />
-                  <span>Recording in progress...</span>
+                  <Square className="w-4 h-4 me-2" />
+                  <span>{t('sidebar.recordingInProgress')}</span>
                 </>
               ) : (
                 <>
-                  <Mic className="w-4 h-4 mr-2" />
-                  <span>Start Recording</span>
+                  <Mic className="w-4 h-4 me-2" />
+                  <span>{t('sidebar.startRecording')}</span>
                 </>
               )}
             </button>
@@ -905,8 +908,8 @@ const Sidebar: React.FC = () => {
                 onClick={() => openImportDialog()}
                 className="w-full flex items-center justify-center px-3 py-2 mt-1 text-sm font-medium text-gray-700 bg-blue-100 hover:bg-blue-200 rounded-lg transition-colors shadow-sm"
               >
-                <Upload className="w-4 h-4 mr-2" />
-                <span>Import Audio</span>
+                <Upload className="w-4 h-4 me-2" />
+                <span>{t('nav.importAudio')}</span>
               </button>
             )}
 
@@ -914,72 +917,72 @@ const Sidebar: React.FC = () => {
               onClick={() => router.push('/questionnaires')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <ClipboardList className="w-4 h-4 mr-2" />
-              <span>Questionnaires</span>
+              <ClipboardList className="w-4 h-4 me-2" />
+              <span>{t('nav.questionnaires')}</span>
             </button>
 
             <button
               onClick={() => router.push('/telegram')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <Send className="w-4 h-4 mr-2" />
-              <span>Telegram</span>
+              <Send className="w-4 h-4 me-2" />
+              <span>{t('nav.telegram')}</span>
             </button>
 
             <button
               onClick={() => router.push('/matches')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <HeartHandshake className="w-4 h-4 mr-2" />
-              <span>Matches</span>
+              <HeartHandshake className="w-4 h-4 me-2" />
+              <span>{t('nav.matches')}</span>
             </button>
 
             <button
               onClick={() => router.push('/rules')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <ListChecks className="w-4 h-4 mr-2" />
-              <span>Rules</span>
+              <ListChecks className="w-4 h-4 me-2" />
+              <span>{t('nav.rules')}</span>
             </button>
 
             <button
               onClick={() => router.push('/export')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <Database className="w-4 h-4 mr-2" />
-              <span>Decision data</span>
+              <Database className="w-4 h-4 me-2" />
+              <span>{t('nav.decisionData')}</span>
             </button>
 
             <button
               onClick={() => router.push('/scoring')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <Gauge className="w-4 h-4 mr-2" />
-              <span>Scoring</span>
+              <Gauge className="w-4 h-4 me-2" />
+              <span>{t('nav.scoring')}</span>
             </button>
 
             <button
               onClick={() => router.push('/profiles')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <Users className="w-4 h-4 mr-2" />
-              <span>Profiles</span>
+              <Users className="w-4 h-4 me-2" />
+              <span>{t('nav.profiles')}</span>
             </button>
 
             <button
               onClick={() => router.push('/intake')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <Inbox className="w-4 h-4 mr-2" />
-              <span>Bulk intake</span>
+              <Inbox className="w-4 h-4 me-2" />
+              <span>{t('nav.bulkIntake')}</span>
             </button>
 
             <button
               onClick={() => router.push('/settings')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
             >
-              <Settings className="w-4 h-4 mr-2" />
-              <span>Settings</span>
+              <Settings className="w-4 h-4 me-2" />
+              <span>{t('nav.settings')}</span>
             </button>
             <Info isCollapsed={isCollapsed} />
             <div className="w-full flex items-center justify-center px-3 py-1 text-xs text-gray-400">
@@ -992,7 +995,7 @@ const Sidebar: React.FC = () => {
       {/* Confirmation Modal for Delete */}
       <ConfirmationModal
         isOpen={deleteModalState.isOpen}
-        text="Are you sure you want to delete this meeting? This action cannot be undone."
+        text={t('sidebar.confirmDelete')}
         onConfirm={handleDeleteConfirm}
         onCancel={() => setDeleteModalState({ isOpen: false, itemId: null })}
       />
@@ -1003,14 +1006,14 @@ const Sidebar: React.FC = () => {
       }}>
         <DialogContent className="sm:max-w-[425px]">
           <VisuallyHidden>
-            <DialogTitle>Edit Meeting Title</DialogTitle>
+            <DialogTitle>{t('sidebar.editMeetingTitle')}</DialogTitle>
           </VisuallyHidden>
           <div className="py-4">
-            <h3 className="text-lg font-semibold mb-4">Edit Meeting Title</h3>
+            <h3 className="text-lg font-semibold mb-4">{t('sidebar.editMeetingTitle')}</h3>
             <div className="space-y-4">
               <div>
                 <label htmlFor="meeting-title" className="block text-sm font-medium text-gray-700 mb-2">
-                  Meeting Title
+                  {t('sidebar.meetingTitle')}
                 </label>
                 <input
                   id="meeting-title"
@@ -1025,7 +1028,7 @@ const Sidebar: React.FC = () => {
                     }
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Enter meeting title"
+                  placeholder={t('sidebar.enterMeetingTitle')}
                   autoFocus
                 />
               </div>
@@ -1036,13 +1039,13 @@ const Sidebar: React.FC = () => {
               onClick={handleEditCancel}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
             >
-              Cancel
+              {t('common.cancel')}
             </button>
             <button
               onClick={handleEditConfirm}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
             >
-              Save
+              {t('common.save')}
             </button>
           </DialogFooter>
         </DialogContent>

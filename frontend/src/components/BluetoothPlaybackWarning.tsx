@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Speaker, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useT } from '@/i18n';
 
 interface AudioOutputInfo {
   device_name: string;
@@ -23,6 +24,7 @@ export function BluetoothPlaybackWarning({
   checkInterval = 5000,
   enabled = true
 }: BluetoothPlaybackWarningProps) {
+  const t = useT();
   const [isBluetoothActive, setIsBluetoothActive] = useState(false);
   const [deviceName, setDeviceName] = useState<string>('');
   const [isDismissed, setIsDismissed] = useState(false);
@@ -72,13 +74,12 @@ export function BluetoothPlaybackWarning({
       <div className="flex items-start justify-between w-full">
         <div className="flex-1">
           <AlertTitle className="text-yellow-900 font-semibold">
-            Bluetooth Playback Detected
+            {t('btWarn.title')}
           </AlertTitle>
           <AlertDescription className="text-yellow-800 mt-1">
-            You're using <strong>{deviceName}</strong> for playback.
-            Recordings may sound distorted or sped up through Bluetooth devices.
-            For accurate review, please use <strong>computer speakers</strong> or{' '}
-            <strong>wired headphones</strong>.
+            {t('btWarn.usingPre')}<strong><bdi>{deviceName}</bdi></strong>{t('btWarn.usingPost')}{' '}
+            {t('btWarn.advicePre')}<strong>{t('btWarn.speakers')}</strong>{t('btWarn.or')}
+            <strong>{t('btWarn.wired')}</strong>{t('btWarn.adviceEnd')}
             <br />
             <a
               href="https://github.com/your-org/meetily/blob/main/BLUETOOTH_PLAYBACK_NOTICE.md"
@@ -86,7 +87,7 @@ export function BluetoothPlaybackWarning({
               rel="noopener noreferrer"
               className="underline hover:text-yellow-900 font-medium mt-2 inline-block"
             >
-              Learn why this happens →
+              {t('btWarn.learn')} <span aria-hidden="true" className="rtl:hidden">→</span><span aria-hidden="true" className="hidden rtl:inline">←</span>
             </a>
           </AlertDescription>
         </div>
@@ -94,8 +95,8 @@ export function BluetoothPlaybackWarning({
           variant="ghost"
           size="icon"
           onClick={() => setIsDismissed(true)}
-          className="ml-4 h-6 w-6 text-yellow-700 hover:text-yellow-900 hover:bg-yellow-100"
-          aria-label="Dismiss warning"
+          className="ms-4 h-6 w-6 text-yellow-700 hover:text-yellow-900 hover:bg-yellow-100"
+          aria-label={t('btWarn.dismiss')}
         >
           <X className="h-4 w-4" />
         </Button>

@@ -108,7 +108,7 @@ impl<R: Runtime> NotificationManager<R> {
         }
 
         log_info!("✅ Recording started notification is enabled, showing notification");
-        let notification = Notification::recording_started(meeting_name);
+        let notification = Notification::recording_started_for(meeting_name, crate::ui_locale::get());
         self.show_notification(notification).await
     }
 
@@ -119,7 +119,7 @@ impl<R: Runtime> NotificationManager<R> {
             return Ok(());
         }
 
-        let notification = Notification::recording_stopped();
+        let notification = Notification::recording_stopped_for(crate::ui_locale::get());
         self.show_notification(notification).await
     }
 
@@ -130,7 +130,7 @@ impl<R: Runtime> NotificationManager<R> {
             return Ok(());
         }
 
-        let notification = Notification::recording_paused();
+        let notification = Notification::recording_paused_for(crate::ui_locale::get());
         self.show_notification(notification).await
     }
 
@@ -141,7 +141,7 @@ impl<R: Runtime> NotificationManager<R> {
             return Ok(());
         }
 
-        let notification = Notification::recording_resumed();
+        let notification = Notification::recording_resumed_for(crate::ui_locale::get());
         self.show_notification(notification).await
     }
 
@@ -152,7 +152,7 @@ impl<R: Runtime> NotificationManager<R> {
             return Ok(());
         }
 
-        let notification = Notification::transcription_complete(file_path);
+        let notification = Notification::transcription_complete_for(file_path, crate::ui_locale::get());
         self.show_notification(notification).await
     }
 
@@ -168,7 +168,7 @@ impl<R: Runtime> NotificationManager<R> {
             return Ok(());
         }
 
-        let notification = Notification::meeting_reminder(minutes_until, meeting_title);
+        let notification = Notification::meeting_reminder_for(minutes_until, meeting_title, crate::ui_locale::get());
         self.show_notification(notification).await
     }
 
@@ -179,13 +179,13 @@ impl<R: Runtime> NotificationManager<R> {
             return Ok(());
         }
 
-        let notification = Notification::system_error(error);
+        let notification = Notification::system_error_for(error, crate::ui_locale::get());
         self.show_notification(notification).await
     }
 
     /// Show a test notification
     pub async fn show_test_notification(&self) -> Result<()> {
-        let notification = Notification::test_notification();
+        let notification = Notification::test_notification_for(crate::ui_locale::get());
         self.system_handler.show_notification(notification).await
     }
 

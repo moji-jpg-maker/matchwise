@@ -11,6 +11,7 @@ import { indexedDBService, MeetingMetadata, StoredTranscript } from '@/services/
 import { storageService } from '@/services/storageService';
 import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 import { toast } from 'sonner';
+import { useT } from '@/i18n';
 
 interface AudioRecoveryStatus {
   status: string; // "success" | "partial" | "failed" | "none"
@@ -31,6 +32,7 @@ export interface UseTranscriptRecoveryReturn {
 }
 
 export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
+  const t = useT();
   const [recoverableMeetings, setRecoverableMeetings] = useState<MeetingMetadata[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
@@ -162,17 +164,17 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       }
 
       // 5. Convert StoredTranscripts to the format expected by storageService
-      const formattedTranscripts = transcripts.map((t, index) => ({
-        id: t.id?.toString() || `${Date.now()}-${index}`,
-        text: t.text,
-        timestamp: t.timestamp,
-        sequence_id: t.sequenceId || index,
-        chunk_start_time: (t as any).chunk_start_time,
-        is_partial: (t as any).is_partial || false,
-        confidence: t.confidence,
-        audio_start_time: (t as any).audio_start_time,
-        audio_end_time: (t as any).audio_end_time,
-        duration: (t as any).duration,
+      const formattedTranscripts = transcripts.map((segment, index) => ({
+        id: segment.id?.toString() || `${Date.now()}-${index}`,
+        text: segment.text,
+        timestamp: segment.timestamp,
+        sequence_id: segment.sequenceId || index,
+        chunk_start_time: (segment as any).chunk_start_time,
+        is_partial: (segment as any).is_partial || false,
+        confidence: segment.confidence,
+        audio_start_time: (segment as any).audio_start_time,
+        audio_end_time: (segment as any).audio_end_time,
+        duration: (segment as any).duration,
       }));
 
       // 6. Save to backend database using existing save utilities
@@ -188,8 +190,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         await applyPinnedSummaryLanguageToMeeting(savedMeetingId);
       } catch (error) {
         console.warn('Failed to apply pinned summary language to recovered meeting:', error);
-        toast.warning('Could not apply default summary language', {
-          description: 'The recovered meeting was saved, but the default summary language was not applied.',
+        toast.warning(t('recoveryHook.langApplyTitle'), {
+          description: t('recoveryHook.langApplyDesc'),
         });
       }
 
@@ -221,7 +223,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     } finally {
       setIsRecovering(false);
     }
-  }, [loadMeetingTranscripts]);
+  }, [loadMeetingTranscripts, t]);
 
   /**
    * Delete a recoverable meeting

@@ -6,6 +6,8 @@ import { ConfidenceIndicator } from './ConfidenceIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { RecordingStatusBar } from './RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useI18n } from '@/i18n';
+import type { Formatters } from '@/i18n/format';
 
 interface TranscriptViewProps {
   transcripts: Transcript[];
@@ -21,14 +23,15 @@ interface SpeechDetectedEvent {
 }
 
 // Helper function to format seconds as recording-relative time [MM:SS]
-function formatRecordingTime(seconds: number | undefined): string {
+function formatRecordingTime(seconds: number | undefined, fmt: Formatters): string {
   if (seconds === undefined) return '[--:--]';
 
   const totalSeconds = Math.floor(seconds);
   const minutes = Math.floor(totalSeconds / 60);
   const secs = totalSeconds % 60;
 
-  return `[${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}]`;
+  const pad = { minimumIntegerDigits: 2 };
+  return `[${fmt.number(minutes, pad)}:${fmt.number(secs, pad)}]`;
 }
 
 // Helper function to remove consecutive word repetitions (especially short words ≤2 letters)
@@ -105,6 +108,7 @@ function cleanStopWords(text: string): string {
 }
 
 export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isRecording = false, isPaused = false, isProcessing = false, isStopping = false, enableStreaming = false }) => {
+  const { t, fmt } = useI18n();
   const [speechDetected, setSpeechDetected] = useState(false);
 
   // Debug: Log the props to understand what's happening
@@ -267,11 +271,11 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
         const filteredText = cleanStopWords(textToShow);
         // Show [Silence] ONLY if the ORIGINAL transcript was empty (not just after filtering)
         const originalWasEmpty = transcript.text.trim() === '';
-        const displayText = originalWasEmpty && !isStreaming ? '[Silence]' : filteredText;
+        const displayText = originalWasEmpty && !isStreaming ? t('vtranscript.silence') : filteredText;
 
         // Sizer text: use cleaned version for proper sizing, fallback to [Silence] only if original was empty
         const sizerText = cleanStopWords(isStreaming ? streamingTranscript.fullText : transcript.text)
-          || (originalWasEmpty && !isStreaming ? '[Silence]' : '');
+          || (originalWasEmpty && !isStreaming ? t('vtranscript.silence') : '');
 
         return (
           <motion.div
@@ -284,16 +288,16 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
             <div className="flex items-start gap-2">
               <Tooltip>
                 <TooltipTrigger>
-                  <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
+                  <span dir="ltr" className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
                     {transcript.audio_start_time !== undefined
-                      ? formatRecordingTime(transcript.audio_start_time)
+                      ? formatRecordingTime(transcript.audio_start_time, fmt)
                       : transcript.timestamp}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent>
                   {transcript.duration !== undefined && (
                     <span className="text-xs text-gray-400">
-                      {transcript.duration.toFixed(1)}s
+                      {t('transcriptView.seconds', { value: fmt.number(transcript.duration, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
                       {transcript.confidence !== undefined && (
                         <ConfidenceIndicator
                           confidence={transcript.confidence}
@@ -309,10 +313,10 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                   // Streaming transcript - show in bubble (full width)
                   <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
                     <div className="relative">
-                      <p className="text-base text-gray-800 leading-relaxed" style={{ visibility: 'hidden' }}>
+                      <p dir="auto" className="text-base text-gray-800 leading-relaxed" style={{ visibility: 'hidden' }}>
                         {sizerText}
                       </p>
-                      <p className="text-base text-gray-800 leading-relaxed absolute top-0 left-0">
+                      <p dir="auto" className="text-base text-gray-800 leading-relaxed absolute top-0 start-0">
                         {displayText}
                       </p>
                     </div>
@@ -320,10 +324,10 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                 ) : (
                   // Regular transcript - simple text
                   <div className="relative">
-                    <p className="text-base text-gray-800 leading-relaxed" style={{ visibility: 'hidden' }}>
+                    <p dir="auto" className="text-base text-gray-800 leading-relaxed" style={{ visibility: 'hidden' }}>
                       {sizerText}
                     </p>
-                    <p className="text-base text-gray-800 leading-relaxed absolute top-0 left-0">
+                    <p dir="auto" className="text-base text-gray-800 leading-relaxed absolute top-0 start-0">
                       {displayText}
                     </p>
                   </div>
@@ -343,7 +347,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
           className="flex items-center gap-2 mt-4 text-gray-500"
         >
           <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-          <span className="text-sm">Listening...</span>
+          <span className="text-sm">{t('vtranscript.listening')}</span>
         </motion.div>
       )}
 
@@ -360,18 +364,18 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                 <div className={`w-3 h-3 rounded-full ${isPaused ? 'bg-orange-500' : 'bg-blue-500 animate-pulse'}`}></div>
               </div>
               <p className="text-sm text-gray-600">
-                {isPaused ? 'Recording paused' : 'Listening for speech...'}
+                {isPaused ? t('vtranscript.paused') : t('vtranscript.listeningSpeech')}
               </p>
               <p className="text-xs mt-1 text-gray-400">
                 {isPaused
-                  ? 'Click resume to continue recording'
-                  : 'Speak to see live transcription'}
+                  ? t('vtranscript.resumeHint')
+                  : t('vtranscript.speakHint')}
               </p>
             </>
           ) : (
             <>
-              <p className="text-lg font-semibold">Welcome to Matchwise!</p>
-              <p className="text-xs mt-1">Start recording to see live transcription</p>
+              <p className="text-lg font-semibold">{t('vtranscript.welcome')}</p>
+              <p className="text-xs mt-1">{t('vtranscript.startHint')}</p>
             </>
           )}
         </motion.div>

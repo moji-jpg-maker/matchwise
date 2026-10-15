@@ -6,7 +6,7 @@
  * ## Adding a New Beta Feature
  * 1. Add property to BetaFeatures interface
  * 2. Add default value in DEFAULT_BETA_FEATURES
- * 3. Add UI strings in BETA_FEATURE_NAMES and BETA_FEATURE_DESCRIPTIONS
+ * 3. Add UI strings under settings.beta in i18n/en.ts and i18n/fa.ts, and map them in BetaSettings
  * 4. Use in components: `betaFeatures.yourFeatureName`
  *
  * ## Graduating a Feature to Stable
@@ -27,20 +27,6 @@ export const DEFAULT_BETA_FEATURES: BetaFeatures = {
   importAndRetranscribe: true, // Default: enabled
 };
 
-
-/**
- * Human-readable feature names for UI display
- */
-export const BETA_FEATURE_NAMES: Record<keyof BetaFeatures, string> = {
-  importAndRetranscribe: 'Import Audio & Retranscribe',
-};
-
-/**
- * Feature descriptions for UI tooltips/help text
- */
-export const BETA_FEATURE_DESCRIPTIONS: Record<keyof BetaFeatures, string> = {
-  importAndRetranscribe: 'Import audio files to transcribe or retranscribe existing meetings with different language settings.',
-};
 
 /**
  * Type-safe feature key union

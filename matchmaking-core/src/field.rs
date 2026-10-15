@@ -1,4 +1,5 @@
 use crate::profile::Value;
+use crate::locale::{localize_digits, Locale};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +19,9 @@ pub enum FieldKind {
 pub struct FieldDef {
     pub key: String,
     pub label: String,
+    /// Persian display label. Absent for fields a matchmaker defined without one; display falls back to `label`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_fa: Option<String>,
     pub kind: FieldKind,
     /// Sensitive fields (religion, health, finances, children...) get stricter
     /// visibility, redaction before cloud-LLM calls, and encryption handling.
@@ -28,39 +32,66 @@ pub struct FieldDef {
     pub required: bool,
 }
 
+impl FieldDef {
+    pub fn label_for(&self, locale: Locale) -> &str {
+        match locale {
+            Locale::En => &self.label,
+            Locale::Fa => self.label_fa.as_deref().filter(|text| !text.trim().is_empty()).unwrap_or(&self.label),
+        }
+    }
+}
+
 impl FieldKind {
     /// Check that `value` has the right shape for this kind of field.
     pub fn validate(&self, value: &Value) -> Result<(), String> {
+        self.validate_for(value, Locale::En)
+    }
+
+    /// Like [`FieldKind::validate`], with the message in `locale`.
+    pub fn validate_for(&self, value: &Value, locale: Locale) -> Result<(), String> {
+        let not_one_of = |item: &str, opts: &Vec<String>| match locale {
+            Locale::En => format!("'{item}' is not one of {opts:?}"),
+            Locale::Fa => format!("«{item}» جزو گزینه‌های مجاز نیست: {}", opts.join("، ")),
+        };
         match (self, value) {
             (FieldKind::Bool, Value::Bool(_)) => Ok(()),
             (FieldKind::Number, Value::Num(n)) if n.is_finite() => Ok(()),
-            (FieldKind::Number, Value::Num(_)) => Err("number must be finite".into()),
+            (FieldKind::Number, Value::Num(_)) => Err(locale.pick("number must be finite", "عدد باید متناهی باشد").into()),
             (FieldKind::Text, Value::Text(_)) => Ok(()),
             (FieldKind::Choice(opts), Value::Text(t)) => {
-                if opts.iter().any(|o| o == t) { Ok(()) } else { Err(format!("'{t}' is not one of {opts:?}")) }
+                if opts.iter().any(|o| o == t) { Ok(()) } else { Err(not_one_of(t, opts)) }
             }
             (FieldKind::MultiChoice(opts), Value::List(items)) => {
                 match items.iter().find(|i| !opts.iter().any(|o| o == *i)) {
-                    Some(bad) => Err(format!("'{bad}' is not one of {opts:?}")),
+                    Some(bad) => Err(not_one_of(bad, opts)),
                     None => Ok(()),
                 }
             }
             (FieldKind::Records(_), Value::List(items)) if items.is_empty() => Ok(()),
             (FieldKind::Records(defs), Value::Records(rows)) => {
                 if rows.len() > 50 {
-                    return Err("too many entries (max 50)".into());
+                    return Err(locale.pick("too many entries (max 50)", "تعداد موارد بیش از حد است (حداکثر ۵۰)").into());
                 }
                 for (i, row) in rows.iter().enumerate() {
                     for (k, v) in row {
                         match defs.iter().find(|d| &d.key == k) {
-                            Some(d) => d.kind.validate(v).map_err(|e| format!("entry {}: {k}: {e}", i + 1))?,
-                            None => return Err(format!("entry {}: unknown sub-field '{k}'", i + 1)),
+                            Some(d) => d.kind.validate_for(v, locale).map_err(|e| match locale {
+                                Locale::En => format!("entry {}: {k}: {e}", i + 1),
+                                Locale::Fa => format!("مورد {}: {k}: {e}", localize_digits(locale, &(i + 1).to_string())),
+                            })?,
+                            None => return Err(match locale {
+                                Locale::En => format!("entry {}: unknown sub-field '{k}'", i + 1),
+                                Locale::Fa => format!("مورد {}: زیرفیلد ناشناخته «{k}»", localize_digits(locale, &(i + 1).to_string())),
+                            }),
                         }
                     }
                 }
                 Ok(())
             }
-            (k, v) => Err(format!("expected {}, got {}", k.name(), v.type_name())),
+            (k, v) => Err(match locale {
+                Locale::En => format!("expected {}, got {}", k.name(), v.type_name()),
+                Locale::Fa => format!("مقدار مورد انتظار از نوع {} بود، اما {} دریافت شد", k.name(), v.type_name()),
+            }),
         }
     }
 
@@ -106,9 +137,17 @@ impl FieldRegistry {
 
     /// Validate a value for a registered field. Unknown fields are rejected.
     pub fn validate_value(&self, key: &str, value: &Value) -> Result<(), String> {
+        self.validate_value_for(key, value, Locale::En)
+    }
+
+    /// Like [`FieldRegistry::validate_value`], with the message in `locale`.
+    pub fn validate_value_for(&self, key: &str, value: &Value, locale: Locale) -> Result<(), String> {
         match self.get(key) {
-            Some(def) => def.kind.validate(value),
-            None => Err(format!("unknown field '{key}'")),
+            Some(def) => def.kind.validate_for(value, locale),
+            None => Err(match locale {
+                Locale::En => format!("unknown field '{key}'"),
+                Locale::Fa => format!("فیلد ناشناخته «{key}»"),
+            }),
         }
     }
 }

@@ -1,3 +1,6 @@
+import type { Translate } from '@/lib/rules';
+import type { Formatters } from '@/i18n/format';
+
 export type DownloadStatus = 'downloading' | 'completed' | 'error' | 'cancelled';
 
 export interface DownloadEvent {
@@ -63,9 +66,13 @@ export function applyDownloadEvent(
   return { state: current, finished: null };
 }
 
-export function formatDownloadDetail(state: DownloadState): string {
-  const parts = [`${Math.round(state.progress)}%`];
-  if (state.totalMb > 0) parts.push(`${Math.round(state.downloadedMb)} / ${Math.round(state.totalMb)} MiB`);
-  if (state.speedMbps > 0) parts.push(`${state.speedMbps.toFixed(1)} MiB/s`);
+export function formatDownloadDetail(state: DownloadState, t: Translate, fmt: Formatters): string {
+  const parts = [fmt.percent(state.progress / 100)];
+  if (state.totalMb > 0) {
+    parts.push(t('dlDetail.amount', { done: fmt.number(Math.round(state.downloadedMb)), total: fmt.number(Math.round(state.totalMb)) }));
+  }
+  if (state.speedMbps > 0) {
+    parts.push(t('dlDetail.speed', { value: fmt.number(state.speedMbps, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }));
+  }
   return parts.join(' · ');
 }

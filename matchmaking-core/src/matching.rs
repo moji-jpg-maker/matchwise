@@ -9,6 +9,14 @@ use crate::profile::Profile;
 use crate::rules::{evaluate_ruleset_mutual, MatchOutcome, RuleSet};
 use serde::Serialize;
 
+impl MatchEvaluation {
+    pub fn localize(&mut self, locale: crate::locale::Locale) {
+        self.rules.localize(locale);
+        self.a_preferences.localize(locale);
+        self.b_preferences.localize(locale);
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MatchEvaluation {
     pub rules: MatchOutcome,

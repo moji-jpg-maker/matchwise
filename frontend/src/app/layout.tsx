@@ -1,7 +1,8 @@
 'use client'
 
 import './globals.css'
-import { Source_Sans_3 } from 'next/font/google'
+import '@fontsource-variable/vazirmatn/index.css'
+import '@fontsource-variable/source-sans-3/index.css'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
@@ -23,13 +24,8 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
+import { I18nProvider, translate, currentLocale } from '@/i18n'
 
-
-const sourceSans3 = Source_Sans_3({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-source-sans-3',
-})
 
 // Module-level component — stable reference across RootLayout re-renders.
 // Defined here (not inside RootLayout) so React never sees a new function type
@@ -110,8 +106,9 @@ export default function RootLayout({
       console.log('[Layout] Received request-recording-toggle from tray');
 
       if (showOnboarding) {
-        toast.error("Please complete setup first", {
-          description: "You need to finish onboarding before you can start recording."
+        const locale = currentLocale();
+        toast.error(translate(locale, 'errors.completeSetupFirst'), {
+          description: translate(locale, 'errors.completeSetupFirstDesc')
         });
       } else {
         // If in main app, forward to useRecordingStart via window event
@@ -131,8 +128,9 @@ export default function RootLayout({
     const betaFeatures = loadBetaFeatures();
 
     if (!betaFeatures.importAndRetranscribe) {
-      toast.error('Beta feature disabled', {
-        description: 'Enable "Import Audio & Retranscribe" in Settings > Beta to use this feature.'
+      const locale = currentLocale();
+      toast.error(translate(locale, 'errors.betaDisabled'), {
+        description: translate(locale, 'errors.betaDisabledDesc')
       });
       return;
     }
@@ -148,8 +146,9 @@ export default function RootLayout({
       setImportFilePath(audioFile);
       setShowImportDialog(true);
     } else if (paths.length > 0) {
-      toast.error('Please drop an audio file', {
-        description: `Supported formats: ${getAudioFormatsDisplayList()}`
+      const locale = currentLocale();
+      toast.error(translate(locale, 'errors.dropAudioFile'), {
+        description: translate(locale, 'errors.supportedFormats', { formats: getAudioFormatsDisplayList() })
       });
     }
   }, []);
@@ -229,8 +228,16 @@ export default function RootLayout({
   }
 
   return (
-    <html lang="en">
-      <body className={`${sourceSans3.variable} font-sans antialiased`}>
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var l=localStorage.getItem('matchwise.locale');if(l!=='en'&&l!=='fa'){l=(navigator.language||'').toLowerCase().indexOf('fa')===0?'fa':'en'}var d=document.documentElement;d.lang=l;d.dir=l==='fa'?'rtl':'ltr'}catch(e){}`,
+          }}
+        />
+      </head>
+      <body className="font-sans antialiased">
+        <I18nProvider>
           <RecordingStateProvider>
             <TranscriptProvider>
               <ConfigProvider>
@@ -271,6 +278,7 @@ export default function RootLayout({
           </RecordingStateProvider>
 
         <Toaster position="bottom-center" richColors closeButton />
+        </I18nProvider>
       </body>
     </html>
   )

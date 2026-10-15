@@ -257,10 +257,10 @@ pub async fn tg_send_message(state: State<'_, AppState>, profile_id: String, tex
     if text.is_empty() || text.chars().count() > 2000 {
         return Err("A message needs 1 to 2000 characters".into());
     }
-    if notify::reachable_link(pool, &profile_id).await?.is_none() {
+    let Some(link) = notify::reachable_link(pool, &profile_id).await? else {
         return Err("This person cannot be reached on Telegram (not linked, has not agreed to the notice, or has turned notifications off)".into());
-    }
-    repo::enqueue(pool, &profile_id, "matchmaker_message", &render::matchmaker_message_text(&text), None, None).await.map_err(err)?;
+    };
+    repo::enqueue(pool, &profile_id, "matchmaker_message", &render::matchmaker_message_text(link.locale, &text), None, None).await.map_err(err)?;
     repo::add_message(pool, &profile_id, "out", &text, None).await.map_err(err)?;
     MmRepository::audit(pool, "telegram_message_sent", "profile", &profile_id, None).await;
     Ok(())
@@ -290,7 +290,7 @@ pub async fn tg_request_info(state: State<'_, AppState>, match_id: String, side:
     MatchRepo::set_hold(pool, &match_id, Some(&text)).await.map_err(err)?;
     let mut sent = false;
     if let Some(link) = notify::reachable_link(pool, who).await? {
-        repo::enqueue(pool, who, "info_request", &render::info_request_text(&text), None, Some(&match_id)).await.map_err(err)?;
+        repo::enqueue(pool, who, "info_request", &render::info_request_text(link.locale, &text), None, Some(&match_id)).await.map_err(err)?;
         repo::add_message(pool, who, "out", &text, Some(&match_id)).await.map_err(err)?;
         repo::set_state(pool, link.chat_id, &serde_json::json!({"flow": "reply", "match_id": match_id})).await.map_err(err)?;
         sent = true;
@@ -303,16 +303,16 @@ pub async fn tg_request_info(state: State<'_, AppState>, match_id: String, side:
 #[tauri::command]
 pub async fn tg_remind_profile(state: State<'_, AppState>, profile_id: String) -> Result<(), String> {
     let pool = state.db_manager.pool();
-    if notify::reachable_link(pool, &profile_id).await?.is_none() {
+    let Some(link) = notify::reachable_link(pool, &profile_id).await? else {
         return Err("This person cannot be reached on Telegram".into());
-    }
+    };
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let p = MmRepository::get_profile(pool, &profile_id).await.map_err(err)?.ok_or("Profile not found")?;
-    let labels: Vec<String> = p.profile.missing_required(&reg).iter().filter_map(|k| reg.get(k).map(|d| d.label.clone())).collect();
+    let labels: Vec<String> = p.profile.missing_required(&reg).iter().filter_map(|k| reg.get(k).map(|d| d.label_for(link.locale).to_string())).collect();
     if labels.is_empty() {
         return Err("Nothing is missing from this profile".into());
     }
-    repo::enqueue(pool, &profile_id, "profile_reminder", &render::reminder_profile_text(&labels), None, None).await.map_err(err)?;
+    repo::enqueue(pool, &profile_id, "profile_reminder", &render::reminder_profile_text(link.locale, &labels), None, None).await.map_err(err)?;
     Ok(())
 }
 
@@ -342,8 +342,12 @@ pub async fn tg_preview_introduction(state: State<'_, AppState>, match_id: Strin
             Some(matchmaking_core::Value::Text(t)) if !t.trim().is_empty() => Some(t.clone()),
             _ => None,
         };
-        let reachable = notify::reachable_link(pool, me).await?.is_some();
-        let message = if reachable { Some(render::plain(&notify::introduction_message(pool, m, other).await?.0)) } else { None };
+        let link = notify::reachable_link(pool, me).await?;
+        let reachable = link.is_some();
+        let message = match link {
+            Some(link) => Some(render::plain(&notify::introduction_message(pool, m, other, link.locale).await?.0)),
+            None => None,
+        };
         Ok(IntroPreviewSide { profile_id: me.to_string(), name, reachable, message })
     }
     Ok(IntroPreview { a: side(pool, &m, &m.profile_a, &m.profile_b).await?, b: side(pool, &m, &m.profile_b, &m.profile_a).await? })

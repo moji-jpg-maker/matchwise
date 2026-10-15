@@ -7,9 +7,13 @@ import { ArrowLeft, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { OUTCOME_KEY } from '@/lib/workflow';
+import { normalizeSearch } from '@/i18n/format';
+import { useI18n } from '@/i18n';
 import { ExposureSummary, OrderingResult, RankingComparison, RankingReadiness, ScoringConfigSummary } from '@/types/matchmaking';
 
 export default function ScoringConfigsPage() {
+  const { t, fmt } = useI18n();
   const router = useRouter();
   const [configs, setConfigs] = useState<ScoringConfigSummary[]>([]);
   const [readiness, setReadiness] = useState<RankingReadiness | null>(null);
@@ -23,11 +27,11 @@ export default function ScoringConfigsPage() {
     try {
       setConfigs(await invoke<ScoringConfigSummary[]>('mm_list_scoring_configs', { includeArchived: showArchived }));
     } catch (e) {
-      toast.error(`Could not load scoring configs: ${e}`);
+      toast.error(t('scoring.loadError', { error: `${e}` }));
     } finally {
       setLoading(false);
     }
-  }, [showArchived]);
+  }, [showArchived, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -49,9 +53,9 @@ export default function ScoringConfigsPage() {
     }
   };
 
-  const needle = query.trim().toLowerCase();
+  const needle = normalizeSearch(query.trim());
   const visible = needle
-    ? configs.filter((c) => c.name.toLowerCase().includes(needle) || (c.description ?? '').toLowerCase().includes(needle))
+    ? configs.filter((c) => normalizeSearch(c.name).includes(needle) || normalizeSearch(c.description ?? '').includes(needle))
     : configs;
 
   return (
@@ -59,55 +63,54 @@ export default function ScoringConfigsPage() {
       <div className="max-w-4xl mx-auto p-6 space-y-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button onClick={() => router.push('/')} className="p-2 rounded-lg hover:bg-gray-200" aria-label="Back">
-              <ArrowLeft className="w-5 h-5" />
+            <button onClick={() => router.push('/')} className="p-2 rounded-lg hover:bg-gray-200" aria-label={t('scoring.back')}>
+              <ArrowLeft className="w-5 h-5 rtl-mirror" />
             </button>
             <div>
-              <h1 className="text-2xl font-semibold">Scoring</h1>
+              <h1 className="text-2xl font-semibold">{t('scoring.title')}</h1>
               <p className="text-sm text-gray-500">
-                How dimension scores are read: the strong and mixed cutoffs, and the neutral baseline thin evidence is
-                pulled towards. A rule set says what to measure; a scoring config says how to read the result.
+                {t('scoring.intro')}
               </p>
             </div>
           </div>
           <Button onClick={() => router.push('/scoring-config?id=new')}>
-            <Plus className="w-4 h-4 mr-1" /> New config
+            <Plus className="w-4 h-4 me-1" /> {t('scoring.newConfig')}
           </Button>
         </div>
 
         <div className="flex items-center gap-4">
-          <Input className="max-w-xs" placeholder="Search scoring configs" aria-label="Search scoring configs" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <Input className="max-w-xs" dir="auto" placeholder={t('scoring.searchPlaceholder')} aria-label={t('scoring.searchPlaceholder')} value={query} onChange={(e) => setQuery(e.target.value)} />
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-            Show archived
+            {t('scoring.showArchived')}
           </label>
           {query && (
-            <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear</Button>
+            <Button variant="ghost" size="sm" onClick={() => setQuery('')}>{t('scoring.clear')}</Button>
           )}
         </div>
 
         <div className="bg-white rounded-lg border divide-y">
           {visible.length === 0 && !loading && (
             <div className="p-6 text-center text-sm text-gray-500">
-              {configs.length === 0 ? 'No scoring configs yet.' : 'No scoring configs match your search.'}
+              {configs.length === 0 ? t('scoring.emptyNone') : t('scoring.emptySearch')}
             </div>
           )}
           {visible.map((c) => (
             <div key={c.id} className="p-4 flex items-center gap-4">
-              <button className="flex-1 min-w-0 text-left" onClick={() => router.push(`/scoring-config?id=${encodeURIComponent(c.id)}`)}>
+              <button className="flex-1 min-w-0 text-start" onClick={() => router.push(`/scoring-config?id=${encodeURIComponent(c.id)}`)}>
                 <div className="font-medium">
-                  {c.name} {c.archived && <span className="ml-2 text-xs px-2 py-0.5 rounded bg-gray-200">archived</span>}
+                  <bdi>{c.name}</bdi> {c.archived && <span className="ms-2 text-xs px-2 py-0.5 rounded bg-gray-200">{t('scoring.archived')}</span>}
                 </div>
-                <div className="text-sm text-gray-500 truncate">{c.description || 'No description'}</div>
+                <div className="text-sm text-gray-500 truncate"><bdi>{c.description || t('scoring.noDescription')}</bdi></div>
               </button>
-              <div className="text-sm text-gray-600 w-52 text-right">
-                strong ≥ {c.definition.strong_threshold} · mixed ≥ {c.definition.mixed_threshold} · baseline {c.definition.prior_score}
+              <div className="text-sm text-gray-600 w-52 text-end">
+                {t('scoring.thresholds', { strong: fmt.number(c.definition.strong_threshold), mixed: fmt.number(c.definition.mixed_threshold), baseline: fmt.number(c.definition.prior_score) })}
               </div>
-              <div className="text-sm text-gray-500 w-32 text-right">
-                v{c.current_version} · used by {c.used_by}
+              <div className="text-sm text-gray-500 w-32 text-end">
+                {t('scoring.versionUsed', { version: fmt.number(c.current_version), count: fmt.number(c.used_by) })}
               </div>
               <Button variant="ghost" size="sm" onClick={() => toggleArchive(c)}>
-                {c.archived ? 'Restore' : 'Archive'}
+                {c.archived ? t('scoring.restore') : t('scoring.archive')}
               </Button>
             </div>
           ))}
@@ -115,44 +118,42 @@ export default function ScoringConfigsPage() {
 
         <div className="bg-white rounded-lg border p-5 space-y-3">
           <div>
-            <h2 className="font-medium">Ranking gate</h2>
+            <h2 className="font-medium">{t('scoring.gateTitle')}</h2>
             <p className="text-sm text-gray-500">
-              This reports only. Nothing here fits a model or re-orders a search: searches are ordered by the
-              confidence-adjusted score below, and that stays true whatever this comparison finds. What it does show
-              is how that ordering has agreed with what actually happened, next to the raw score it is derived from.
+              {t('scoring.gateIntro')}
             </p>
           </div>
           {!readiness ? (
-            <p className="text-sm text-gray-500">Reading…</p>
+            <p className="text-sm text-gray-500">{t('scoring.reading')}</p>
           ) : (
             <>
               {exposure && (
                 <p className="text-xs text-gray-500">
-                  {exposure.searches} searches logged, {exposure.exposures} candidates shown
-                  {exposure.first_at ? ` since ${new Date(exposure.first_at).toLocaleDateString()}` : ''}
-                  {exposure.last_at ? `, last on ${new Date(exposure.last_at).toLocaleDateString()}` : ''}.
+                  {t('scoring.exposureLine', {
+                    searches: fmt.number(exposure.searches),
+                    exposures: fmt.number(exposure.exposures),
+                    since: exposure.first_at ? t('scoring.exposureSince', { date: fmt.date(exposure.first_at) }) : '',
+                    last: exposure.last_at ? t('scoring.exposureLast', { date: fmt.date(exposure.last_at) }) : '',
+                  })}
                 </p>
               )}
               <p className={`text-sm ${readiness.ready ? 'text-green-800' : 'text-amber-700'}`}>{readiness.state}</p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <Stat label="Finished matches" value={readiness.finished} />
-                <Stat label="Needed for the gate" value={readiness.minimum_finished} />
-                <Stat label="With a stored scorecard" value={readiness.with_snapshot} />
-                <Stat label="Candidates shown" value={readiness.pairs_shown} />
+                <Stat label={t('scoring.statFinished')} value={fmt.number(readiness.finished)} />
+                <Stat label={t('scoring.statNeeded')} value={fmt.number(readiness.minimum_finished)} />
+                <Stat label={t('scoring.statSnapshot')} value={fmt.number(readiness.with_snapshot)} />
+                <Stat label={t('scoring.statShown')} value={fmt.number(readiness.pairs_shown)} />
               </div>
               <p className="text-xs text-gray-500">
-                {readiness.exposures} exposure rows across {readiness.pairs_shown} shown pairs; {readiness.pairs_with_outcome} of
-                those pairs later produced an outcome. Exposures are recorded so what was on screen is known, not only what
-                was decided — deciding from outcomes alone would teach the matchmaker&apos;s browsing order as if it were
-                preference.
+                {t('scoring.exposureNote', { exposures: fmt.number(readiness.exposures), shown: fmt.number(readiness.pairs_shown), withOutcome: fmt.number(readiness.pairs_with_outcome) })}
               </p>
               {Object.keys(readiness.outcome_counts).length > 0 && (
                 <div>
-                  <div className="text-sm font-medium mb-1">Outcomes</div>
+                  <div className="text-sm font-medium mb-1">{t('scoring.outcomes')}</div>
                   <div className="flex flex-wrap gap-2 text-xs">
                     {Object.entries(readiness.outcome_counts).map(([k, n]) => (
                       <span key={k} className="px-2 py-1 rounded bg-gray-100">
-                        {k.replace(/_/g, ' ')} <span className="text-gray-500">{n}</span>
+                        {k in OUTCOME_KEY ? t(OUTCOME_KEY[k as keyof typeof OUTCOME_KEY]) : k.replace(/_/g, ' ')} <span className="text-gray-500">{fmt.number(n)}</span>
                       </span>
                     ))}
                   </div>
@@ -174,14 +175,15 @@ export default function ScoringConfigsPage() {
  * sentence above says whether this is yet enough to read as a finding.
  */
 function Comparison({ c }: { c: RankingComparison }) {
-  const rate = (r: number | null) => (r === null ? '—' : `${(r * 100).toFixed(0)}%`);
+  const { t, fmt } = useI18n();
+  const rate = (r: number | null) => (r === null ? '—' : fmt.percent(r));
   const rows: { label: string; r: OrderingResult; inForce: boolean }[] = [
-    { label: `Confidence-adjusted (${c.enforced})`, r: c.baseline, inForce: true },
-    { label: 'Raw score (overall)', r: c.candidate, inForce: false },
+    { label: t('scoring.cmpAdjusted', { name: c.enforced }), r: c.baseline, inForce: true },
+    { label: t('scoring.cmpRaw'), r: c.candidate, inForce: false },
   ];
   return (
     <div className="pt-3 border-t space-y-3">
-      <div className="text-sm font-medium">Do the scores agree with the outcomes?</div>
+      <div className="text-sm font-medium">{t('scoring.cmpTitle')}</div>
       <p className={`text-sm ${c.ready ? 'text-gray-500' : 'text-amber-700'}`}>{c.gate_note}</p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -189,15 +191,14 @@ function Comparison({ c }: { c: RankingComparison }) {
           <div key={label} className="rounded border p-3 space-y-1">
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium">{label}</span>
-              {inForce && <span className="text-xs px-2 py-0.5 rounded bg-gray-100">in force</span>}
+              {inForce && <span className="text-xs px-2 py-0.5 rounded bg-gray-100">{t('scoring.inForce')}</span>}
             </div>
             <div className="text-2xl font-semibold">{rate(r.concordance)}</div>
             <div className="text-xs text-gray-500">
-              of {r.comparable_pairs} comparable {r.comparable_pairs === 1 ? 'pair' : 'pairs'} — {r.concordant} agreed,{' '}
-              {r.discordant} did not; {r.tied} could not be judged.
+              {t(r.comparable_pairs === 1 ? 'scoring.cmpPairOne' : 'scoring.cmpPairMany', { count: fmt.number(r.comparable_pairs), agreed: fmt.number(r.concordant), discordant: fmt.number(r.discordant), tied: fmt.number(r.tied) })}
             </div>
             <div className="text-xs text-gray-500">
-              Best {r.progressed} by this score: {r.top_k} of them ({rate(r.top_k_rate)}) went on to progress.
+              {t('scoring.cmpTop', { progressed: fmt.number(r.progressed), topK: fmt.number(r.top_k), rate: rate(r.top_k_rate) })}
             </div>
           </div>
         ))}
@@ -205,17 +206,13 @@ function Comparison({ c }: { c: RankingComparison }) {
 
       <p className="text-xs text-gray-500">{c.classification}</p>
       <p className="text-xs text-gray-500">
-        {c.matches_compared} of {c.matches_total} matches could be compared. Left out:{' '}
-        {c.excluded.no_outcome} still in progress, {c.excluded.unknown_outcome} with an unknown outcome,{' '}
-        {c.excluded.no_snapshot} with no stored scorecard, {c.excluded.no_score} with no score in theirs. A match with
-        no outcome is not counted as one that went badly, so the comparison covers less history than the finished
-        count above.
+        {t('scoring.cmpCoverage', { compared: fmt.number(c.matches_compared), total: fmt.number(c.matches_total), noOutcome: fmt.number(c.excluded.no_outcome), unknownOutcome: fmt.number(c.excluded.unknown_outcome), noSnapshot: fmt.number(c.excluded.no_snapshot), noScore: fmt.number(c.excluded.no_score) })}
       </p>
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded border bg-gray-50 p-3">
       <div className="text-xl font-semibold">{value}</div>

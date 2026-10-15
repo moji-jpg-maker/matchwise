@@ -7,6 +7,7 @@
 //! The registry exists to keep the application honest: an instrument written by the matchmaker is labelled as exactly
 //! that, and nothing here diagnoses a condition or presents a score as a clinical assessment.
 
+use crate::locale::Locale;
 use crate::field::{FieldDef, FieldKind, FieldRegistry};
 use crate::profile::{Profile, Provenance, Value};
 use crate::scoring::dimension_catalog;
@@ -26,10 +27,14 @@ pub enum EvidenceLevel {
 
 impl EvidenceLevel {
     pub fn label(self) -> &'static str {
+        self.label_for(Locale::En)
+    }
+
+    pub fn label_for(self, locale: Locale) -> &'static str {
         match self {
-            EvidenceLevel::ValidatedInstrument => "Published, validated instrument",
-            EvidenceLevel::AdaptedInstrument => "Adapted from a published instrument",
-            EvidenceLevel::MatchmakerDefined => "Written by the matchmaker (not validated)",
+            EvidenceLevel::ValidatedInstrument => locale.pick("Published, validated instrument", "ابزار منتشرشده و معتبر‌سنجی‌شده"),
+            EvidenceLevel::AdaptedInstrument => locale.pick("Adapted from a published instrument", "اقتباس از یک ابزار منتشرشده"),
+            EvidenceLevel::MatchmakerDefined => locale.pick("Written by the matchmaker (not validated)", "نوشته‌شده توسط خواستگارباز (معتبر‌سنجی‌نشده)"),
         }
     }
 }
@@ -110,66 +115,71 @@ fn slug_ok(s: &str, max: usize) -> bool {
 
 /// Everything wrong with an instrument definition (empty = fine). `registry` is used to check target fields.
 pub fn validate_instrument(i: &Instrument, registry: &FieldRegistry) -> Vec<String> {
+    validate_instrument_for(i, registry, Locale::En)
+}
+
+pub fn validate_instrument_for(i: &Instrument, registry: &FieldRegistry, locale: Locale) -> Vec<String> {
+    let fa = locale == Locale::Fa;
     let mut out = vec![];
     if !slug_ok(&i.key, 40) {
-        out.push("The key must start with a lowercase letter and use only a-z, 0-9 and _ (max 40 characters)".into());
+        out.push(if fa { "کلید باید با یک حرف کوچک انگلیسی شروع شود و فقط شامل a-z، ارقام 0-9 و _ باشد (حداکثر ۴۰ نویسه)".into() } else { "The key must start with a lowercase letter and use only a-z, 0-9 and _ (max 40 characters)".into() });
     }
     if i.name.trim().is_empty() || i.name.len() > 120 {
-        out.push("The questionnaire needs a name (max 120 characters)".into());
+        out.push(locale.pick("The questionnaire needs a name (max 120 characters)", "پرسشنامه به نام نیاز دارد (حداکثر ۱۲۰ نویسه)").into());
     }
     if i.kind != "standard" && i.kind != "custom" {
-        out.push("Kind must be 'standard' or 'custom'".into());
+        out.push(locale.pick("Kind must be 'standard' or 'custom'", "نوع باید «standard» یا «custom» باشد").into());
     }
     if !dimension_catalog().iter().any(|d| d.key == i.dimension) {
-        out.push(format!("'{}' is not a scorecard dimension", i.dimension));
+        out.push(if fa { format!("«{}» یک بُعد کارنامه نیست", i.dimension) } else { format!("'{}' is not a scorecard dimension", i.dimension) });
     }
     let n_points = i.scale.max - i.scale.min + 1;
     if !(2..=7).contains(&n_points) || i.scale.labels.len() as i32 != n_points || i.scale.labels.iter().any(|l| l.trim().is_empty()) {
-        out.push("The scale needs 2 to 7 points with a label for each".into());
+        out.push(locale.pick("The scale needs 2 to 7 points with a label for each", "مقیاس به ۲ تا ۷ نقطه نیاز دارد و هر نقطه باید برچسب داشته باشد").into());
     }
     if i.evidence.level == EvidenceLevel::ValidatedInstrument && i.evidence.sources.is_empty() {
-        out.push("A validated instrument must cite its source".into());
+        out.push(locale.pick("A validated instrument must cite its source", "ابزار معتبرسنجی‌شده باید منبع خود را ذکر کند").into());
     }
     if i.evidence.limitations.trim().is_empty() {
-        out.push("State what this questionnaire cannot tell you".into());
+        out.push(locale.pick("State what this questionnaire cannot tell you", "بنویسید این پرسشنامه چه چیزی را نمی‌تواند نشان دهد").into());
     }
     if !(3..=100).contains(&i.items.len()) {
-        out.push("A questionnaire needs between 3 and 100 items".into());
+        out.push(locale.pick("A questionnaire needs between 3 and 100 items", "پرسشنامه به ۳ تا ۱۰۰ گویه نیاز دارد").into());
     }
     let mut ids = BTreeSet::new();
     let sub_keys: BTreeSet<&str> = i.subscales.iter().map(|s| s.key.as_str()).collect();
     for it in &i.items {
         if !slug_ok(&it.id, 20) || !ids.insert(it.id.clone()) {
-            out.push(format!("Item id '{}' is invalid or duplicated", it.id));
+            out.push(if fa { format!("شناسهٔ گویه «{}» نامعتبر یا تکراری است", it.id) } else { format!("Item id '{}' is invalid or duplicated", it.id) });
         }
         if it.text.trim().is_empty() || it.text.chars().count() > 300 {
-            out.push(format!("Item {} needs text of 1 to 300 characters", it.id));
+            out.push(if fa { format!("گویهٔ {} به متنی بین ۱ تا ۳۰۰ نویسه نیاز دارد", it.id) } else { format!("Item {} needs text of 1 to 300 characters", it.id) });
         }
         if !sub_keys.contains(it.subscale.as_str()) {
-            out.push(format!("Item {} refers to an unknown subscale '{}'", it.id, it.subscale));
+            out.push(if fa { format!("گویهٔ {} به زیرمقیاس ناشناختهٔ «{}» اشاره دارد", it.id, it.subscale) } else { format!("Item {} refers to an unknown subscale '{}'", it.id, it.subscale) });
         }
     }
     if i.subscales.is_empty() {
-        out.push("At least one subscale is needed: it decides which profile field receives the score".into());
+        out.push(locale.pick("At least one subscale is needed: it decides which profile field receives the score", "دست‌کم یک زیرمقیاس لازم است: تعیین می‌کند نمره در کدام فیلد پروفایل ثبت شود").into());
     }
     let mut fields = BTreeSet::new();
     let mut keys = BTreeSet::new();
     for s in &i.subscales {
         if !slug_ok(&s.key, 40) || !keys.insert(s.key.clone()) {
-            out.push(format!("Subscale key '{}' is invalid or duplicated", s.key));
+            out.push(if fa { format!("کلید زیرمقیاس «{}» نامعتبر یا تکراری است", s.key) } else { format!("Subscale key '{}' is invalid or duplicated", s.key) });
         }
         if s.label.trim().is_empty() {
-            out.push(format!("Subscale '{}' needs a label", s.key));
+            out.push(if fa { format!("زیرمقیاس «{}» به برچسب نیاز دارد", s.key) } else { format!("Subscale '{}' needs a label", s.key) });
         }
         if !slug_ok(&s.field, 64) || !fields.insert(s.field.clone()) {
-            out.push(format!("Field '{}' is invalid or used twice", s.field));
+            out.push(if fa { format!("فیلد «{}» نامعتبر است یا دو بار استفاده شده", s.field) } else { format!("Field '{}' is invalid or used twice", s.field) });
         } else if let Some(def) = registry.get(&s.field) {
             if !matches!(def.kind, FieldKind::Number) {
-                out.push(format!("Field '{}' exists but is not a number field", s.field));
+                out.push(if fa { format!("فیلد «{}» وجود دارد اما عددی نیست", s.field) } else { format!("Field '{}' exists but is not a number field", s.field) });
             }
         }
         if !i.items.iter().any(|it| it.subscale == s.key) {
-            out.push(format!("Subscale '{}' has no items", s.key));
+            out.push(if fa { format!("زیرمقیاس «{}» گویه‌ای ندارد", s.key) } else { format!("Subscale '{}' has no items", s.key) });
         }
     }
     out
@@ -180,16 +190,30 @@ pub fn missing_fields(i: &Instrument, registry: &FieldRegistry) -> Vec<FieldDef>
     i.subscales
         .iter()
         .filter(|s| registry.get(&s.field).is_none())
-        .map(|s| FieldDef { key: s.field.clone(), label: format!("{} ({})", s.label, i.name), kind: FieldKind::Number, sensitive: true, required: false })
+        .map(|s| FieldDef { key: s.field.clone(), label: format!("{} ({})", s.label, i.name), label_fa: None, kind: FieldKind::Number, sensitive: true, required: false })
         .collect()
 }
 
 pub fn validate_answer(i: &Instrument, item_id: &str, value: i32) -> Result<(), String> {
+    validate_answer_for(i, item_id, value, Locale::En)
+}
+
+pub fn validate_answer_for(i: &Instrument, item_id: &str, value: i32, locale: Locale) -> Result<(), String> {
     if !i.items.iter().any(|it| it.id == item_id) {
-        return Err(format!("There is no item '{item_id}'"));
+        return Err(match locale {
+            Locale::En => format!("There is no item '{item_id}'"),
+            Locale::Fa => format!("گویه‌ای با شناسهٔ «{item_id}» وجود ندارد"),
+        });
     }
     if value < i.scale.min || value > i.scale.max {
-        return Err(format!("An answer must be between {} and {}", i.scale.min, i.scale.max));
+        return Err(match locale {
+            Locale::En => format!("An answer must be between {} and {}", i.scale.min, i.scale.max),
+            Locale::Fa => format!(
+                "پاسخ باید بین {} و {} باشد",
+                crate::locale::localize_digits(locale, &i.scale.min.to_string()),
+                crate::locale::localize_digits(locale, &i.scale.max.to_string())
+            ),
+        });
     }
     Ok(())
 }
@@ -240,6 +264,66 @@ pub fn apply_scores(profile: &mut Profile, i: &Instrument, scores: &Scores) -> V
 /// The questionnaire's next unanswered item, in order.
 pub fn next_item<'a>(i: &'a Instrument, answers: &BTreeMap<String, i32>) -> Option<(usize, &'a Item)> {
     i.items.iter().enumerate().find(|(_, it)| !answers.contains_key(&it.id))
+}
+
+const MINI_IPIP_ITEMS_FA: [&str; 20] = [
+    "در مهمانی‌ها مرکز توجه‌ام.",
+    "با احساسات دیگران همدردی می‌کنم.",
+    "کارهای روزمره را بلافاصله انجام می‌دهم.",
+    "حالت روحی‌ام زود‌به‌زود تغییر می‌کند.",
+    "تخیل پرتوان و زنده‌ای دارم.",
+    "زیاد حرف نمی‌زنم.",
+    "به مشکلات دیگران علاقه‌ای ندارم.",
+    "اغلب فراموش می‌کنم چیزها را سر جایشان بگذارم.",
+    "بیشتر وقت‌ها آرام و آسوده‌ام.",
+    "به ایده‌های انتزاعی علاقه‌ای ندارم.",
+    "در مهمانی‌ها با آدم‌های زیاد و متفاوتی صحبت می‌کنم.",
+    "هیجان‌های دیگران را حس می‌کنم.",
+    "نظم را دوست دارم.",
+    "زود ناراحت می‌شوم.",
+    "درک ایده‌های انتزاعی برایم سخت است.",
+    "ترجیح می‌دهم در حاشیه بمانم.",
+    "واقعاً به دیگران علاقه‌ای ندارم.",
+    "کارها را به هم می‌ریزم.",
+    "به‌ندرت احساس دلگرفتگی می‌کنم.",
+    "تخیل خوبی ندارم.",
+];
+
+impl Instrument {
+    /// The built-in Mini-IPIP with its wording in `locale`; any other instrument, or an edited copy, is returned unchanged.
+    pub fn localized(mut self, locale: Locale) -> Instrument {
+        if locale != Locale::Fa || self.key != "mini_ipip" || self.kind != "standard" || self.version != 1 || self.items.len() != MINI_IPIP_ITEMS_FA.len() {
+            return self;
+        }
+        self.name = "Mini-IPIP (پنج عامل بزرگ، ۲۰ گویه)".into();
+        self.description = "هر عبارت تا چه اندازه شما را توصیف می‌کند. بیست عبارت کوتاه؛ حدود سه دقیقه.".into();
+        for (item, text) in self.items.iter_mut().zip(MINI_IPIP_ITEMS_FA) {
+            item.text = text.into();
+        }
+        if self.scale.labels.len() == 5 {
+            self.scale.labels = ["کاملاً نادرست", "تا حدی نادرست", "نه درست نه نادرست", "تا حدی درست", "کاملاً درست"].iter().map(|s| s.to_string()).collect();
+        }
+        for subscale in self.subscales.iter_mut() {
+            let label = match subscale.key.as_str() {
+                "extraversion" => "برون‌گرایی",
+                "agreeableness" => "توافق‌پذیری",
+                "conscientiousness" => "وظیفه‌شناسی",
+                "neuroticism" => "روان‌رنجوری",
+                "openness" => "خلاقیت / گشودگی ذهنی",
+                _ => continue,
+            };
+            subscale.label = label.into();
+        }
+        self.evidence.limitations = "پیش از اتکا به نمره‌ها، متن و جهت‌دهی گویه‌ها را با مقیاس منتشرشده مقایسه کنید: آن‌ها از حافظه بازتولید شده‌اند. \
+ویژگی‌های خودگزارشی فقط بخش کوچکی از سرنوشت یک رابطه را توضیح می‌دهند و شباهت نمره‌های دو نفر پیش‌بینی‌کننده رضایت نبوده است. \
+چهار گویه برای هر ویژگی تصویری تقریبی می‌دهد، نه اندازه‌گیری دقیق. نمره‌ها گرایش‌های خودگزارشی را توصیف می‌کنند؛ ارزیابی بالینی نیستند و درباره خوب یا بد بودن یک فرد چیزی نمی‌گویند. \
+نمره‌ها ممکن است میان فرهنگ‌ها و زبان‌ها فرق کنند و این ترجمه فارسی هنوز اعتباریابی نشده است."
+            .into();
+        self.evidence.interpretation = "نمره هر ویژگی از ۴ تا ۲۰ است (نقطه میانی ۱۲). نمره بالاتر یعنی فرد خود را برون‌گراتر، توافق‌پذیرتر، وظیفه‌شناس‌تر، از نظر هیجانی ناپایدارتر (روان‌رنجوری) یا خلاق‌تر و اهل فکر بیشتر توصیف می‌کند. \
+نمره‌ها را آغازگر گفتگو بدانید. قاعده‌های تطبیقی که از آن‌ها استفاده می‌کنند، به دلایل بالا به‌طور پیش‌فرض خاموش‌اند."
+            .into();
+        self
+    }
 }
 
 /// The Mini-IPIP (Donnellan, Oswald, Baird & Lucas, 2006): 20 items, public domain (from the International Personality Item Pool).
