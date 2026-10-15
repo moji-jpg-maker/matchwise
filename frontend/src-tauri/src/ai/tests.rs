@@ -1021,6 +1021,22 @@ mod selection {
     }
 
     #[test]
+    fn a_partial_model_file_is_not_reported_as_downloaded() {
+        let def = models::default_model();
+        let summary = crate::summary::summary_engine::get_model_by_name(def.summary_model).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(models::model_file_state(dir.path(), def), ModelFile::NotDownloaded);
+        let models_dir = crate::summary::summary_engine::models::get_models_directory(&dir.path().to_path_buf());
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let path = models_dir.join(&summary.gguf_file);
+        std::fs::write(&path, vec![0u8; 4096]).unwrap();
+        assert_eq!(models::model_file_state(dir.path(), def), ModelFile::NotDownloaded);
+        let full = std::fs::File::create(&path).unwrap();
+        full.set_len(summary.size_mb * 1024 * 1024).unwrap();
+        assert_eq!(models::model_file_state(dir.path(), def), ModelFile::Downloaded);
+    }
+
+    #[test]
     fn every_registered_model_maps_to_a_real_downloadable_summary_model() {
         for m in models::models() {
             let s = crate::summary::summary_engine::get_model_by_name(m.summary_model).unwrap_or_else(|| panic!("{} has no summary model", m.id));

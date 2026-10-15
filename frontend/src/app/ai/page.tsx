@@ -119,12 +119,12 @@ export default function AiSettingsPage() {
               <select className="col-span-2 border rounded h-9 px-2 text-sm bg-white" value={model} onChange={(e) => setModel(e.target.value)}>
                 {!selectedBuiltin && <option value={model}>{model}</option>}
                 {builtinModels.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label} ({Math.round(m.size_mb / 100) / 10} GB), {m.file === 'downloaded' ? 'Downloaded' : 'Not downloaded'}{m.recommended ? ', recommended' : ''}</option>
+                  <option key={m.id} value={m.id}>{m.label} ({Math.round(m.size_mb / 100) / 10} GB), {m.id === model && dlProgress !== null ? 'Downloading' : m.file === 'downloaded' ? 'Downloaded' : 'Not downloaded'}{m.recommended ? ', recommended' : ''}</option>
                 ))}
               </select>
               <span />
               <div className="col-span-2 flex items-center gap-3 text-sm">
-                {selectedBuiltin && selectedBuiltin.file === 'downloaded' ? (
+                {selectedBuiltin && selectedBuiltin.file === 'downloaded' && dlProgress === null ? (
                   <span className="text-green-700">Downloaded and ready.</span>
                 ) : (
                   <>

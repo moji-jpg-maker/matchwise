@@ -71,7 +71,13 @@ pub fn model_file_state(app_data_dir: &Path, def: &MmModelDef) -> ModelFile {
         None => ModelFile::Unknown,
         Some(m) => {
             let path = summary_engine::models::get_models_directory(&app_data_dir.to_path_buf()).join(&m.gguf_file);
-            if path.is_file() { ModelFile::Downloaded } else { ModelFile::NotDownloaded }
+            let size_mb = std::fs::metadata(&path).ok().filter(|meta| meta.is_file()).map(|meta| meta.len() / (1024 * 1024));
+            let min = (m.size_mb as f64 * 0.9) as u64;
+            let max = (m.size_mb as f64 * 1.1) as u64;
+            match size_mb {
+                Some(size) if size >= min && size <= max => ModelFile::Downloaded,
+                _ => ModelFile::NotDownloaded,
+            }
         }
     }
 }
