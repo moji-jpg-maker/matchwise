@@ -44,7 +44,7 @@ details, editing, preferences, introductions, forged buttons, declines, reminder
 touched the real Telegram service, which my sandbox cannot reach.
 
 ## Not verified / limits
-- **No real Telegram traffic has happened.** The first live run (token, `/start` link, an introduction round trip) is yours; expect small surprises (message formatting, button behavior on phones).
+- **No real Telegram traffic has happened.** The first live run (token, `/start` link, an introduction round trip) is yours; expect small surprises (message formatting, button behavior on phones). Track it in [`M5_RUNBOOK.md`](M5_RUNBOOK.md), which carries the per-check result column and the constants taken from the code.
 - The bot works only while the app runs; messages sent while it is off are delivered by Telegram later only for updates (Telegram keeps them 24 hours), and queued outbox messages wait for the next start.
 - No quiet hours or time zones; reminders can arrive at any hour.
 - Editing repeating records (children) and free-text preferences is not offered in the bot; the matchmaker does those.
