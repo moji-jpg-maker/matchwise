@@ -102,11 +102,47 @@ pub struct RuntimeStatus {
     pub last_activity: Option<String>,
     pub processed_updates: u64,
     pub sent_messages: u64,
+    /// Identifies the run that wrote this status. Tasks carry the id they were started with so a task that
+    /// outlives the 5 s join timeout cannot mark a newer run as stopped.
+    #[serde(skip)]
+    pub run: u64,
 }
 
 struct Running {
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
+}
+
+const WORKER_STOPPED: &str = "The Telegram worker stopped unexpectedly. Press Start to restart it.";
+
+/// Marks a run as over when its loop exits, however it exits. A panic inside an update handler unwinds through
+/// the loop, so `Drop` runs and the status stops claiming the bot is alive. Cancelling the token also stops the
+/// sibling loop, which would otherwise keep polling with a broken counterpart.
+pub(super) struct RunGuard {
+    status: Arc<Mutex<RuntimeStatus>>,
+    run: u64,
+    cancel: CancellationToken,
+}
+
+impl RunGuard {
+    pub(super) fn new(status: Arc<Mutex<RuntimeStatus>>, run: u64, cancel: CancellationToken) -> Self {
+        Self { status, run, cancel }
+    }
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        // The token above may now have unblocked a newer start; only this run's own status is ours to touch.
+        let Ok(mut s) = self.status.lock() else { return };
+        if s.run != self.run {
+            return;
+        }
+        s.running = false;
+        if std::thread::panicking() && s.last_error.is_none() {
+            s.last_error = Some(WORKER_STOPPED.into());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -122,11 +158,13 @@ impl TelegramRuntime {
 
     pub async fn start(&self, pool: SqlitePool, api: Arc<dyn TelegramApi>) -> Result<BotInfo, String> {
         let mut guard = self.running.lock().await;
-        if guard.is_some() {
+        if let Some(running) = guard.as_ref() {
             // A revoked token ends the poll loop on its own, which leaves a dead handle behind while the
-            // status already says "stopped". Reap that handle so the operator can simply press Start again;
-            // a bot that is genuinely running is still refused.
-            let dead = self.status.lock().map(|s| !s.running).unwrap_or(false);
+            // status already says "stopped". A task that died, by panic or otherwise, is just as dead. Reap
+            // that handle so the operator can simply press Start again; a bot that is genuinely running is
+            // still refused.
+            let stopped = self.status.lock().map(|s| !s.running).unwrap_or(false);
+            let dead = stopped || running.tasks.iter().any(|t| t.is_finished());
             if !dead {
                 return Err("The bot is already running".into());
             }
@@ -140,12 +178,13 @@ impl TelegramRuntime {
         let me = api.get_me().await.map_err(|e| e.to_string())?;
         let _ = api.set_commands().await; // cosmetic
         repo::set_meta(&pool, "telegram_bot_username", &me.username).await.map_err(err)?;
+        let run = self.status.lock().map(|s| s.run).unwrap_or(0) + 1;
         if let Ok(mut s) = self.status.lock() {
-            *s = RuntimeStatus { running: true, bot_username: Some(me.username.clone()), ..Default::default() };
+            *s = RuntimeStatus { running: true, bot_username: Some(me.username.clone()), run, ..Default::default() };
         }
         let cancel = CancellationToken::new();
-        let poll = tokio::spawn(poll_loop(pool.clone(), api.clone(), cancel.clone(), self.status.clone()));
-        let outbox = tokio::spawn(outbox_loop(pool, api, cancel.clone(), self.status.clone()));
+        let poll = tokio::spawn(poll_loop(pool.clone(), api.clone(), cancel.clone(), self.status.clone(), run));
+        let outbox = tokio::spawn(outbox_loop(pool, api, cancel.clone(), self.status.clone(), run));
         *guard = Some(Running { cancel, tasks: vec![poll, outbox] });
         Ok(me)
     }
@@ -175,7 +214,8 @@ async fn sleep_or_cancel(cancel: &CancellationToken, d: Duration) -> bool {
     tokio::select! { _ = cancel.cancelled() => true, _ = tokio::time::sleep(d) => false }
 }
 
-async fn poll_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: CancellationToken, status: Arc<Mutex<RuntimeStatus>>) {
+async fn poll_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: CancellationToken, status: Arc<Mutex<RuntimeStatus>>, run: u64) {
+    let _guard = RunGuard::new(status.clone(), run, cancel.clone());
     let mut offset = repo::last_update_id(&pool).await.unwrap_or(0) + 1;
     loop {
         let res = tokio::select! {
@@ -218,7 +258,8 @@ async fn poll_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: Cancella
     }
 }
 
-async fn outbox_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: CancellationToken, status: Arc<Mutex<RuntimeStatus>>) {
+async fn outbox_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: CancellationToken, status: Arc<Mutex<RuntimeStatus>>, run: u64) {
+    let _guard = RunGuard::new(status.clone(), run, cancel.clone());
     let mut ticks: u64 = 0;
     loop {
         match flush_outbox(&pool, api.as_ref()).await {

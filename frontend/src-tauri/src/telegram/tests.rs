@@ -6,7 +6,7 @@ use super::engine::handle_update;
 use super::notify;
 use super::repo;
 use super::types::{Keyboard, Reply, Update};
-use super::worker::{flush_outbox, TelegramRuntime, MAX_ATTEMPTS};
+use super::worker::{flush_outbox, RunGuard, RuntimeStatus, TelegramRuntime, MAX_ATTEMPTS};
 use crate::mm::match_repo::MatchRepo;
 use crate::mm::repository::MmRepository;
 use async_trait::async_trait;
@@ -692,6 +692,77 @@ async fn a_revoked_token_does_not_block_restarting() {
     assert!(rt.status().running);
     rt.stop().await;
     assert!(!rt.status().running);
+}
+
+/// A mock that panics on its first poll and then blocks, so a restarted run does not spin.
+#[derive(Default)]
+struct PanickingApi {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl TelegramApi for PanickingApi {
+    async fn get_me(&self) -> Result<BotInfo, TgError> {
+        Ok(BotInfo { id: 1, username: "matchwise_test_bot".into() })
+    }
+    async fn get_updates(&self, _o: i64, _t: u32) -> Result<Vec<Update>, TgError> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == 0 {
+            panic!("boom: simulated failure inside the poll loop");
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok(vec![])
+    }
+    async fn send_message(&self, _c: i64, _h: &str, _k: Option<&Keyboard>) -> Result<i64, TgError> {
+        Ok(1)
+    }
+    async fn answer_callback(&self, _i: &str, _t: Option<&str>) -> Result<(), TgError> {
+        Ok(())
+    }
+    async fn edit_markup(&self, _c: i64, _m: i64, _k: Option<&Keyboard>) -> Result<(), TgError> {
+        Ok(())
+    }
+    async fn set_commands(&self) -> Result<(), TgError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_worker_does_not_block_restarting() {
+    let pool = test_pool().await;
+    let api: Arc<dyn TelegramApi> = Arc::new(PanickingApi::default());
+    let rt = TelegramRuntime::default();
+
+    rt.start(pool.clone(), api.clone()).await.unwrap();
+    assert!(rt.status().running);
+    // A panicking task leaves no running bot behind, even though nothing wrote running = false
+    let mut stopped = false;
+    for _ in 0..200 {
+        if !rt.status().running {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(stopped, "a crashed worker must not stay marked as running");
+    let status = rt.status();
+    assert!(status.last_error.unwrap_or_default().contains("stopped unexpectedly"), "the operator is told what happened");
+
+    // Start must work again rather than claiming a bot is already running
+    rt.start(pool.clone(), api).await.expect("a crashed run must not block a new start");
+    assert!(rt.status().running);
+    rt.stop().await;
+    assert!(!rt.status().running);
+}
+
+#[tokio::test]
+async fn a_stale_guard_does_not_touch_a_newer_run() {
+    // run 1's tasks outlived their join timeout; by the time they drop, run 2 owns the status
+    let status = Arc::new(Mutex::new(RuntimeStatus { running: true, run: 2, ..Default::default() }));
+    drop(RunGuard::new(status.clone(), 1, tokio_util::sync::CancellationToken::new()));
+    let s = status.lock().unwrap();
+    assert!(s.running, "an old run must not mark a newer one as stopped");
+    assert!(s.last_error.is_none());
 }
 
 #[tokio::test]
