@@ -33,6 +33,8 @@ matched back to `M5_STATUS.md` "Not verified / limits" or turned into a code fix
 | Consent version | 1 | `telegram/repo.rs` `CONSENT_VERSION` |
 | Long-poll timeout | 25 s (client timeout 45 s) | `telegram/worker.rs`, `telegram/api.rs` |
 | Outbox tick | ~2 s | `telegram/worker.rs` |
+| Poll retry after an error | 5 s (429 waits `retry_after` + 1 s) | `telegram/worker.rs` |
+| Error mapping | 401, 403, 429, 400 typed; **409 falls to the catch-all** and shows as `409: Conflict: …` | `telegram/api.rs` `call` |
 | Reminders | ~10 min tick, unanswered intro after 3 days (max 2), incomplete profile after 3 days (max 3) | `telegram/notify.rs` |
 
 ## Setup (do once)
@@ -43,10 +45,10 @@ as "Telegram did not accept the token".
 | # | Check | Result |
 |---|---|---|
 | S1 | `@BotFather` → `/newbot` created, username recorded above | |
-| S2 | `curl -s "https://api.telegram.org/bot<TOKEN>/getMe"` returns `"ok":true` | |
+| S2 | `curl -fsS "https://api.telegram.org/bot<TOKEN>/getMe"` returns `"ok":true` (`-fS`: plain `-s` turns a DNS failure into an empty body, which reads like a bad token) | |
 | S3 | Groups disabled for the bot (`/setjoingroups` → Disable), optional | |
-| S4 | App started (`pnpm run tauri:dev`); on Linux without gnome-keyring `MATCHWISE_DB_KEY` set first | |
-| S5 | `MATCHWISE_TELEGRAM_TOKEN` **not** exported (unless testing the env path) | |
+| S4 | App started (`pnpm run tauri:dev`); on Linux without gnome-keyring `MATCHWISE_DB_KEY` set first, in the repo-root `.env` (`frontend/scripts/load-env.js` reads it, called by `tauri-auto.js`) — not `frontend/.env` | |
+| S5 | `MATCHWISE_TELEGRAM_TOKEN` **not** exported and **not** set in the repo-root `.env` (unless testing the env path). Check with `grep -c MATCHWISE_TELEGRAM_TOKEN .env` | |
 | S6 | Two Telegram accounts available on separate devices | |
 | S7 | Two profiles created, both `active` | |
 
@@ -56,28 +58,30 @@ as "Telegram did not accept the token".
 |---|---|---|
 | A1 | Telegram page shows setup steps and no configured token | |
 | A2 | Pasting a malformed token is rejected with the "does not look like a bot token" message, no network call | |
-| A3 | Valid token saves; UI reports `token in credential store` | |
-| A4 | Bad-bot token (well-formed, wrong secret) is rejected with "Telegram did not accept the token" | |
+| A3 | Valid token saves; UI reports `token in credential store`. On the env path the panel shows `token in environment` instead, the save button is not shown, and `tg_save_token` refuses — that is correct, not a failure | |
+| A4 | Bad-bot token (well-formed, wrong secret) is rejected with "Telegram did not accept the token" (`telegram/commands.rs:107`; a DNS/network failure returns the same prefix, so read the `: ` suffix) | |
 | A5 | **Start** sets `running`, shows `@username`, `processed updates` and `messages sent` counters | |
 | A6 | `last_error` stays empty while idle | |
 | A7 | Status polls every 5 s without errors while the page is open | |
 | A8 | **Stop** clears `running`; **Start** again resumes | |
 | A9 | Restarting the app leaves the bot **stopped** — document this as expected | |
-| A10 | **Remove token** clears the credential store and the stored bot username | |
+| A10 | **Remove token** clears the credential store and the stored bot username. On the env path it cannot clear `.env`, so the panel still shows configured (`token in environment`) after removing — edit `.env` and restart instead | |
+| A11 | Revoke the token mid-run (BotFather → `/revoke`): status flips to stopped and `last_error` says the token was rejected; the outbox loop stops too. **Start** then works again on the new token without pressing Stop first. It refuses only while a bot is genuinely running | |
+| A12 | After updating the token in `.env`, a **running app keeps the old value**: the file is read once at `pnpm run tauri:dev` start. Restart the dev server, then Start | |
 
 ## B. Linking and consent (phone A)
 
 | # | Check | Result |
 |---|---|---|
 | B1 | Profile → Telegram panel → Create invitation shows a `t.me/<bot>?start=<code>` link and the 10-char code | |
-| B2 | Link appears only after the bot username is known (save + start first); otherwise "no bot" with the code only | |
+| B2 | Link appears only after the bot username is known. **Save** is enough: `tg_save_token` writes it from `getMe` before Start. Start only makes the bot answer. Otherwise "no bot" with the code only | |
 | B3 | Opening the link shows the consent card, first name filled, **I agree / No thanks** buttons | |
 | B4 | Card language follows the phone's Telegram locale (`en` or `fa`); `/language` switches it before agreeing | |
-| B5 | Any command other than `/start <code>`, `/help`, `/language`, `/stop`, `/unlink` before linking → "invitation" text | |
+| B5 | Before linking, only `/start <code>` and `/help` are answered; `/language`, `/stop`, `/unlink` also get the generic "invitation from your matchmaker" text. Between linking and consent those three are accepted, and anything else re-shows the consent card | |
 | B6 | Wrong/expired code → the same generic invalid-code text (does not reveal whether the code exists) | |
 | B7 | 6th wrong code within an hour → "Too many attempts" | |
 | B8 | **I agree** → welcome message with the first name | |
-| B9 | Pressing the same consent button again → "Already answered." toast | |
+| B9 | After **I agree** the card's buttons are removed (`EditMarkup` with `keyboard: None`) — confirm they disappear. If a client still shows them (the markup edit failed; those errors are swallowed in `process_update`), pressing gives "Already answered." Treat that as the stale-markup path, not the normal one | |
 | B10 | Second profile linked from a second chat while the first is linked → "already linked to a Telegram account" | |
 | B11 | **No thanks** on a throwaway link → unlinked, panel returns to "not linked", new invitation possible | |
 | B12 | Panel shows linked badge, `@username`, linked date, and the conversation | |
@@ -117,7 +121,7 @@ as "Telegram did not accept the token".
 
 | # | Check | Result |
 |---|---|---|
-| E1 | Match created `recommended`; moved to `reviewed` → `approved` → `introduction_proposed` | |
+| E1 | Match created `recommended`; moved to `reviewed` → `approved` → `introduction_proposed` (`allowed_next`, `matchmaking-core/src/lifecycle.rs:59`) | |
 | E2 | Before confirming, the workflow shows the exact message per side and who cannot be reached | |
 | E3 | Preview matches the message actually delivered | |
 | E4 | Card arrives within ~2 s while the app is running | |
@@ -277,5 +281,8 @@ is the one carrying `<b>`.
 - The bot never auto-starts. After any app restart, press **Start** again or nothing answers.
 - The token check mixes "bad token" and "no network" into one message; if the machine is offline, expect a misleading error.
 - Set `MATCHWISE_TELEGRAM_TOKEN` only deliberately: it silently takes precedence over the credential store and blocks saving a new token.
+- The same trap applies to `.env`: `tauri:dev` loads every key from the repo-root `.env`, so a `MATCHWISE_TELEGRAM_TOKEN` line there is the env path even though you never exported it. `MATCHWISE_DB_KEY` belongs there; the bot token does not.
 - Creating a second invitation revokes the first, so a "dead" link during testing may simply have been replaced.
 - A webhook set on the bot (by anything else using the same token) makes long polling fail; check `getWebhookInfo` if nothing arrives.
+- A `409` is not a typed error in `telegram/api.rs` (it falls to the catch-all arm), so `last_error` reads `409: Conflict: ...` and the poll loop retries every 5 s until the other poller stops.
+- A 401 no longer strands the runtime: `start()` reaps a handle whose status already says stopped (regression test `a_revoked_token_does_not_block_restarting`). Press Start again after replacing the token.

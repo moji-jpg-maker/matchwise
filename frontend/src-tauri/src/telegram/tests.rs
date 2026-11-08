@@ -6,7 +6,7 @@ use super::engine::handle_update;
 use super::notify;
 use super::repo;
 use super::types::{Keyboard, Reply, Update};
-use super::worker::{flush_outbox, MAX_ATTEMPTS};
+use super::worker::{flush_outbox, TelegramRuntime, MAX_ATTEMPTS};
 use crate::mm::match_repo::MatchRepo;
 use crate::mm::repository::MmRepository;
 use async_trait::async_trait;
@@ -14,7 +14,8 @@ use matchmaking_core::{ConditionOp, Interest, Locale, MatchStatus, Profile, Prov
 use serde_json::json;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 async fn test_pool() -> SqlitePool {
     let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
@@ -631,6 +632,66 @@ async fn outbox_delivery_retries_and_respects_recipients() {
     repo::enqueue(&pool, "p1", "x", "auth", None, None).await.unwrap();
     api.script(vec![Err(TgError::Unauthorized)]);
     assert!(flush_outbox(&pool, &api).await.is_err());
+}
+
+/// A mock that rejects the first poll with 401 and then blocks, so the loop does not spin.
+#[derive(Default)]
+struct RevokedApi {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl TelegramApi for RevokedApi {
+    async fn get_me(&self) -> Result<BotInfo, TgError> {
+        Ok(BotInfo { id: 1, username: "matchwise_test_bot".into() })
+    }
+    async fn get_updates(&self, _o: i64, _t: u32) -> Result<Vec<Update>, TgError> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == 0 {
+            return Err(TgError::Unauthorized);
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok(vec![])
+    }
+    async fn send_message(&self, _c: i64, _h: &str, _k: Option<&Keyboard>) -> Result<i64, TgError> {
+        Ok(1)
+    }
+    async fn answer_callback(&self, _i: &str, _t: Option<&str>) -> Result<(), TgError> {
+        Ok(())
+    }
+    async fn edit_markup(&self, _c: i64, _m: i64, _k: Option<&Keyboard>) -> Result<(), TgError> {
+        Ok(())
+    }
+    async fn set_commands(&self) -> Result<(), TgError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_revoked_token_does_not_block_restarting() {
+    let pool = test_pool().await;
+    let api: Arc<dyn TelegramApi> = Arc::new(RevokedApi::default());
+    let rt = TelegramRuntime::default();
+
+    rt.start(pool.clone(), api.clone()).await.unwrap();
+    assert!(rt.status().running);
+    // the 401 ends the poll loop and says so, without anyone pressing Stop
+    let mut stopped = false;
+    for _ in 0..200 {
+        if !rt.status().running {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(stopped, "a 401 should leave the bot marked as stopped");
+    assert!(rt.status().last_error.unwrap_or_default().contains("rejected the bot token"));
+
+    // Start must work again rather than claiming a bot is already running
+    rt.start(pool.clone(), api).await.expect("a dead run must not block a new start");
+    assert!(rt.status().running);
+    rt.stop().await;
+    assert!(!rt.status().running);
 }
 
 #[tokio::test]

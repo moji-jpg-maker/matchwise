@@ -123,7 +123,19 @@ impl TelegramRuntime {
     pub async fn start(&self, pool: SqlitePool, api: Arc<dyn TelegramApi>) -> Result<BotInfo, String> {
         let mut guard = self.running.lock().await;
         if guard.is_some() {
-            return Err("The bot is already running".into());
+            // A revoked token ends the poll loop on its own, which leaves a dead handle behind while the
+            // status already says "stopped". Reap that handle so the operator can simply press Start again;
+            // a bot that is genuinely running is still refused.
+            let dead = self.status.lock().map(|s| !s.running).unwrap_or(false);
+            if !dead {
+                return Err("The bot is already running".into());
+            }
+            if let Some(r) = guard.take() {
+                r.cancel.cancel();
+                for t in r.tasks {
+                    let _ = tokio::time::timeout(Duration::from_secs(5), t).await;
+                }
+            }
         }
         let me = api.get_me().await.map_err(|e| e.to_string())?;
         let _ = api.set_commands().await; // cosmetic
@@ -186,6 +198,9 @@ async fn poll_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: Cancella
                     s.last_error = Some("Telegram rejected the bot token. Check it in the Telegram settings.".into());
                     s.running = false;
                 });
+                // Nothing can work with a revoked token: stop the outbox loop too, and leave the handle
+                // for start() to reap (see above).
+                cancel.cancel();
                 break;
             }
             Err(TgError::RateLimited { retry_after_secs }) => {
