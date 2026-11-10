@@ -8,7 +8,7 @@
 //!
 //! Every entry stands alone: an empty, oversized, or unreadable one is reported against that entry and the run
 //! carries on. A closed AI gate is a property of the whole run: the profiles and their notes are still created,
-//! no model is contacted, and nothing is marked parsed.
+//! the local rules still read each one, and no model is contacted.
 
 use super::commands::prepare;
 use super::service::{self, Decision, Session};
@@ -33,7 +33,7 @@ pub struct IntakeEntryReport {
     pub profile_id: Option<String>,
     /// "created" | "parsed" | "dropped"
     pub outcome: String,
-    /// How many suggestions the entry produced. Zero when the gate was closed or the entry could not be read.
+    /// How many suggestions the entry produced (rules first, then the model when there is a session).
     pub suggestions: i64,
     /// A short reason, shown to the matchmaker, when nothing was created or parsed.
     pub reason: Option<String>,
@@ -45,9 +45,9 @@ pub struct IntakeBatchReport {
     pub batch_id: String,
     /// The target the matchmaker was working on, if one was given. Never created by the corpus.
     pub target_profile_id: Option<String>,
-    /// False when the AI gate was closed: profiles and raw text were kept, nothing was parsed.
+    /// Whether the model tier ran. The rule tier always does, so a closed gate still yields suggestions.
     pub parsed: bool,
-    /// Why nothing was parsed, when `parsed` is false. Written for the matchmaker.
+    /// Why the model tier did not run, when `parsed` is false. Written for the matchmaker.
     pub note: Option<String>,
     pub entries: Vec<IntakeEntryReport>,
     pub created: usize,
@@ -107,6 +107,7 @@ pub async fn ai_intake_batch(
     target_text: Option<String>,
     entries: Option<Vec<String>>,
     batch_id: String,
+    preset_id: Option<String>,
 ) -> Result<IntakeBatchReport, String> {
     run_batch(
         state.db_manager.pool(),
@@ -114,6 +115,7 @@ pub async fn ai_intake_batch(
         target_text,
         entries,
         batch_id,
+        preset_id,
     )
     .await
 }
@@ -125,6 +127,7 @@ pub(crate) async fn run_batch(
     target_text: Option<String>,
     entries: Option<Vec<String>>,
     batch_id: String,
+    preset_id: Option<String>,
 ) -> Result<IntakeBatchReport, String> {
     // The gate is read once for the run, not once per entry: either the whole run is parsed, or none of it is.
     let gate = prepare(pool).await;
@@ -139,6 +142,7 @@ pub(crate) async fn run_batch(
         Err(_) => None,
     };
     let closed_note = gate.as_ref().err().cloned();
+    let targets = preset_targets(pool, preset_id.as_deref()).await?;
     run_batch_with(
         pool,
         target,
@@ -147,8 +151,20 @@ pub(crate) async fn run_batch(
         batch_id,
         session.as_ref(),
         closed_note,
+        targets,
     )
     .await
+}
+
+/// The fields a preset names, or `None` for every eligible field. An unknown id reads every field rather than
+/// failing the run: the corpus itself is still worth creating.
+async fn preset_targets(pool: &sqlx::SqlitePool, preset_id: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    let Some(preset_id) = preset_id.filter(|id| !id.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let reg = MmRepository::registry(pool).await.map_err(err)?;
+    let known: Vec<String> = matchmaking_core::FieldRegistry::defs(&reg).map(|def| def.key.clone()).collect();
+    Ok(super::repo::extraction_presets(pool, &known).await.map_err(err)?.into_iter().find(|preset| preset.id == preset_id).map(|preset| preset.fields))
 }
 
 /// The run itself, with the session given rather than read from settings: the tests substitute a scripted model,
@@ -161,6 +177,7 @@ pub(crate) async fn run_batch_with(
     batch_id: String,
     session: Option<&Session<'_>>,
     closed_note: Option<String>,
+    targets: Option<Vec<String>>,
 ) -> Result<IntakeBatchReport, String> {
     let parsed_corpus = corpus_of(target_text, entries)?;
     if batch_id.trim().is_empty() {
@@ -172,7 +189,7 @@ pub(crate) async fn run_batch_with(
         batch_id: batch_id.clone(),
         target_profile_id: None,
         parsed,
-        note: if parsed { None } else { closed_note },
+        note: if parsed { None } else { closed_note.clone() },
         entries: Vec::new(),
         created: 0,
         dropped: 0,
@@ -243,31 +260,20 @@ pub(crate) async fn run_batch_with(
         )
         .await;
 
-        let Some(session) = session else {
-            // Gate closed: the profile and its raw text are kept, nothing is parsed, and no model is contacted.
-            report.entries.push(IntakeEntryReport {
-                index: entry.index,
-                label: entry.label.clone(),
-                profile_id: Some(profile_id),
-                outcome: "created".into(),
-                suggestions: 0,
-                reason: None,
-            });
-            continue;
-        };
-
-        // Sequential by design: `service::ask` holds one request at a time.
-        match service::extract_profile(pool, session, &profile_id, None).await {
+        // The rules always run, with or without a model: a closed gate only means the second tier is skipped.
+        let view = service::extract_profile(pool, session, &profile_id, None, targets.clone(), false).await;
+        match view {
             Ok(view) => {
                 let n = view.suggestions.len() as i64;
                 report.suggestions += n;
+                let reason = if view.llm_status == "unavailable" { closed_note.clone() } else { view.llm_error.clone() };
                 report.entries.push(IntakeEntryReport {
                     index: entry.index,
                     label: entry.label.clone(),
                     profile_id: Some(profile_id),
-                    outcome: "parsed".into(),
+                    outcome: if view.rule_count > 0 || view.ai_count > 0 { "parsed".into() } else { "created".into() },
                     suggestions: n,
-                    reason: None,
+                    reason,
                 });
             }
             Err(reason) => {
@@ -338,12 +344,17 @@ pub(crate) async fn run_report(
         suggestions: 0,
     };
     for (i, note) in notes.iter().enumerate() {
+        let pending = super::repo::pending_suggestions(pool, &note.profile_id)
+            .await
+            .map_err(err)?;
+        let suggestions = pending.len() as i64;
+        report.suggestions += suggestions;
         report.entries.push(IntakeEntryReport {
             index: i + 1,
             label: note.label.clone(),
             profile_id: Some(note.profile_id.clone()),
-            outcome: "created".into(),
-            suggestions: 0,
+            outcome: if suggestions > 0 { "parsed".into() } else { "created".into() },
+            suggestions,
             reason: None,
         });
     }

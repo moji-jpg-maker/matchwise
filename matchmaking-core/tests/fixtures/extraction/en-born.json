@@ -1,0 +1,6 @@
+{
+  "text": "Born in Isfahan, currently in Karaj.",
+  "expected": {
+    "birthplace": "isfahan"
+  }
+}

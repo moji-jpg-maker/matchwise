@@ -1,0 +1,6 @@
+{
+  "text": "I am 41 years old and looking for a woman, 30 years old.",
+  "expected": {
+    "age": 41
+  }
+}

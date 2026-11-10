@@ -1,0 +1,8 @@
+{
+  "text": "Age: 30, قد ۱۷۰ سانت, lives in Yazd",
+  "expected": {
+    "age": 30,
+    "height_cm": 170,
+    "city": "yazd"
+  }
+}

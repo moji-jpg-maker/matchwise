@@ -24,6 +24,7 @@ const SOURCE_KEY: Record<string, MessageKey> = {
   matchmaker: 'profile.sourceMatchmaker',
   questionnaire: 'profile.sourceQuestionnaire',
   ai_inferred: 'profile.sourceAi',
+  rule_extracted: 'profile.sourceRule',
 };
 
 function ProfileEditor() {

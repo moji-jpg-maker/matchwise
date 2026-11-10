@@ -55,6 +55,7 @@ fn parse_source(s: Option<&str>, locale: Locale) -> Result<Provenance, String> {
         "user" => Ok(Provenance::User),
         "questionnaire" => Ok(Provenance::Questionnaire),
         "ai_inferred" => Ok(Provenance::AiInferred),
+        "rule_extracted" => Ok(Provenance::RuleExtracted),
         other => Err(match locale {
             Locale::En => format!("unknown source '{other}'"),
             Locale::Fa => format!("منبع «{other}» ناشناخته است"),

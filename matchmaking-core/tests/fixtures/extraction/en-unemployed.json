@@ -1,0 +1,7 @@
+{
+  "text": "Currently unemployed, 36 years old.",
+  "expected": {
+    "employment_status": "unemployed",
+    "age": 36
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "text": "Non smoker, very religious, self employed.",
+  "expected": {
+    "smoking": "never",
+    "religiosity": "high",
+    "employment_status": "self_employed"
+  }
+}

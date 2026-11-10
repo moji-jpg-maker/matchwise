@@ -10,6 +10,8 @@ pub enum Provenance {
     Matchmaker,
     Questionnaire,
     AiInferred,
+    /// Found by the local rule extractor: never applied automatically, and never outranks a person.
+    RuleExtracted,
 }
 
 impl Value {
@@ -28,7 +30,7 @@ impl Provenance {
     /// Higher rank wins when two sources disagree.
     pub fn rank(self) -> u8 {
         match self {
-            Provenance::AiInferred => 0,
+            Provenance::AiInferred | Provenance::RuleExtracted => 0,
             Provenance::Questionnaire => 1,
             Provenance::User => 2,
             Provenance::Matchmaker => 3,

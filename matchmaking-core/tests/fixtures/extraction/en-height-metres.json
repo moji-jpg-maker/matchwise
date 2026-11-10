@@ -1,0 +1,7 @@
+{
+  "text": "Height 1.72 m, weight 64 kg.",
+  "expected": {
+    "height_cm": 172,
+    "weight_kg": 64
+  }
+}

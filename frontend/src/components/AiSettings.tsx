@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { AiConfig, AiLogRow, AiSettings } from '@/types/matchmaking';
+import { AiPresetsEditor } from '@/components/AiPresetsEditor';
 import { BuiltInAIAPI } from '@/lib/builtin-ai';
 import { formatDownloadDetail } from '@/lib/download-progress';
 import { useBuiltInDownload } from '@/lib/use-builtin-download';
@@ -244,6 +245,8 @@ export function AiSettingsPanel() {
             </ul>
           )}
         </div>
+
+        <AiPresetsEditor />
     </div>
   );
 }

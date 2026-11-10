@@ -7,7 +7,7 @@ import { ArrowLeft, FileUp, ListOrdered, CheckCheck, Loader2 } from 'lucide-reac
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { IntakeAcceptReport, IntakeBatchReport } from '@/types/matchmaking';
+import { ExtractionPresetsView, IntakeAcceptReport, IntakeBatchReport } from '@/types/matchmaking';
 import { useI18n } from '@/i18n';
 import type { Translate } from '@/lib/conditions';
 
@@ -37,7 +37,7 @@ const countEntries = (corpus: string, entries: string[] | null): number => {
 
 export default function IntakePage() {
   const router = useRouter();
-  const { t, fmt } = useI18n();
+  const { t, fmt, locale } = useI18n();
   const [target, setTarget] = useState('');
   const [corpus, setCorpus] = useState('');
   const [entries, setEntries] = useState<string[] | null>(null);
@@ -45,6 +45,8 @@ export default function IntakePage() {
   const [batchId, setBatchId] = useState<string | null>(null);
   const [report, setReport] = useState<IntakeBatchReport | null>(null);
   const [accepted, setAccepted] = useState<IntakeAcceptReport | null>(null);
+  const [presets, setPresets] = useState<ExtractionPresetsView | null>(null);
+  const [presetId, setPresetId] = useState('');
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<'idle' | 'reading' | 'accepting'>('idle');
   const [elapsed, setElapsed] = useState(0);
@@ -80,6 +82,18 @@ export default function IntakePage() {
       });
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    invoke<ExtractionPresetsView>('mm_extraction_presets', { locale })
+      .then((view) => {
+        if (cancelled) return;
+        setPresets(view);
+        setPresetId((current) => current || view.presets.find((p) => p.is_default)?.id || '');
+      })
+      .catch(() => { /* presets are optional: every eligible field is read without one */ });
+    return () => { cancelled = true; };
+  }, [locale]);
+
   const loadFile = async (file: File) => {
     try {
       const r = await readFile(file, t);
@@ -110,6 +124,7 @@ export default function IntakePage() {
         targetText: entries ? null : corpus,
         entries: entries ?? null,
         batchId: id,
+        presetId: presetId || null,
       });
       setBatchId(id);
       setReport(r);
@@ -189,6 +204,16 @@ export default function IntakePage() {
             placeholder={t('intake.corpusPlaceholder')}
             className="min-h-[180px] font-mono text-xs"
           />
+
+          {presets && presets.presets.length > 0 && (
+            <label className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-xs text-gray-500">{t('aiPanel.presetLabel')}</span>
+              <select className="border rounded-md px-2 py-1 text-sm" value={presetId} onChange={(e) => setPresetId(e.target.value)}>
+                <option value="">{t('intake.allFields')}</option>
+                {presets.presets.map((p) => <option key={p.id} value={p.id}>{p.name}{p.is_default ? t('aiPanel.presetDefaultTag') : ''}</option>)}
+              </select>
+            </label>
+          )}
 
           <div className="flex flex-wrap gap-2">
             <Button onClick={run} disabled={busy}>{busy ? t('intake.working') : t('intake.create')}</Button>

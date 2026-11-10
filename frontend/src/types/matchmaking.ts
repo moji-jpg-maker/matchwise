@@ -21,7 +21,7 @@ export interface RecordValue {
   [key: string]: Value;
 }
 export type Value = boolean | number | string | string[] | RecordValue[];
-export type Provenance = 'user' | 'matchmaker' | 'questionnaire' | 'ai_inferred';
+export type Provenance = 'user' | 'matchmaker' | 'questionnaire' | 'ai_inferred' | 'rule_extracted';
 
 export interface ProfileEntry {
   value: Value;
@@ -549,6 +549,8 @@ export interface AiSuggestion {
   conflict: boolean;
   status: string;
   model: string;
+  // Which tier found it: "rule" for the local matchers, "ai" for the model.
+  source: 'rule' | 'ai';
   created_at: string;
 }
 
@@ -562,6 +564,12 @@ export interface AiExtraction {
   missing: string[];
   questions: string[];
   dropped: string[];
+  // "ok" | "skipped_nothing_left" | "unavailable" | "failed"
+  llm_status: 'ok' | 'skipped_nothing_left' | 'unavailable' | 'failed';
+  llm_error: string | null;
+  rule_count: number;
+  ai_count: number;
+  timings: { rules_ms: number; llm_ms: number };
 }
 
 export interface AiPromptPreview {
@@ -569,6 +577,27 @@ export interface AiPromptPreview {
   user: string;
   is_cloud: boolean;
   include_sensitive: boolean;
+  // False when the rules already fill every selected field: nothing would be sent.
+  will_send: boolean;
+}
+
+export interface ExtractionPreset {
+  id: string;
+  name: string;
+  fields: string[];
+  with_preferences: boolean;
+  is_default: boolean;
+}
+
+export interface ExtractionPresetField {
+  key: string;
+  label: string;
+  sensitive: boolean;
+}
+
+export interface ExtractionPresetsView {
+  presets: ExtractionPreset[];
+  fields: ExtractionPresetField[];
 }
 
 export interface AiFact {

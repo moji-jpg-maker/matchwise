@@ -1,0 +1,7 @@
+{
+  "text": "بدون فرزند، مجرد",
+  "expected": {
+    "has_children": false,
+    "marital_status": "never_married"
+  }
+}

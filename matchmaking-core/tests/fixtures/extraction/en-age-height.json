@@ -1,0 +1,8 @@
+{
+  "text": "I am 29 years old, 168 cm tall and weigh 58 kg.",
+  "expected": {
+    "age": 29,
+    "height_cm": 168,
+    "weight_kg": 58
+  }
+}

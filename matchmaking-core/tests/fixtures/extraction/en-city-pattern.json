@@ -1,0 +1,6 @@
+{
+  "text": "She lives in Shiraz and works remotely.",
+  "expected": {
+    "city": "shiraz"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "text": "Never married, no children, student.",
+  "expected": {
+    "marital_status": "never_married",
+    "has_children": false,
+    "employment_status": "student"
+  }
+}

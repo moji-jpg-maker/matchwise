@@ -36,6 +36,7 @@ enum Request {
         repeat_penalty: Option<f32>,
         penalty_last_n: Option<i32>,
         stop_tokens: Option<Vec<String>>,
+        grammar: Option<String>,
     },
     Ping,
     Shutdown,
@@ -351,9 +352,18 @@ impl ModelState {
         max_tokens: i32,
         sampling: SamplingConfig,
         stop_tokens: Vec<String>,
+        grammar: Option<String>,
     ) -> Result<String> {
         let start_time = Instant::now();
         let model = self.model.as_ref().context("Model not loaded")?;
+
+        let grammar_sampler = match grammar.as_deref().filter(|text| !text.trim().is_empty()) {
+            Some(gbnf) => Some(
+                llama_cpp_2::sampling::LlamaSampler::grammar(model, gbnf, "root")
+                    .map_err(|e| anyhow::anyhow!("Grammar could not be loaded: {}", e))?,
+            ),
+            None => None,
+        };
 
         // Calculate thread count (conservative default: max(1, (Cores / 2) + 2))
         // This ensures the UI thread is never starved
@@ -444,6 +454,10 @@ impl ModelState {
                 LlamaSampler::temp(sampling.temperature),
                 LlamaSampler::dist(seed),
             ])
+        };
+        let sampler = match grammar_sampler {
+            Some(constraint) => LlamaSampler::chain_simple([constraint, sampler]),
+            None => sampler,
         };
         let mut sampler = pin!(sampler);
 
@@ -600,6 +614,7 @@ fn main() -> Result<()> {
                         repeat_penalty,
                         penalty_last_n,
                         stop_tokens,
+                        grammar,
                     }) => {
                         let max_tokens = max_tokens.unwrap_or(512);
                         let context_size = context_size.unwrap_or(2048);
@@ -633,6 +648,7 @@ fn main() -> Result<()> {
                             max_tokens,
                             sampling,
                             stop_tokens,
+                            grammar,
                         ) {
                             Ok(text) => {
                                 send_response(&Response::Response { text, error: None })?;
@@ -746,5 +762,147 @@ mod tests {
         assert_eq!(sampling.repeat_penalty, 1.05);
         assert_eq!(sampling.penalty_last_n, 256);
         assert!(sampling.uses_penalties());
+    }
+
+    #[test]
+    fn generate_request_carries_an_optional_grammar() {
+        let plain: Request = serde_json::from_str(r#"{"type":"generate","prompt":"x"}"#).unwrap();
+        let Request::Generate { grammar, .. } = plain else { panic!("expected generate request") };
+        assert!(grammar.is_none());
+
+        let constrained: Request = serde_json::from_str(r#"{"type":"generate","prompt":"x","grammar":"root ::= \"a\""}"#).unwrap();
+        let Request::Generate { grammar, .. } = constrained else { panic!("expected generate request") };
+        assert_eq!(grammar.as_deref(), Some("root ::= \"a\""));
+    }
+
+    /// The grammar below is byte-identical to what
+    /// `output_constraint(...).gbnf` produces for the fields
+    /// `gender, age, smoking, interests, has_children` with preferences on.
+    /// llama.cpp only parses a grammar once a model is loaded, which a unit
+    /// test cannot do, so the assertions here check the structural invariants
+    /// that its parser requires. The real parse happens through
+    /// `LlamaSampler::grammar` at generation time.
+    const EXTRACTION_GBNF: &str = concat!(
+        "root ::= \"{\" ws \"\\\"fields\\\"\" ws \":\" ws fields-object (ws \",\" ws extra-pair)* ws \"}\" ws\n",
+        "fields-pair ::= \"gender\" ws \":\" ws field-object-gender | \"age\" ws \":\" ws field-object-age | \"has_children\" ws \":\" ws field-object-has-children | \"smoking\" ws \":\" ws field-object-smoking\n",
+        "fields-object ::= \"{\" ws (fields-pair (ws \",\" ws fields-pair)*)? ws \"}\"\n",
+        "field-object-gender ::= \"{\" ws \"\\\"value\\\"\" ws \":\" ws (\"female\" | \"male\") ws \",\" ws \"\\\"evidence\\\"\" ws \":\" ws evidence ws \"}\"\n",
+        "field-object-age ::= \"{\" ws \"\\\"value\\\"\" ws \":\" ws number-value ws \",\" ws \"\\\"evidence\\\"\" ws \":\" ws evidence ws \"}\"\n",
+        "field-object-has-children ::= \"{\" ws \"\\\"value\\\"\" ws \":\" ws bool-value ws \",\" ws \"\\\"evidence\\\"\" ws \":\" ws evidence ws \"}\"\n",
+        "field-object-smoking ::= \"{\" ws \"\\\"value\\\"\" ws \":\" ws (\"never\" | \"occasionally\" | \"regularly\") ws \",\" ws \"\\\"evidence\\\"\" ws \":\" ws evidence ws \"}\"\n",
+        "bool-value ::= \"true\" | \"false\"\n",
+        "number-value ::= \"-\"? (\"0\" | [1-9] [0-9]*) (\".\" [0-9]+)?\n",
+        "evidence ::= \"\\\"\" ([^\"\\\\\\x7f\\x00-\\x1f] | \"\\\\\" ([\"\\\\/bfnrt] | \"u\" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])){0,200} \"\\\"\"\n",
+        "extra-pair ::= \"\\\"preferences\\\"\" ws \":\" ws any-array | \"\\\"contradictions\\\"\" ws \":\" ws any-array | \"\\\"missing\\\"\" ws \":\" ws any-array | \"\\\"questions\\\"\" ws \":\" ws any-array\n",
+        "any-array ::= \"[\" ws (any-value (ws \",\" ws any-value)*)? ws \"]\"\n",
+        "any-value ::= \"{\" ws (json-pair (ws \",\" ws json-pair)*)? ws \"}\" | any-array | evidence | number-value | \"true\" | \"false\" | \"null\"\n",
+        "json-pair ::= evidence ws \":\" ws any-value\n",
+        "ws ::= [ \\t\\n\\r]*\n",
+    );
+
+    fn grammar_rules(grammar: &str) -> Vec<(&str, &str)> {
+        grammar
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let (name, body) = line
+                    .split_once(" ::= ")
+                    .unwrap_or_else(|| panic!("rule line without a ::= separator: {line}"));
+                (name, body)
+            })
+            .collect()
+    }
+
+    /// Drops `"literals"` and `[character classes]` so only real rule references remain.
+    fn grammar_symbols(body: &str) -> Vec<String> {
+        let mut symbols = Vec::new();
+        let mut current = String::new();
+        let mut chars = body.chars().peekable();
+        while let Some(character) = chars.next() {
+            match character {
+                '"' => {
+                    symbols.push(std::mem::take(&mut current));
+                    while let Some(inner) = chars.next() {
+                        if inner == '\\' {
+                            chars.next();
+                        } else if inner == '"' {
+                            break;
+                        }
+                    }
+                }
+                '[' => {
+                    symbols.push(std::mem::take(&mut current));
+                    while let Some(inner) = chars.next() {
+                        if inner == '\\' {
+                            chars.next();
+                        } else if inner == ']' {
+                            break;
+                        }
+                    }
+                }
+                character if character.is_ascii_alphanumeric() || character == '-' => current.push(character),
+                _ => symbols.push(std::mem::take(&mut current)),
+            }
+        }
+        symbols.push(current);
+        symbols
+            .into_iter()
+            .filter(|symbol| !symbol.is_empty() && !symbol.starts_with(|first: char| first.is_ascii_digit()))
+            .collect()
+    }
+
+    #[test]
+    fn extraction_grammar_satisfies_llama_cpp_structural_rules() {
+        let rules = grammar_rules(EXTRACTION_GBNF);
+        let names: Vec<&str> = rules.iter().map(|(name, _)| *name).collect();
+
+        assert_eq!(names.first().copied(), Some("root"), "llama.cpp needs root to be the first rule");
+        assert_eq!(
+            names.iter().filter(|name| **name == "root").count(),
+            1,
+            "a grammar may define root only once"
+        );
+        assert_eq!(
+            names.len(),
+            names.iter().collect::<std::collections::HashSet<_>>().len(),
+            "every rule name must be unique"
+        );
+        assert!(EXTRACTION_GBNF.ends_with('\n'), "llama.cpp wants a trailing newline");
+
+        for (name, _) in &rules {
+            assert!(
+                !name.contains(' ') && !name.contains('"'),
+                "rule names are bare symbols, found {name:?}"
+            );
+            assert!(
+                !name.chars().next().is_some_and(|first| first.is_ascii_digit()),
+                "rule names cannot start with a digit, found {name:?}"
+            );
+        }
+
+        for symbol in rules.iter().flat_map(|(_, body)| grammar_symbols(body)) {
+            assert!(
+                names.contains(&symbol.as_str()),
+                "grammar references undefined rule {symbol:?}"
+            );
+        }
+
+        for (name, body) in &rules {
+            let head = body.split_whitespace().next().unwrap_or_default();
+            assert_ne!(head, *name, "rule {name:?} is left-recursive with itself");
+        }
+
+        assert!(
+            EXTRACTION_GBNF.contains("evidence ::= "),
+            "the evidence rule carries the 200 character cap"
+        );
+        assert!(
+            EXTRACTION_GBNF.contains("{0,200}"),
+            "evidence must be bounded so the model cannot run away"
+        );
+        assert!(
+            !EXTRACTION_GBNF.contains("interests"),
+            "a Text field constrains nothing, so it stays out of the grammar"
+        );
     }
 }

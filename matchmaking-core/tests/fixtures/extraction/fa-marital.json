@@ -1,0 +1,8 @@
+{
+  "text": "خانمی مطلقه، یک فرزند",
+  "expected": {
+    "gender": "female",
+    "marital_status": "divorced",
+    "children_count": 1
+  }
+}

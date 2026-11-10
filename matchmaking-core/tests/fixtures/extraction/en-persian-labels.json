@@ -1,0 +1,8 @@
+{
+  "text": "جنسیت: مرد\nسطح تحصیلات: کارشناسی\nشهر: مشهد",
+  "expected": {
+    "gender": "male",
+    "education": "bachelor",
+    "city": "mashhad"
+  }
+}

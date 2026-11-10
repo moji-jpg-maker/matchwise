@@ -1,0 +1,7 @@
+{
+  "text": "سیگاری نیست، غیرمذهبی",
+  "expected": {
+    "smoking": "never",
+    "religiosity": "low"
+  }
+}

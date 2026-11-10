@@ -1,0 +1,7 @@
+{
+  "text": "Retired teacher, widowed.",
+  "expected": {
+    "employment_status": "retired",
+    "marital_status": "widowed"
+  }
+}

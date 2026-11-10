@@ -36,6 +36,9 @@ Same feature set as before, ordered so something works end to end early.
 - **M10 AI provider and model selection** `[NEW]` -- MatchWise's own built-in model registry, per-task profiles for
   extraction and pair analysis, typed readiness, and a catalog-driven AI page. *(written and tested with a scripted
   model; no real model run: see `M10_STATUS.md`)*
+- **M11 Fast, deterministic extraction** `[NEW]` -- a local rule tier that always runs and never fails, plus an
+  optional constrained LLM tier that only reads the fields the rules left empty. *(written and tested with a scripted
+  model; the timing comparison on real notes is left to a person with a model: see `M11_STATUS.md`)*
 - **M9 Windows distribution** `[NEW]` -- a production Windows installer: sign and bundle the sidecar binaries per
   target, complete the Windows signing step that the inherited config already points at, and ship NSIS plus MSI
   verified on a clean machine. *(config and workflows written: see `M9_STATUS.md`. Nothing has run on a Windows

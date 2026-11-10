@@ -25,6 +25,8 @@ pub struct SuggestionRow {
     pub conflict: bool,
     pub status: String,
     pub model: String,
+    /// Which tier found it: "rule" or "ai".
+    pub source: String,
     pub created_at: String,
 }
 
@@ -41,11 +43,12 @@ fn row_to_suggestion(r: &sqlx::sqlite::SqliteRow) -> Result<SuggestionRow, sqlx:
         conflict: r.get::<i64, _>("conflict") != 0,
         status: r.get("status"),
         model: r.get("model"),
+        source: r.get("source"),
         created_at: r.get("created_at"),
     })
 }
 
-const SUGG_COLS: &str = "id, profile_id, kind, field, payload, evidence, confidence, conflict, status, model, created_at";
+const SUGG_COLS: &str = "id, profile_id, kind, field, payload, evidence, confidence, conflict, status, model, source, created_at";
 
 pub struct RunRow {
     pub id: i64,
@@ -120,9 +123,10 @@ pub async fn insert_suggestion(
     confidence: f64,
     conflict: bool,
     model: &str,
+    source: &str,
 ) -> Result<i64, sqlx::Error> {
-    let r = sqlx::query("INSERT INTO mm_ai_suggestions (profile_id, run_id, kind, field, payload, evidence, confidence, conflict, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(profile_id).bind(run_id).bind(kind).bind(field).bind(payload.to_string()).bind(evidence).bind(confidence).bind(conflict).bind(model).bind(now())
+    let r = sqlx::query("INSERT INTO mm_ai_suggestions (profile_id, run_id, kind, field, payload, evidence, confidence, conflict, model, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(profile_id).bind(run_id).bind(kind).bind(field).bind(payload.to_string()).bind(evidence).bind(confidence).bind(conflict).bind(model).bind(source).bind(now())
         .execute(pool).await?;
     Ok(r.last_insert_rowid())
 }
@@ -214,4 +218,56 @@ pub async fn purge_old_prompts(pool: &SqlitePool, days: i64) -> Result<(), sqlx:
 
 pub fn _org() -> &'static str {
     ORG
+}
+
+// ------------------------------------------------------------------ extraction presets
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PresetRow {
+    pub id: String,
+    pub name: String,
+    pub fields: Vec<String>,
+    pub with_preferences: bool,
+    pub is_default: bool,
+}
+
+fn row_to_preset(r: &sqlx::sqlite::SqliteRow, known: &[String]) -> Result<PresetRow, sqlx::Error> {
+    let raw: String = r.get("fields");
+    let parsed: Vec<String> = serde_json::from_str(&raw).map_err(|e| bad(e.to_string()))?;
+    // A preset outlives the fields it names: a field deleted since it was saved is simply not read.
+    let fields = parsed.into_iter().filter(|k| known.iter().any(|n| n == k)).collect();
+    Ok(PresetRow {
+        id: r.get("id"),
+        name: r.get("name"),
+        fields,
+        with_preferences: r.get::<i64, _>("with_preferences") != 0,
+        is_default: r.get::<i64, _>("is_default") != 0,
+    })
+}
+
+pub async fn extraction_presets(pool: &SqlitePool, known: &[String]) -> Result<Vec<PresetRow>, sqlx::Error> {
+    let rows = sqlx::query("SELECT id, name, fields, with_preferences, is_default FROM mm_extraction_presets ORDER BY is_default DESC, name").fetch_all(pool).await?;
+    rows.iter().map(|r| row_to_preset(r, known)).collect()
+}
+
+pub async fn default_extraction_preset(pool: &SqlitePool, known: &[String]) -> Result<Option<PresetRow>, sqlx::Error> {
+    let r = sqlx::query("SELECT id, name, fields, with_preferences, is_default FROM mm_extraction_presets WHERE is_default = 1 LIMIT 1").fetch_optional(pool).await?;
+    r.as_ref().map(|row| row_to_preset(row, known)).transpose()
+}
+
+pub async fn save_extraction_preset(pool: &SqlitePool, id: Option<&str>, name: &str, fields: &[String], with_preferences: bool, is_default: bool) -> Result<String, sqlx::Error> {
+    let id = id.map(String::from).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let at = now();
+    if is_default {
+        sqlx::query("UPDATE mm_extraction_presets SET is_default = 0").execute(pool).await?;
+    }
+    sqlx::query("INSERT INTO mm_extraction_presets (id, name, fields, with_preferences, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, fields = excluded.fields, with_preferences = excluded.with_preferences, is_default = excluded.is_default, updated_at = excluded.updated_at")
+        .bind(&id).bind(name.trim()).bind(serde_json::to_string(fields).map_err(|e| bad(e.to_string()))?).bind(with_preferences).bind(is_default).bind(&at).bind(&at)
+        .execute(pool).await?;
+    Ok(id)
+}
+
+pub async fn delete_extraction_preset(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM mm_extraction_presets WHERE id = ?").bind(id).execute(pool).await?;
+    Ok(())
 }

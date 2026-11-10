@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::models::TaskProfile;
+use matchmaking_core::ExtractionConstraint;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiError {
@@ -42,6 +43,18 @@ pub trait LlmBackend: Send + Sync {
     async fn complete_for(&self, _task: TaskProfile, system: &str, user: &str, json: bool) -> Result<String, AiError> {
         self.complete(system, user, json).await
     }
+
+    /// Like [`complete_for`](Self::complete_for), holding the output to `constraint` where the backend can:
+    /// a grammar for the built-in model, a JSON schema for Ollama and OpenAI-compatible servers. Backends that
+    /// cannot enforce it answer the plain request, and the caller's parser still validates everything.
+    async fn complete_structured(&self, task: TaskProfile, system: &str, user: &str, _constraint: &ExtractionConstraint) -> Result<String, AiError> {
+        self.complete_for(task, system, user, true).await
+    }
+
+    /// Whether `complete_structured` really enforces the output shape, so a repeat attempt would not help.
+    fn enforces_constraint(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,22 +90,30 @@ impl BuiltinBackend {
 impl LlmBackend for BuiltinBackend {
     /// The sidecar has no JSON mode; the prompts already demand a JSON object and the parsers extract it.
     async fn complete(&self, system: &str, user: &str, _json: bool) -> Result<String, AiError> {
-        self.run(None, system, user).await
+        self.run(None, system, user, None).await
     }
 
     async fn complete_for(&self, task: TaskProfile, system: &str, user: &str, _json: bool) -> Result<String, AiError> {
-        self.run(Some(task), system, user).await
+        self.run(Some(task), system, user, None).await
+    }
+
+    async fn complete_structured(&self, task: TaskProfile, system: &str, user: &str, constraint: &ExtractionConstraint) -> Result<String, AiError> {
+        self.run(Some(task), system, user, Some(constraint.gbnf.clone())).await
+    }
+
+    fn enforces_constraint(&self) -> bool {
+        true
     }
 }
 
 impl BuiltinBackend {
-    async fn run(&self, task: Option<TaskProfile>, system: &str, user: &str) -> Result<String, AiError> {
+    async fn run(&self, task: Option<TaskProfile>, system: &str, user: &str, grammar: Option<String>) -> Result<String, AiError> {
         let dir = APP_DATA_DIR.get().ok_or_else(|| AiError::Unreachable("the app data directory is not known yet".into()))?;
         let def = super::models::find_model(&self.model).ok_or_else(|| AiError::Server(format!("Unknown built-in model '{}'", self.model)))?;
         if super::models::model_file_state(dir, def) != super::models::ModelFile::Downloaded {
             return Err(AiError::Unreachable(format!("The model '{}' is not downloaded yet. Download it on the AI page.", def.label)));
         }
-        let overrides = task.and_then(|t| t.overrides_for(def));
+        let overrides = task.and_then(|t| t.overrides_with_grammar(def, grammar));
         crate::summary::summary_engine::generate_with_builtin_overrides(dir, def.summary_model, system, user, None, overrides.as_ref())
             .await
             .map_err(|e| AiError::Server(e.to_string().chars().take(300).collect()))
@@ -124,10 +145,10 @@ impl HttpBackend {
         }
     }
 
-    async fn run(&self, task: Option<TaskProfile>, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
+    async fn run(&self, task: Option<TaskProfile>, system: &str, user: &str, json_mode: bool, schema: Option<&Value>) -> Result<String, AiError> {
         let temperature = task.map_or(0.2, |t| t.temperature());
         let max_tokens = task.map_or(2048, |t| t.max_tokens());
-        self.run_with(temperature, max_tokens, system, user, json_mode).await
+        self.run_with(temperature, max_tokens, system, user, json_mode, schema).await
     }
 
     async fn post(&self, url: &str, body: &Value, headers: &[(&str, String)]) -> Result<(u16, Value), AiError> {
@@ -163,29 +184,52 @@ fn text_of(v: Option<&Value>, what: &str) -> Result<String, AiError> {
 #[async_trait]
 impl LlmBackend for HttpBackend {
     async fn complete(&self, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
-        self.run(None, system, user, json_mode).await
+        self.run(None, system, user, json_mode, None).await
     }
 
     async fn complete_for(&self, task: TaskProfile, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
-        self.run(Some(task), system, user, json_mode).await
+        self.run(Some(task), system, user, json_mode, None).await
+    }
+
+    async fn complete_structured(&self, task: TaskProfile, system: &str, user: &str, constraint: &ExtractionConstraint) -> Result<String, AiError> {
+        if self.kind == Kind::Anthropic {
+            return self.run(Some(task), system, user, true, None).await;
+        }
+        self.run(Some(task), system, user, true, Some(&constraint.json_schema)).await
+    }
+
+    fn enforces_constraint(&self) -> bool {
+        self.kind != Kind::Anthropic
     }
 }
 
 impl HttpBackend {
-    async fn run_with(&self, temperature: f32, max_tokens: i32, system: &str, user: &str, json_mode: bool) -> Result<String, AiError> {
+    async fn run_with(&self, temperature: f32, max_tokens: i32, system: &str, user: &str, json_mode: bool, schema: Option<&Value>) -> Result<String, AiError> {
         let messages = json!([{"role": "system", "content": system}, {"role": "user", "content": user}]);
         match self.kind {
             Kind::Ollama => {
                 let mut body = json!({"model": self.model, "messages": messages, "stream": false, "options": {"temperature": temperature, "num_predict": max_tokens}});
-                if json_mode {
+                if let Some(schema) = schema {
+                    body["format"] = schema.clone();
+                } else if json_mode {
                     body["format"] = json!("json");
                 }
-                let (_, r) = self.post(&format!("{}/api/chat", self.base), &body, &[]).await?;
+                let url = format!("{}/api/chat", self.base);
+                let first = self.post(&url, &body, &[]).await;
+                let (_, r) = match first {
+                    Err(AiError::Server(_)) if schema.is_some() => {
+                        body["format"] = json!("json");
+                        self.post(&url, &body, &[]).await?
+                    }
+                    other => other?,
+                };
                 text_of(r.pointer("/message/content"), "message")
             }
             Kind::OpenAiCompatible => {
                 let mut body = json!({"model": self.model, "messages": messages, "temperature": temperature});
-                if json_mode {
+                if let Some(schema) = schema {
+                    body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": "profile_fields", "strict": true, "schema": schema}});
+                } else if json_mode {
                     body["response_format"] = json!({"type": "json_object"});
                 }
                 let mut headers = vec![];
@@ -196,6 +240,16 @@ impl HttpBackend {
                 let first = self.post(&url, &body, &headers).await;
                 // some servers reject response_format: ask again without it
                 let (_, r) = match first {
+                    Err(AiError::Server(m)) if schema.is_some() && body.get("response_format").is_some() && m.to_lowercase().contains("response_format") => {
+                        body["response_format"] = json!({"type": "json_object"});
+                        match self.post(&url, &body, &headers).await {
+                            Err(AiError::Server(inner)) if inner.to_lowercase().contains("response_format") => {
+                                body.as_object_mut().map(|o| o.remove("response_format"));
+                                self.post(&url, &body, &headers).await?
+                            }
+                            other => other?,
+                        }
+                    }
                     Err(AiError::Server(m)) if json_mode && m.to_lowercase().contains("response_format") => {
                         body.as_object_mut().map(|o| o.remove("response_format"));
                         self.post(&url, &body, &headers).await?

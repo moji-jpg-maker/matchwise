@@ -1,0 +1,6 @@
+{
+  "text": "She holds a کارشناسی ارشد in economics.",
+  "expected": {
+    "education": "master"
+  }
+}

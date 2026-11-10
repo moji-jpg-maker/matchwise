@@ -1,0 +1,10 @@
+{
+  "text": "Age: 34\nHeight: 180\nWeight: 77\nCity: Tehran\nEducation: master",
+  "expected": {
+    "age": 34,
+    "height_cm": 180,
+    "weight_kg": 77,
+    "city": "tehran",
+    "education": "master"
+  }
+}

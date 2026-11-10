@@ -1,0 +1,8 @@
+{
+  "text": "A divorced man with two children.",
+  "expected": {
+    "gender": "male",
+    "marital_status": "divorced",
+    "children_count": 2
+  }
+}

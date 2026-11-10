@@ -1,0 +1,7 @@
+{
+  "text": "Bachelor of science, 27 years old.",
+  "expected": {
+    "education": "bachelor",
+    "age": 27
+  }
+}

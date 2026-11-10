@@ -8,6 +8,7 @@ pub mod defaults;
 pub mod matching;
 pub mod expr;
 pub mod export;
+pub mod extract_rules;
 pub mod lifecycle;
 pub mod locale;
 pub mod field;
@@ -48,9 +49,11 @@ pub use lifecycle::{
 pub use sharing::{
     anonymous_name, build_introduction_card, build_introduction_card_for, display_value, display_value_for, first_name, first_name_for, first_name_opt, IntroCard, DEFAULT_INTRODUCTION_FIELDS, NEVER_SHARED};
 pub use ai::{
-    build_pair_facts, extract_json_object, extraction_prompt, extraction_prompt_for, pair_prompt, pair_prompt_for, parse_extraction, parse_pair_analysis, profile_text_for_ai, redact_text, AiFact,
-    Claim, Contradiction, Extraction, FieldSuggestion, PairAnalysis, PreferenceSuggestion,
+    build_pair_facts, extract_json_object, extraction_prompt, extraction_prompt_for, pair_prompt, pair_prompt_for, parse_extraction, parse_pair_analysis, parse_slim_extraction,
+    output_constraint, profile_text_for_ai, redact_text, slim_extraction_prompt, slim_extraction_prompt_for, AiFact, Claim, Contradiction, Extraction, ExtractionConstraint,
+    FieldSuggestion, PairAnalysis, PreferenceSuggestion, SuggestionSource,
 };
+pub use extract_rules::{extract_with_rules, RuleExtraction};
 pub use export::{header as export_header, to_csv as rows_to_csv, ExportRow, RANKING_MINIMUM};
 pub use ranking::{classify as classify_outcome, compare, ComparisonRow, OrderingResult, Progress, RankingComparison};
 pub use questionnaire::{

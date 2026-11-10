@@ -1,0 +1,7 @@
+{
+  "text": "Moderately religious, occasionally سیگار",
+  "expected": {
+    "religiosity": "moderate",
+    "smoking": "occasionally"
+  }
+}

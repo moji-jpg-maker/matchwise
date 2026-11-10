@@ -192,24 +192,143 @@ pub struct PromptPreview {
     pub user: String,
     pub is_cloud: bool,
     pub include_sensitive: bool,
+    /// False when the rules already fill everything the selection asks for: no model call would be made.
+    pub will_send: bool,
+}
+
+/// The preview when no model call would be made: the explanation goes where a prompt would, and `will_send`
+/// says so, so the panel never shows an empty or misleading prompt.
+pub(crate) fn nothing_to_send(explanation: String, mode: Mode) -> PromptPreview {
+    PromptPreview { system: String::new(), user: explanation, is_cloud: mode.is_cloud, include_sensitive: mode.include_sensitive, will_send: false }
+}
+
+/// The slim prompt that would really be sent. `will_send` is false when nothing would be — the preview then
+/// carries an explanation instead of a prompt.
+#[tauri::command]
+pub async fn ai_preview_extraction(
+    state: State<'_, AppState>,
+    profile_id: String,
+    extra_text: Option<String>,
+    locale: Option<String>,
+    fields: Option<Vec<String>>,
+    with_preferences: Option<bool>,
+) -> Result<PromptPreview, String> {
+    let pool = state.db_manager.pool();
+    let locale = locale_of(locale);
+    let (mode, unavailable) = match prepare_for(pool, locale).await {
+        Ok((_, mode, _)) => (mode, None),
+        Err(reason) => (Mode { is_cloud: false, include_sensitive: false }, Some(reason)),
+    };
+    if let Some(reason) = unavailable {
+        return Ok(nothing_to_send(reason, Mode { is_cloud: false, include_sensitive: false }));
+    }
+    let prompt = service::preview_extraction(pool, &profile_id, extra_text.as_deref(), mode, locale, fields, with_preferences.unwrap_or(false)).await?;
+    Ok(match prompt {
+        Some((system, user)) => PromptPreview { system, user, is_cloud: mode.is_cloud, include_sensitive: mode.include_sensitive, will_send: true },
+        None => nothing_to_send(
+            locale.pick("The rules already fill every selected field, so nothing would be sent to the model.", "قاعده‌ها همهٔ فیلدهای انتخاب‌شده را پر می‌کنند، بنابراین چیزی برای مدل فرستاده نمی‌شود.").to_string(),
+            mode,
+        ),
+    })
+}
+
+/// Rules always run. When the gate is closed the rule suggestions are still stored and returned, with
+/// `llm_status` "unavailable" and the gate's reason: a run never comes back empty-handed because AI is off.
+#[tauri::command]
+pub async fn ai_extract_profile(
+    state: State<'_, AppState>,
+    profile_id: String,
+    extra_text: Option<String>,
+    locale: Option<String>,
+    fields: Option<Vec<String>>,
+    with_preferences: Option<bool>,
+) -> Result<ExtractionView, String> {
+    let pool = state.db_manager.pool();
+    let locale = locale_of(locale);
+    let with_preferences = with_preferences.unwrap_or(false);
+    let gate = prepare_for(pool, locale).await;
+    let (view, reason) = match gate {
+        Ok((config, mode, backend)) => {
+            let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale };
+            (service::extract_profile(pool, Some(&s), &profile_id, extra_text.as_deref(), fields, with_preferences).await?, None)
+        }
+        Err(reason) => (service::extract_profile(pool, None, &profile_id, extra_text.as_deref(), fields, with_preferences).await?, Some(reason)),
+    };
+    Ok(match reason {
+        Some(reason) => ExtractionView { llm_status: "unavailable".into(), llm_error: Some(reason), ..view },
+        None => view,
+    })
+}
+
+#[derive(Serialize)]
+pub struct ExtractionPresetsView {
+    pub presets: Vec<repo::PresetRow>,
+    pub fields: Vec<PresetFieldView>,
+}
+
+/// One selectable field in the presets editor: the key and its label, never a value.
+#[derive(Serialize)]
+pub struct PresetFieldView {
+    pub key: String,
+    pub label: String,
+    pub sensitive: bool,
+}
+
+async fn presets_view(pool: &SqlitePool, locale: Locale) -> Result<ExtractionPresetsView, String> {
+    let reg = MmRepository::registry(pool).await.map_err(err)?;
+    let known: Vec<String> = matchmaking_core::FieldRegistry::defs(&reg).map(|def| def.key.clone()).collect();
+    let fields = matchmaking_core::FieldRegistry::defs(&reg)
+        .filter(|def| !matchmaking_core::NEVER_SHARED.contains(&def.key.as_str()) && !matches!(def.kind, matchmaking_core::FieldKind::Records(_)))
+        .map(|def| PresetFieldView { key: def.key.clone(), label: if locale == Locale::Fa { def.label_fa.clone().unwrap_or_else(|| def.label.clone()) } else { def.label.clone() }, sensitive: def.sensitive })
+        .collect();
+    let presets = repo::extraction_presets(pool, &known).await.map_err(err)?;
+    Ok(ExtractionPresetsView { presets, fields })
 }
 
 #[tauri::command]
-pub async fn ai_preview_extraction(state: State<'_, AppState>, profile_id: String, extra_text: Option<String>, locale: Option<String>) -> Result<PromptPreview, String> {
+pub async fn mm_extraction_presets(state: State<'_, AppState>, locale: Option<String>) -> Result<ExtractionPresetsView, String> {
+    presets_view(state.db_manager.pool(), locale_of(locale)).await
+}
+
+/// `id` empty or absent creates a preset. Audit records the name and the number of fields, never the fields.
+#[tauri::command]
+pub async fn mm_save_extraction_preset(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    name: String,
+    fields: Vec<String>,
+    with_preferences: bool,
+    is_default: bool,
+    locale: Option<String>,
+) -> Result<ExtractionPresetsView, String> {
     let pool = state.db_manager.pool();
     let locale = locale_of(locale);
-    let (_, mode, _) = prepare_for(pool, locale).await?;
-    let (system, user) = service::preview_extraction(pool, &profile_id, extra_text.as_deref(), mode, locale).await?;
-    Ok(PromptPreview { system, user, is_cloud: mode.is_cloud, include_sensitive: mode.include_sensitive })
+    if name.trim().is_empty() {
+        return Err(locale.pick("A preset needs a name", "یک پیش‌تنظیم به نام نیاز دارد").to_string());
+    }
+    let reg = MmRepository::registry(pool).await.map_err(err)?;
+    let known: Vec<String> = matchmaking_core::FieldRegistry::defs(&reg).map(|def| def.key.clone()).collect();
+    let fields: Vec<String> = fields.into_iter().filter(|key| known.contains(key)).collect();
+    if fields.is_empty() {
+        return Err(locale.pick("Choose at least one field", "دست‌کم یک فیلد را انتخاب کنید").to_string());
+    }
+    let id = id.as_deref().filter(|id| !id.trim().is_empty());
+    repo::save_extraction_preset(pool, id, &name, &fields, with_preferences, is_default).await.map_err(err)?;
+    MmRepository::audit(pool, "extraction_preset_saved", "settings", "extraction", Some(&format!("{} ({} fields)", name.trim(), fields.len()))).await;
+    presets_view(pool, locale).await
 }
 
 #[tauri::command]
-pub async fn ai_extract_profile(state: State<'_, AppState>, profile_id: String, extra_text: Option<String>, locale: Option<String>) -> Result<ExtractionView, String> {
+pub async fn mm_delete_extraction_preset(state: State<'_, AppState>, id: String, locale: Option<String>) -> Result<ExtractionPresetsView, String> {
     let pool = state.db_manager.pool();
     let locale = locale_of(locale);
-    let (config, mode, backend) = prepare_for(pool, locale).await?;
-    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale };
-    service::extract_profile(pool, &s, &profile_id, extra_text.as_deref()).await
+    let reg = MmRepository::registry(pool).await.map_err(err)?;
+    let known: Vec<String> = matchmaking_core::FieldRegistry::defs(&reg).map(|def| def.key.clone()).collect();
+    let before = repo::extraction_presets(pool, &known).await.map_err(err)?;
+    repo::delete_extraction_preset(pool, &id).await.map_err(err)?;
+    let name = before.iter().find(|preset| preset.id == id).map_or(String::from("?"), |preset| preset.name.clone());
+    MmRepository::audit(pool, "extraction_preset_deleted", "settings", "extraction", Some(&name)).await;
+    presets_view(pool, locale).await
 }
 
 #[tauri::command]
@@ -236,7 +355,7 @@ pub async fn ai_preview_match(state: State<'_, AppState>, match_id: String, loca
     let locale = locale_of(locale);
     let (_, mode, _) = prepare_for(pool, locale).await?;
     let (system, user) = service::preview_pair(pool, &match_id, mode, locale).await?;
-    Ok(PromptPreview { system, user, is_cloud: mode.is_cloud, include_sensitive: mode.include_sensitive })
+    Ok(PromptPreview { system, user, is_cloud: mode.is_cloud, include_sensitive: mode.include_sensitive, will_send: true })
 }
 
 #[tauri::command]

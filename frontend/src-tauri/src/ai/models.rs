@@ -101,6 +101,8 @@ pub fn model_file_state(app_data_dir: &Path, def: &MmModelDef) -> ModelFile {
 pub enum TaskProfile {
     /// Reading free text into suggested profile fields: longer output, strict JSON.
     Extraction,
+    /// The slim, constrained extraction over a known number of fields: the reply is as short as the fields allow.
+    SlimExtraction { fields: u16, with_preferences: bool },
     /// Explaining one match from the listed facts: shorter output.
     PairAnalysis,
 }
@@ -116,7 +118,7 @@ impl TaskProfile {
 
     pub fn temperature(self) -> f32 {
         match self {
-            TaskProfile::Extraction => 0.1,
+            TaskProfile::Extraction | TaskProfile::SlimExtraction { .. } => 0.1,
             TaskProfile::PairAnalysis => 0.2,
         }
     }
@@ -124,23 +126,29 @@ impl TaskProfile {
     pub fn max_tokens(self) -> i32 {
         match self {
             TaskProfile::Extraction => 3072,
+            TaskProfile::SlimExtraction { with_preferences: true, .. } => 2048,
+            TaskProfile::SlimExtraction { fields, .. } => (96 * fields as i32 + 128).min(1024),
             TaskProfile::PairAnalysis => 1536,
         }
     }
 
     pub fn timeout_secs(self) -> u64 {
         match self {
-            TaskProfile::Extraction => 600,
+            TaskProfile::Extraction | TaskProfile::SlimExtraction { .. } => 180,
             TaskProfile::PairAnalysis => 300,
         }
     }
 
     /// Settings for the sidecar: near-greedy, keeping the model's own stop tokens.
     pub fn overrides_for(self, def: &MmModelDef) -> Option<GenerationOverrides> {
+        self.overrides_with_grammar(def, None)
+    }
+
+    pub fn overrides_with_grammar(self, def: &MmModelDef, grammar: Option<String>) -> Option<GenerationOverrides> {
         let model = summary_engine::get_model_by_name(def.summary_model)?;
         let mut sampling = SamplingParams::tight_structured(model.sampling.stop_tokens.clone());
         sampling.temperature = self.temperature();
-        Some(GenerationOverrides { sampling: Some(sampling), max_tokens: Some(self.max_tokens()), timeout_secs: Some(self.timeout_secs()) })
+        Some(GenerationOverrides { sampling: Some(sampling), max_tokens: Some(self.max_tokens()), timeout_secs: Some(self.timeout_secs()), grammar })
     }
 }
 

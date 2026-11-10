@@ -1,0 +1,6 @@
+{
+  "text": "Date of birth: 1992-04-18",
+  "expected": {
+    "date_of_birth": "1992-04-18"
+  }
+}

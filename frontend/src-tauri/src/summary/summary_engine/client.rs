@@ -37,6 +37,8 @@ enum Request {
         repeat_penalty: Option<f32>,
         penalty_last_n: Option<i32>,
         stop_tokens: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        grammar: Option<String>,
     },
 }
 
@@ -146,6 +148,8 @@ pub struct GenerationOverrides {
     pub sampling: Option<models::SamplingParams>,
     pub max_tokens: Option<i32>,
     pub timeout_secs: Option<u64>,
+    /// A GBNF grammar the sidecar holds the output to. `None` leaves the output unconstrained.
+    pub grammar: Option<String>,
 }
 
 /// Like [`generate_with_builtin`], with optional sampling, token and timeout overrides. `None` keeps the defaults.
@@ -217,6 +221,7 @@ pub async fn generate_with_builtin_overrides(
         repeat_penalty: Some(sampling.repeat_penalty),
         penalty_last_n: Some(sampling.penalty_last_n),
         stop_tokens: Some(sampling.stop_tokens),
+        grammar: overrides.and_then(|o| o.grammar.clone()),
     };
 
     let request_json = serde_json::to_string(&request)?;
@@ -341,6 +346,7 @@ mod tests {
             repeat_penalty: Some(1.05),
             penalty_last_n: Some(256),
             stop_tokens: Some(vec!["<end_of_turn>".to_string()]),
+            grammar: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();

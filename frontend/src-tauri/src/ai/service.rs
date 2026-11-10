@@ -9,9 +9,11 @@ use crate::mm::match_commands::compute_scorecard;
 use crate::mm::match_repo::MatchRepo;
 use crate::mm::repository::MmRepository;
 use matchmaking_core::{
-    build_pair_facts, extraction_prompt_for, pair_prompt_for, parse_extraction, parse_pair_analysis, profile_text_for_ai, validate_preference, AiFact,
-    Extraction, Locale, PairAnalysis, Provenance, Value,
+    build_pair_facts, extract_with_rules, output_constraint, pair_prompt_for, parse_pair_analysis, parse_slim_extraction, profile_text_for_ai,
+    slim_extraction_prompt_for, validate_preference, AiFact, ExtractionConstraint, FieldKind, FieldRegistry, Locale, PairAnalysis, Profile, Provenance,
+    Value, NEVER_SHARED,
 };
+use super::models::TaskProfile;
 use serde::Serialize;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
@@ -50,12 +52,33 @@ async fn ask<T>(
     user: &str,
     parse: impl Fn(&str) -> Result<T, String>,
 ) -> Result<T, String> {
+    ask_with(pool, s, kind, ids, system, user, TaskProfile::for_kind(kind), None, parse).await
+}
+
+/// [`ask`] with an explicit task profile and, optionally, an output constraint. When the backend enforces the
+/// constraint a second attempt cannot produce a different kind of answer, so it is skipped.
+#[allow(clippy::too_many_arguments)]
+async fn ask_with<T>(
+    pool: &SqlitePool,
+    s: &Session<'_>,
+    kind: &str,
+    ids: (Option<&str>, Option<&str>),
+    system: &str,
+    user: &str,
+    task: TaskProfile,
+    constraint: Option<&ExtractionConstraint>,
+    parse: impl Fn(&str) -> Result<T, String>,
+) -> Result<T, String> {
     let _guard = lock().lock().await;
     let _ = repo::purge_old_prompts(pool, 30).await;
     let mut prompt = user.to_string();
     let mut last_err = String::new();
-    for attempt in 0..2 {
-        let result = s.backend.complete_for(super::models::TaskProfile::for_kind(kind), system, &prompt, true).await;
+    let attempts = if constraint.is_some() && s.backend.enforces_constraint() { 1 } else { 2 };
+    for attempt in 0..attempts {
+        let result = match constraint {
+            Some(constraint) => s.backend.complete_structured(task, system, &prompt, constraint).await,
+            None => s.backend.complete_for(task, system, &prompt, true).await,
+        };
         let (ok, out_len, error) = match &result {
             Ok(text) => (true, text.chars().count(), None),
             Err(e) => (false, 0, Some(e.to_string())),
@@ -92,6 +115,12 @@ async fn profile_extra<'a>(pool: &SqlitePool, profile_id: &str, extra: Option<&'
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Timings {
+    pub rules_ms: u64,
+    pub llm_ms: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ExtractionView {
     pub run_id: i64,
@@ -104,62 +133,197 @@ pub struct ExtractionView {
     pub questions: Vec<String>,
     /// What was discarded and why (a model's invented or invalid output is never silently hidden).
     pub dropped: Vec<String>,
+    /// "ok" | "skipped_nothing_left" | "unavailable" | "failed"
+    pub llm_status: String,
+    pub llm_error: Option<String>,
+    pub rule_count: usize,
+    pub ai_count: usize,
+    pub timings: Timings,
 }
 
-/// The exact prompt that would be sent, for the matchmaker to read first.
-pub async fn preview_extraction(pool: &SqlitePool, profile_id: &str, extra: Option<&str>, mode: Mode, locale: Locale) -> Result<(String, String), String> {
+const NO_TEXT_EN: &str = "There is no free text to read. Add notes about the person (for example from an intake interview) first.";
+const NO_TEXT_FA: &str = "متنی برای خواندن وجود ندارد. ابتدا یادداشت‌هایی دربارهٔ فرد بنویسید (مثلاً از مصاحبهٔ ورودی).";
+
+fn eligible(registry: &FieldRegistry, key: &str) -> bool {
+    !NEVER_SHARED.contains(&key) && registry.get(key).is_some_and(|def| !matches!(def.kind, FieldKind::Records(_)))
+}
+
+/// Which fields to read: the explicit list, else the default preset, else every eligible field. Registry order.
+pub async fn resolve_targets(pool: &SqlitePool, registry: &FieldRegistry, explicit: Option<Vec<String>>) -> Result<Vec<String>, String> {
+    let all: Vec<String> = registry.defs().map(|def| def.key.clone()).collect();
+    let chosen = match explicit {
+        Some(list) => list,
+        None => match repo::default_extraction_preset(pool, &all).await.map_err(err)? {
+            Some(preset) if !preset.fields.is_empty() => preset.fields,
+            _ => all.clone(),
+        },
+    };
+    Ok(all.into_iter().filter(|key| chosen.contains(key) && eligible(registry, key)).collect())
+}
+
+/// What the rules read: the profile's text fields and the intake text exactly as typed. Nothing leaves the
+/// computer here, so no redaction; the fields nobody may share are still left out.
+fn raw_text_for_rules(profile: &Profile, registry: &FieldRegistry, extra: Option<&str>) -> String {
+    let mut parts = vec![];
+    for def in registry.defs() {
+        if NEVER_SHARED.contains(&def.key.as_str()) || !matches!(def.kind, FieldKind::Text) {
+            continue;
+        }
+        if let Some(Value::Text(text)) = profile.get(&def.key) {
+            if !text.trim().is_empty() {
+                parts.push(format!("{}: {}", def.label, text.trim()));
+            }
+        }
+    }
+    if let Some(text) = extra.map(str::trim).filter(|text| !text.is_empty()) {
+        parts.push(text.to_string());
+    }
+    parts.join("\n")
+}
+
+/// The fields only a model can still fill: no rule hit, no stored value, plus the ones the rules could not decide.
+fn llm_targets(registry: &FieldRegistry, profile: &Profile, targets: &[String], hit: &[String], ambiguous: &std::collections::BTreeSet<String>, include_sensitive: bool) -> Vec<String> {
+    targets
+        .iter()
+        .filter(|key| {
+            let Some(def) = registry.get(key) else { return false };
+            eligible(registry, key)
+                && (include_sensitive || !def.sensitive)
+                && (ambiguous.contains(*key) || (!hit.contains(key) && profile.get(key).is_none()))
+        })
+        .cloned()
+        .collect()
+}
+
+async fn load_for_extraction(pool: &SqlitePool, profile_id: &str, extra: Option<&str>, locale: Locale) -> Result<(FieldRegistry, Profile, Option<String>), String> {
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
     let extra = profile_extra(pool, profile_id, extra).await?;
-    let extra = extra.as_deref();
-    let text = profile_text_for_ai(&p.profile, &reg, extra, mode.include_sensitive);
-    if text.trim().is_empty() {
-        return Err(locale.pick("There is no free text to read. Add notes about the person (for example from an intake interview) first.", "متنی برای خواندن وجود ندارد. ابتدا یادداشت‌هایی دربارهٔ فرد بنویسید (مثلاً از مصاحبهٔ ورودی).").to_string());
-    }
-    Ok(extraction_prompt_for(&reg, &text, mode.include_sensitive, locale))
+    Ok((reg, p.profile, extra))
 }
 
-pub async fn extract_profile(pool: &SqlitePool, s: &Session<'_>, profile_id: &str, extra: Option<&str>) -> Result<ExtractionView, String> {
-    let locale = s.locale;
-    let reg = MmRepository::registry(pool).await.map_err(err)?;
-    let p = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
-    let extra = profile_extra(pool, profile_id, extra).await?;
-    let extra = extra.as_deref();
-    let text = profile_text_for_ai(&p.profile, &reg, extra, s.mode.include_sensitive);
-    if text.trim().is_empty() {
-        return Err(locale.pick("There is no free text to read. Add notes about the person (for example from an intake interview) first.", "متنی برای خواندن وجود ندارد. ابتدا یادداشت‌هایی دربارهٔ فرد بنویسید (مثلاً از مصاحبهٔ ورودی).").to_string());
+/// The exact prompt that would be sent, for the matchmaker to read first. `None` when the rules leave the model
+/// nothing to read, so nothing would be sent.
+pub async fn preview_extraction(
+    pool: &SqlitePool,
+    profile_id: &str,
+    extra: Option<&str>,
+    mode: Mode,
+    locale: Locale,
+    targets: Option<Vec<String>>,
+    with_preferences: bool,
+) -> Result<Option<(String, String)>, String> {
+    let (reg, profile, extra) = load_for_extraction(pool, profile_id, extra, locale).await?;
+    let raw = raw_text_for_rules(&profile, &reg, extra.as_deref());
+    if raw.trim().is_empty() {
+        return Err(locale.pick(NO_TEXT_EN, NO_TEXT_FA).to_string());
     }
-    let (system, user) = extraction_prompt_for(&reg, &text, s.mode.include_sensitive, locale);
-    let ex: Extraction = ask(pool, s, "extract", (Some(profile_id), None), &system, &user, |raw| {
-        parse_extraction(raw, &reg, &text, &p.profile, s.mode.include_sensitive)
-    })
-    .await?;
+    let targets = resolve_targets(pool, &reg, targets).await?;
+    let rules = extract_with_rules(&reg, &raw, Some(&targets), &profile);
+    let hit: Vec<String> = rules.suggestions.iter().map(|sug| sug.field.clone()).collect();
+    let fields = llm_targets(&reg, &profile, &targets, &hit, &rules.ambiguous, mode.include_sensitive);
+    let text = profile_text_for_ai(&profile, &reg, extra.as_deref(), mode.include_sensitive);
+    if fields.is_empty() || text.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(slim_extraction_prompt_for(&reg, &text, &fields, locale, with_preferences)))
+}
 
-    let run_id = repo::insert_run(pool, Some(profile_id), None, "extract", &s.provider, &s.model, s.mode.is_cloud, &hash(&user), None, &serde_json::to_value(&ex).map_err(err)?)
+/// Two tiers: the local rules always run and their suggestions are stored first; the model, when there is a
+/// session, only reads the selected fields the rules left open. A model failure keeps the rule results.
+pub async fn extract_profile(
+    pool: &SqlitePool,
+    session: Option<&Session<'_>>,
+    profile_id: &str,
+    extra: Option<&str>,
+    targets: Option<Vec<String>>,
+    with_preferences: bool,
+) -> Result<ExtractionView, String> {
+    let locale = session.map_or(Locale::En, |s| s.locale);
+    let (reg, profile, extra) = load_for_extraction(pool, profile_id, extra, locale).await?;
+    let raw = raw_text_for_rules(&profile, &reg, extra.as_deref());
+    if raw.trim().is_empty() {
+        return Err(locale.pick(NO_TEXT_EN, NO_TEXT_FA).to_string());
+    }
+    let targets = resolve_targets(pool, &reg, targets).await?;
+
+    let rules_started = std::time::Instant::now();
+    let rules = extract_with_rules(&reg, &raw, Some(&targets), &profile);
+    let rules_ms = rules_started.elapsed().as_millis() as u64;
+
+    let (provider, model, is_cloud) = session.map_or(("rules".to_string(), "rules".to_string(), false), |s| (s.provider.clone(), s.model.clone(), s.mode.is_cloud));
+    let run_id = repo::insert_run(pool, Some(profile_id), None, "extract", &provider, &model, is_cloud, &hash(&raw), None, &json!({"rules": rules.suggestions, "ambiguous": rules.ambiguous}))
         .await
         .map_err(err)?;
     repo::supersede_pending(pool, profile_id).await.map_err(err)?;
-    for sug in &ex.suggestions {
+    for sug in &rules.suggestions {
         let payload = serde_json::to_value(&sug.value).map_err(err)?;
-        repo::insert_suggestion(pool, profile_id, run_id, "field", &sug.field, &payload, &sug.evidence, sug.confidence, sug.conflict, &s.model).await.map_err(err)?;
+        repo::insert_suggestion(pool, profile_id, run_id, "field", &sug.field, &payload, &sug.evidence, sug.confidence, sug.conflict, "rules", "rule").await.map_err(err)?;
     }
-    for ps in &ex.preferences {
-        let payload = serde_json::to_value(&ps.preference).map_err(err)?;
-        repo::insert_suggestion(pool, profile_id, run_id, "preference", &ps.preference.condition.field, &payload, &ps.evidence, 0.5, false, &s.model).await.map_err(err)?;
-    }
-    MmRepository::audit(pool, "ai_extract", "profile", profile_id, Some(if s.mode.is_cloud { "cloud" } else { "local" })).await;
-    let rows = repo::suggestions_for_run(pool, run_id).await.map_err(err)?;
-    Ok(ExtractionView {
+
+    let mut view = ExtractionView {
         run_id,
-        model: s.model.clone(),
-        is_cloud: s.mode.is_cloud,
+        model: model.clone(),
+        is_cloud,
         created_at: chrono::Utc::now().to_rfc3339(),
-        suggestions: rows,
-        contradictions: ex.contradictions,
-        missing: ex.missing,
-        questions: ex.questions,
-        dropped: ex.dropped,
-    })
+        suggestions: vec![],
+        contradictions: vec![],
+        missing: vec![],
+        questions: vec![],
+        dropped: vec![],
+        llm_status: "unavailable".into(),
+        llm_error: None,
+        rule_count: rules.suggestions.len(),
+        ai_count: 0,
+        timings: Timings { rules_ms, llm_ms: 0 },
+    };
+
+    if let Some(s) = session {
+        let hit: Vec<String> = rules.suggestions.iter().map(|sug| sug.field.clone()).collect();
+        let fields = llm_targets(&reg, &profile, &targets, &hit, &rules.ambiguous, s.mode.include_sensitive);
+        let text = profile_text_for_ai(&profile, &reg, extra.as_deref(), s.mode.include_sensitive);
+        if fields.is_empty() || text.trim().is_empty() {
+            view.llm_status = "skipped_nothing_left".into();
+        } else {
+            let (system, user) = slim_extraction_prompt_for(&reg, &text, &fields, s.locale, with_preferences);
+            let constraint = output_constraint(&reg, &fields, with_preferences);
+            let task = TaskProfile::SlimExtraction { fields: fields.len().min(u16::MAX as usize) as u16, with_preferences };
+            let llm_started = std::time::Instant::now();
+            let outcome = ask_with(pool, s, "extract", (Some(profile_id), None), &system, &user, task, Some(&constraint), |raw_reply| {
+                parse_slim_extraction(raw_reply, &reg, &text, &profile, s.mode.include_sensitive, &fields)
+            })
+            .await;
+            view.timings.llm_ms = llm_started.elapsed().as_millis() as u64;
+            match outcome {
+                Ok(ex) => {
+                    for sug in &ex.suggestions {
+                        let payload = serde_json::to_value(&sug.value).map_err(err)?;
+                        repo::insert_suggestion(pool, profile_id, run_id, "field", &sug.field, &payload, &sug.evidence, sug.confidence, sug.conflict, &s.model, "ai").await.map_err(err)?;
+                    }
+                    view.ai_count = ex.suggestions.len();
+                    if with_preferences {
+                        for ps in &ex.preferences {
+                            let payload = serde_json::to_value(&ps.preference).map_err(err)?;
+                            repo::insert_suggestion(pool, profile_id, run_id, "preference", &ps.preference.condition.field, &payload, &ps.evidence, 0.5, false, &s.model, "ai").await.map_err(err)?;
+                        }
+                        view.contradictions = ex.contradictions;
+                        view.missing = ex.missing;
+                        view.questions = ex.questions;
+                    }
+                    view.dropped = ex.dropped;
+                    view.llm_status = "ok".into();
+                }
+                Err(e) => {
+                    view.llm_status = "failed".into();
+                    view.llm_error = Some(e);
+                }
+            }
+        }
+    }
+
+    MmRepository::audit(pool, "ai_extract", "profile", profile_id, Some(if session.is_none() { "rules" } else if is_cloud { "cloud" } else { "local" })).await;
+    view.suggestions = repo::suggestions_for_run(pool, run_id).await.map_err(err)?;
+    Ok(view)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +351,11 @@ pub async fn decide_suggestion(pool: &SqlitePool, id: i64, decision: Decision, l
             let value: Value = serde_json::from_value(sug.payload.clone()).map_err(err)?;
             reg.validate_value(&sug.field, &value)?; // the registry may have changed since the suggestion was made
             let mut p = MmRepository::get_profile(pool, &sug.profile_id).await.map_err(err)?.ok_or_else(|| locale.pick("Profile not found", "پروفایل پیدا نشد").to_string())?;
-            let source = if decision == Decision::AcceptVerified { Provenance::Matchmaker } else { Provenance::AiInferred };
+            let source = match (decision, sug.source.as_str()) {
+                (Decision::AcceptVerified, _) => Provenance::Matchmaker,
+                (_, "rule") => Provenance::RuleExtracted,
+                _ => Provenance::AiInferred,
+            };
             if !p.profile.set(&sug.field, value, source) {
                 return Err(locale.pick("A person already entered a different value here. Use “Accept as verified” if you have checked and want to replace it.", "فرد پیش‌تر در اینجا مقدار دیگری وارد کرده است. اگر بررسی کرده‌اید و می‌خواهید جایگزین شود، «پذیرش به‌عنوان تأییدشده» را بزنید.").to_string());
             }

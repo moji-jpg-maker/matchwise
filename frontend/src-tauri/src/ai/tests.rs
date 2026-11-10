@@ -135,6 +135,13 @@ const GOOD: &str = r#"{"suggestions":[{"field":"smoking","value":"never","eviden
  "preferences":[{"field":"smoking","op":"in","value":["never"],"strength":"deal_breaker","evidence":"does not smoke"}],
  "missing":["education"],"questions":["What is your education level?"]}"#;
 
+/// What the slim prompt asks for: a bare map of the requested fields.
+const SLIM: &str = r#"{"fields":{"occupation":{"value":"Nurse","evidence":"I work as a nurse"}}}"#;
+
+const SLIM_WITH_PREFERENCES: &str = r#"{"fields":{"occupation":{"value":"Nurse","evidence":"I work as a nurse"}},
+ "preferences":[{"field":"smoking","op":"in","value":["never"],"strength":"deal_breaker","evidence":"does not smoke"}],
+ "missing":["education"],"questions":["What is your education level?"]}"#;
+
 async fn sara(pool: &SqlitePool) {
     make_profile(pool, "p1", &[
         ("full_name", txt("Sara Karimi")), ("age", Value::Num(29.0)), ("phone", txt("09123456789")),
@@ -147,8 +154,8 @@ async fn sara(pool: &SqlitePool) {
 async fn extraction_sends_no_identifiers_and_only_creates_suggestions() {
     let pool = test_pool().await;
     sara(&pool).await;
-    let m = Mock::with(vec![GOOD]);
-    let view = service::extract_profile(&pool, &session(&m, false, true), "p1", Some("She mentioned Karimi family dinners.")).await.unwrap();
+    let m = Mock::with(vec![SLIM]);
+    let view = service::extract_profile(&pool, Some(&session(&m, false, true)), "p1", Some("She mentioned Karimi family dinners."), None, false).await.unwrap();
 
     let sent = m.last_user();
     for secret in ["Sara", "Karimi", "09123456789", "sara@mail.com"] {
@@ -157,14 +164,19 @@ async fn extraction_sends_no_identifiers_and_only_creates_suggestions() {
     assert!(sent.contains("I have never smoked") && sent.contains("<data>"));
     assert!(sent.contains("takes medication X"), "a local model may read sensitive text when allowed");
 
+    // the rules found smoking, so the model is only asked about occupation
+    assert!(!sent.contains("- smoking (Smoking)"), "a field the rules filled never reaches the prompt: {sent}");
     // suggestions exist, but the profile has not changed
-    assert_eq!(view.suggestions.iter().filter(|s| s.kind == "field").count(), 2);
-    assert_eq!(view.suggestions.iter().filter(|s| s.kind == "preference").count(), 1);
+    let by_source = |source: &str| view.suggestions.iter().filter(|s| s.source == source).count();
+    assert_eq!((by_source("rule"), by_source("ai")), (1, 1));
+    assert_eq!((view.rule_count, view.ai_count), (1, 1));
+    assert_eq!(view.llm_status, "ok");
+    assert_eq!(view.suggestions.iter().filter(|s| s.kind == "preference").count(), 0);
     assert!(view.suggestions.iter().all(|s| s.status == "pending"));
     let p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
     assert!(p.profile.get("smoking").is_none() && p.profile.get("occupation").is_none());
     assert!(MmRepository::get_preferences(&pool, "p1").await.unwrap().is_empty());
-    assert_eq!(view.missing, vec!["education".to_string()]);
+    assert!(view.missing.is_empty(), "the preferences step is off by default");
 
     // a local call is logged by size only: no prompt text is kept
     let log = repo::log_rows(&pool, 10).await.unwrap();
@@ -176,8 +188,8 @@ async fn extraction_sends_no_identifiers_and_only_creates_suggestions() {
 async fn cloud_mode_leaves_sensitive_text_out_and_keeps_the_exact_prompt_in_the_log() {
     let pool = test_pool().await;
     sara(&pool).await;
-    let m = Mock::with(vec![GOOD]);
-    service::extract_profile(&pool, &session(&m, true, false), "p1", None).await.unwrap();
+    let m = Mock::with(vec![SLIM]);
+    service::extract_profile(&pool, Some(&session(&m, true, false)), "p1", None, None, false).await.unwrap();
     let sent = m.last_user();
     assert!(!sent.contains("medication"), "sensitive text stays out of a cloud prompt");
     assert!(!sent.contains("- religion ") && !sent.contains("- health_notes"));
@@ -196,59 +208,133 @@ async fn cloud_mode_leaves_sensitive_text_out_and_keeps_the_exact_prompt_in_the_
 async fn unreadable_answers_get_one_retry_then_an_honest_error() {
     let pool = test_pool().await;
     sara(&pool).await;
-    let m = Mock::with(vec!["Sorry, I cannot do that.", GOOD]);
-    let view = service::extract_profile(&pool, &session(&m, false, true), "p1", None).await.unwrap();
+    let m = Mock::with(vec!["Sorry, I cannot do that.", SLIM]);
+    let view = service::extract_profile(&pool, Some(&session(&m, false, true)), "p1", None, None, false).await.unwrap();
     assert_eq!(m.calls(), 2);
     assert!(m.last_user().contains("could not be used"));
-    assert_eq!(view.suggestions.len(), 3);
+    assert_eq!((view.rule_count, view.ai_count, view.llm_status.as_str()), (1, 1, "ok"));
     assert_eq!(repo::log_rows(&pool, 10).await.unwrap().len(), 2, "both attempts are logged");
 
+    // two unreadable answers keep the rule results and report the failure
     let m2 = Mock::with(vec!["nope", "still nope"]);
-    let e = service::extract_profile(&pool, &session(&m2, false, true), "p1", None).await.unwrap_err();
-    assert!(e.contains("could not be used"), "{e}");
+    let view = service::extract_profile(&pool, Some(&session(&m2, false, true)), "p1", None, None, false).await.unwrap();
+    assert_eq!(view.llm_status, "failed");
+    assert!(view.llm_error.as_deref().unwrap().contains("could not be used"), "{:?}", view.llm_error);
+    assert_eq!((view.rule_count, view.ai_count), (1, 0), "the rule suggestion survived the model failure");
+    assert!(view.suggestions.iter().any(|s| s.field == "smoking" && s.source == "rule"));
     assert_eq!(m2.calls(), 2);
-    // provider errors are passed on, not retried
+
+    // provider errors are passed on, not retried, and still leave the rule results in place
     let m3 = Mock { replies: Mutex::new(vec![Err(AiError::Unauthorized)]), ..Default::default() };
-    assert!(service::extract_profile(&pool, &session(&m3, true, false), "p1", None).await.unwrap_err().contains("API key"));
-    assert_eq!(m3.calls(), 1);
-    // nothing to read: the model is not even contacted
+    let view = service::extract_profile(&pool, Some(&session(&m3, true, false)), "p1", None, None, false).await.unwrap();
+    assert!(view.llm_error.unwrap().contains("API key"));
+    assert_eq!((view.llm_status.as_str(), m3.calls()), ("failed", 1));
+    assert!(view.suggestions.iter().any(|s| s.source == "rule"));
+
+    // nothing to read at all: refused before any tier runs, and the model is not contacted
     make_profile(&pool, "empty", &[("age", Value::Num(30.0))]).await;
     let m4 = Mock::default();
-    assert!(service::extract_profile(&pool, &session(&m4, false, true), "empty", None).await.is_err());
+    assert!(service::extract_profile(&pool, Some(&session(&m4, false, true)), "empty", None, None, false).await.is_err());
     assert_eq!(m4.calls(), 0);
+}
+
+/// A run without a session is the closed gate: the rules alone answer, and nothing claims a model was used.
+#[tokio::test]
+async fn rules_alone_answer_when_there_is_no_session() {
+    let pool = test_pool().await;
+    sara(&pool).await;
+    let m = Mock::default();
+    let view = service::extract_profile(&pool, None, "p1", None, None, false).await.unwrap();
+    assert_eq!(view.llm_status, "unavailable");
+    assert_eq!(m.calls(), 0, "no session, no model call");
+    assert_eq!((view.rule_count, view.ai_count), (1, 0));
+    assert_eq!(view.suggestions.len(), 1);
+    assert_eq!(view.suggestions[0].source, "rule");
+    assert!(view.timings.rules_ms < 1000 && view.timings.llm_ms == 0);
+
+    // the same field the model would have read stays open, and a follow-up run with a session fills it
+    assert!(view.suggestions.iter().all(|s| s.field != "occupation"));
+    let m2 = Mock::with(vec![SLIM]);
+    let second = service::extract_profile(&pool, Some(&session(&m2, false, true)), "p1", None, None, false).await.unwrap();
+    assert_eq!(second.ai_count, 1);
+    assert!(second.suggestions.iter().any(|s| s.field == "occupation" && s.source == "ai"));
+    // the rules re-read and overwrite their own pending suggestion rather than piling up
+    assert_eq!(second.suggestions.iter().filter(|s| s.field == "smoking").count(), 1);
+}
+
+/// The preferences step is what the plan calls slow: off it is not requested and not parsed.
+#[tokio::test]
+async fn preferences_are_read_only_when_asked_for() {
+    let pool = test_pool().await;
+    sara(&pool).await;
+    let m = Mock::with(vec![SLIM_WITH_PREFERENCES]);
+    let view = service::extract_profile(&pool, Some(&session(&m, false, true)), "p1", None, None, true).await.unwrap();
+    assert!(m.last_user().contains("\"preferences\""));
+    assert_eq!(view.suggestions.iter().filter(|s| s.kind == "preference").count(), 1);
+    assert_eq!(view.missing, vec!["education".to_string()]);
+
+    // off, the prompt has no preference section at all
+    let m2 = Mock::with(vec![SLIM]);
+    service::extract_profile(&pool, Some(&session(&m2, false, true)), "p1", None, None, false).await.unwrap();
+    assert!(!m2.last_user().contains("\"preferences\""));
+}
+
+#[tokio::test]
+async fn a_rule_suggestion_is_accepted_with_rule_provenance() {
+    let pool = test_pool().await;
+    sara(&pool).await;
+    let view = service::extract_profile(&pool, None, "p1", None, None, false).await.unwrap();
+    let smoking = view.suggestions.iter().find(|s| s.field == "smoking").unwrap();
+    assert_eq!((smoking.source.as_str(), smoking.evidence.as_str()), ("rule", "never smoked"));
+    service::decide_suggestion(&pool, smoking.id, Decision::Accept, matchmaking_core::Locale::En).await.unwrap();
+    let p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
+    assert_eq!(p.profile.get("smoking"), Some(&txt("never")));
+    assert_eq!(p.profile.fields["smoking"].source, Provenance::RuleExtracted);
+    // and it ranks like any other inference: a person's entry still wins
+    assert_eq!(Provenance::RuleExtracted.rank(), Provenance::AiInferred.rank());
+}
+
+#[tokio::test]
+async fn the_preview_reports_when_nothing_would_be_sent() {
+    let pool = test_pool().await;
+    sara(&pool).await;
+    let mode = Mode { is_cloud: false, include_sensitive: true };
+    let (system, user) = service::preview_extraction(&pool, "p1", None, mode, matchmaking_core::Locale::En, None, false)
+        .await
+        .unwrap()
+        .expect("the rules leave occupation open");
+    assert!(system.contains("untrusted") && user.contains("- occupation (Occupation)"));
+    assert!(!user.contains("- smoking (Smoking)"), "the preview is the slim prompt: {user}");
+
+    // asking for a field the rules already fill leaves the model nothing to do
+    assert_eq!(service::preview_extraction(&pool, "p1", None, mode, matchmaking_core::Locale::En, Some(vec!["smoking".into()]), false).await.unwrap(), None);
+}
+
+/// With the gate closed the panel still opens the preview: it must say why nothing would be sent, and never
+/// show a prompt or claim a call would happen.
+#[test]
+fn a_closed_gate_preview_explains_itself_instead_of_showing_a_prompt() {
+    let preview = super::commands::nothing_to_send("Needs consent for a cloud model".into(), Mode { is_cloud: false, include_sensitive: true });
+    assert!(!preview.will_send);
+    assert!(preview.system.is_empty(), "no prompt is shown when nothing would be sent");
+    assert!(preview.user.contains("consent"));
+    assert!(!preview.is_cloud && preview.include_sensitive);
 }
 
 #[tokio::test]
 async fn accepting_a_suggestion_records_ai_provenance_and_never_overrides_people() {
     let pool = test_pool().await;
     sara(&pool).await;
-    let m = Mock::with(vec![GOOD]);
-    let view = service::extract_profile(&pool, &session(&m, false, true), "p1", None).await.unwrap();
+    let m = Mock::with(vec![SLIM_WITH_PREFERENCES]);
+    let view = service::extract_profile(&pool, Some(&session(&m, false, true)), "p1", None, None, true).await.unwrap();
     let by_field = |f: &str, kind: &str| view.suggestions.iter().find(|s| s.field == f && s.kind == kind).unwrap().id;
 
-    service::decide_suggestion(&pool, by_field("smoking", "field"), Decision::Accept, matchmaking_core::Locale::En).await.unwrap();
-    let p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
-    assert_eq!(p.profile.get("smoking"), Some(&txt("never")));
-    assert_eq!(p.profile.fields["smoking"].source, Provenance::AiInferred);
-    // double-deciding is refused
-    assert!(service::decide_suggestion(&pool, by_field("smoking", "field"), Decision::Accept, matchmaking_core::Locale::En).await.is_err());
-
-    // a value the matchmaker later enters replaces the AI one (and a later AI value could not)
-    let mut p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
-    assert!(p.profile.set("smoking", txt("occasionally"), Provenance::Matchmaker));
-    MmRepository::update_profile_data(&pool, &p.profile).await.unwrap();
-
-    // a conflicting suggestion: refused as a plain accept, allowed as a deliberate "verified" override
-    let mut p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
-    p.profile.set("occupation", txt("Teacher"), Provenance::User);
-    MmRepository::update_profile_data(&pool, &p.profile).await.unwrap();
-    let occ = by_field("occupation", "field");
-    let e = service::decide_suggestion(&pool, occ, Decision::Accept, matchmaking_core::Locale::En).await.unwrap_err();
-    assert!(e.contains("already entered"), "{e}");
-    service::decide_suggestion(&pool, occ, Decision::AcceptVerified, matchmaking_core::Locale::En).await.unwrap();
+    service::decide_suggestion(&pool, by_field("occupation", "field"), Decision::Accept, matchmaking_core::Locale::En).await.unwrap();
     let p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
     assert_eq!(p.profile.get("occupation"), Some(&txt("Nurse")));
-    assert_eq!(p.profile.fields["occupation"].source, Provenance::Matchmaker);
+    assert_eq!(p.profile.fields["occupation"].source, Provenance::AiInferred);
+    // double-deciding is refused
+    assert!(service::decide_suggestion(&pool, by_field("occupation", "field"), Decision::Accept, matchmaking_core::Locale::En).await.is_err());
 
     // preferences are appended with a fresh id and pass the same validation as typed ones
     service::decide_suggestion(&pool, by_field("smoking", "preference"), Decision::Accept, matchmaking_core::Locale::En).await.unwrap();
@@ -256,24 +342,110 @@ async fn accepting_a_suggestion_records_ai_provenance_and_never_overrides_people
     assert_eq!(prefs.len(), 1);
     assert!(!prefs[0].id.is_empty());
 
+    // a value the matchmaker later enters is not read again: the model is never asked about a stored field
+    let mut p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
+    p.profile.set("occupation", txt("Teacher"), Provenance::Matchmaker);
+    MmRepository::update_profile_data(&pool, &p.profile).await.unwrap();
+    let m2 = Mock::with(vec![SLIM]);
+    let second = service::extract_profile(&pool, Some(&session(&m2, false, true)), "p1", None, None, false).await.unwrap();
+    assert!(!m2.last_user().contains("- occupation"), "a stored field stays out of the prompt: {}", m2.last_user());
+    assert!(second.suggestions.iter().all(|s| s.field != "occupation"));
+    let p = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
+    assert_eq!(p.profile.get("occupation"), Some(&txt("Teacher")));
+
+    // a suggestion made before the person's entry is still refused on a plain accept
+    make_profile(&pool, "p2", &[("about", txt("Sara here. I have never smoked and I work as a nurse. I want a partner who does not smoke."))]).await;
+    let m3 = Mock::with(vec![SLIM]);
+    let third = service::extract_profile(&pool, Some(&session(&m3, false, true)), "p2", None, None, false).await.unwrap();
+    let occ = third.suggestions.iter().find(|s| s.field == "occupation").unwrap().id;
+    let mut stored = MmRepository::get_profile(&pool, "p2").await.unwrap().unwrap();
+    stored.profile.set("occupation", txt("Teacher"), Provenance::Matchmaker);
+    MmRepository::update_profile_data(&pool, &stored.profile).await.unwrap();
+    let e = service::decide_suggestion(&pool, occ, Decision::Accept, matchmaking_core::Locale::En).await.unwrap_err();
+    assert!(e.contains("already entered"), "{e}");
+    service::decide_suggestion(&pool, occ, Decision::AcceptVerified, matchmaking_core::Locale::En).await.unwrap();
+    let p = MmRepository::get_profile(&pool, "p2").await.unwrap().unwrap();
+    assert_eq!(p.profile.get("occupation"), Some(&txt("Nurse")));
+    assert_eq!(p.profile.fields["occupation"].source, Provenance::Matchmaker);
+
     // the global audit log names fields, never values or quoted evidence
     let rows: Vec<(String, Option<String>)> = sqlx::query_as("SELECT action, detail FROM mm_audit_log WHERE action LIKE 'ai_%'").fetch_all(&pool).await.unwrap();
-    assert!(rows.iter().any(|(a, d)| a == "ai_suggestion_accepted" && d.as_deref() == Some("smoking")));
+    assert!(rows.iter().any(|(a, d)| a == "ai_suggestion_accepted" && d.as_deref() == Some("occupation")));
+    assert!(rows.iter().any(|(a, d)| a == "ai_suggestion_verified" && d.as_deref() == Some("occupation")));
     let dump = format!("{rows:?}");
     for text in ["never smoked", "Nurse", "Teacher", "does not smoke"] {
         assert!(!dump.contains(text), "audit log leaked '{text}': {dump}");
     }
+}
+#[tokio::test]
+async fn presets_keep_one_default_and_drop_fields_that_no_longer_exist() {
+    let pool = test_pool().await;
+    let known: Vec<String> = ["age", "city", "smoking"].iter().map(|key| key.to_string()).collect();
+    assert!(repo::extraction_presets(&pool, &known).await.unwrap().is_empty());
+    assert!(repo::default_extraction_preset(&pool, &known).await.unwrap().is_none());
+
+    let basics = repo::save_extraction_preset(&pool, None, "Basics", &["age".into(), "city".into()], false, true).await.unwrap();
+    let lifestyle = repo::save_extraction_preset(&pool, None, " Lifestyle ", &["smoking".into(), "removed_field".into()], true, true).await.unwrap();
+
+    let all = repo::extraction_presets(&pool, &known).await.unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all.iter().filter(|preset| preset.is_default).count(), 1, "saving a default clears the others");
+    let default = repo::default_extraction_preset(&pool, &known).await.unwrap().unwrap();
+    assert_eq!((default.id.as_str(), default.name.as_str(), default.with_preferences), (lifestyle.as_str(), "Lifestyle", true));
+    assert_eq!(default.fields, vec!["smoking".to_string()], "a field deleted since saving is filtered out on read");
+
+    repo::save_extraction_preset(&pool, Some(&basics), "Basics", &["age".into()], true, false).await.unwrap();
+    let updated = repo::extraction_presets(&pool, &known).await.unwrap();
+    let basics_row = updated.iter().find(|preset| preset.id == basics).unwrap();
+    assert_eq!((basics_row.fields.clone(), basics_row.with_preferences, basics_row.is_default), (vec!["age".to_string()], true, false));
+    assert_eq!(updated.len(), 2, "saving with an id updates in place");
+
+    assert!(repo::save_extraction_preset(&pool, None, "Basics", &["age".into()], false, false).await.is_err(), "names are unique");
+
+    repo::delete_extraction_preset(&pool, &lifestyle).await.unwrap();
+    assert!(repo::default_extraction_preset(&pool, &known).await.unwrap().is_none());
+    assert_eq!(repo::extraction_presets(&pool, &known).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_default_preset_decides_which_fields_are_read() {
+    let pool = test_pool().await;
+    let reg = MmRepository::registry(&pool).await.unwrap();
+    let everything = service::resolve_targets(&pool, &reg, None).await.unwrap();
+    assert!(everything.contains(&"age".to_string()) && everything.contains(&"smoking".to_string()));
+    assert!(!everything.contains(&"full_name".to_string()), "fields nobody may share are never targets");
+
+    repo::save_extraction_preset(&pool, None, "Just smoking", &["smoking".into(), "full_name".into()], false, true).await.unwrap();
+    assert_eq!(service::resolve_targets(&pool, &reg, None).await.unwrap(), vec!["smoking".to_string()]);
+    assert_eq!(service::resolve_targets(&pool, &reg, Some(vec!["age".into()])).await.unwrap(), vec!["age".to_string()], "an explicit list beats the default");
+}
+
+#[tokio::test]
+async fn suggestions_stored_without_a_source_are_ai_suggestions() {
+    let pool = test_pool().await;
+    sara(&pool).await;
+    let run = repo::insert_run(&pool, Some("p1"), None, "extract", "m", "m", false, "h", None, &json!({})).await.unwrap();
+    sqlx::query("INSERT INTO mm_ai_suggestions (profile_id, run_id, kind, field, payload, evidence, confidence, conflict, model, created_at) VALUES ('p1', ?, 'field', 'smoking', '\"never\"', 'never smoked', 0.5, 0, 'm', 'now')")
+        .bind(run)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let stored = repo::suggestions_for_run(&pool, run).await.unwrap();
+    assert_eq!(stored[0].source, "ai", "rows from before the migration keep reading as AI suggestions");
+    service::decide_suggestion(&pool, stored[0].id, Decision::Accept, matchmaking_core::Locale::En).await.unwrap();
+    let profile = MmRepository::get_profile(&pool, "p1").await.unwrap().unwrap();
+    assert_eq!(profile.profile.fields["smoking"].source, Provenance::AiInferred);
 }
 
 #[tokio::test]
 async fn rejecting_and_superseding_suggestions() {
     let pool = test_pool().await;
     sara(&pool).await;
-    let m = Mock::with(vec![GOOD, GOOD]);
-    let first = service::extract_profile(&pool, &session(&m, false, true), "p1", None).await.unwrap();
+    let m = Mock::with(vec![SLIM, SLIM]);
+    let first = service::extract_profile(&pool, Some(&session(&m, false, true)), "p1", None, None, false).await.unwrap();
     service::decide_suggestion(&pool, first.suggestions[0].id, Decision::Reject, matchmaking_core::Locale::En).await.unwrap();
     assert!(repo::get_suggestion(&pool, first.suggestions[0].id).await.unwrap().unwrap().status == "rejected");
-    let second = service::extract_profile(&pool, &session(&m, false, true), "p1", None).await.unwrap();
+    let second = service::extract_profile(&pool, Some(&session(&m, false, true)), "p1", None, None, false).await.unwrap();
     // the new run replaces what was still pending; the rejected one stays as history
     let pending = repo::pending_suggestions(&pool, "p1").await.unwrap();
     assert_eq!(pending.len(), second.suggestions.len());
@@ -362,8 +534,8 @@ async fn model_requests_are_serialized() {
 async fn deleting_a_profile_removes_what_was_recorded_about_it() {
     let pool = test_pool().await;
     sara(&pool).await;
-    let m = Mock::with(vec![GOOD]);
-    service::extract_profile(&pool, &session(&m, true, false), "p1", None).await.unwrap();
+    let m = Mock::with(vec![SLIM]);
+    service::extract_profile(&pool, Some(&session(&m, true, false)), "p1", None, None, false).await.unwrap();
     MmRepository::delete_profile(&pool, "p1").await.unwrap();
     for table in ["mm_ai_runs", "mm_ai_suggestions", "mm_ai_log"] {
         let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}")).fetch_one(&pool).await.unwrap();
@@ -392,6 +564,9 @@ Reza: I have never smoked and I work as a nurse. I want a partner who does not s
 ---\n\
 Mina: I have never smoked and I work as a nurse. I want a partner who does not smoke.";
 
+/// What the rules alone find in each corpus entry: one smoking value, never the partner's.
+const CORPUS_RULE_HITS: i64 = 1;
+
 #[tokio::test]
 async fn a_closed_gate_still_creates_profiles_and_keeps_the_raw_text_with_no_model_call() {
     let pool = test_pool().await;
@@ -403,6 +578,7 @@ async fn a_closed_gate_still_creates_profiles_and_keeps_the_raw_text_with_no_mod
         "b1".into(),
         None,
         Some("AI is turned off.".into()),
+        None,
     )
     .await
     .unwrap();
@@ -410,12 +586,12 @@ async fn a_closed_gate_still_creates_profiles_and_keeps_the_raw_text_with_no_mod
     assert!(!report.parsed && report.note.as_deref() == Some("AI is turned off."));
     assert_eq!(
         (report.created, report.dropped, report.suggestions),
-        (3, 0, 0)
+        (3, 0, 3 * CORPUS_RULE_HITS)
     );
     assert!(report
         .entries
         .iter()
-        .all(|e| e.outcome == "created" && e.profile_id.is_some() && e.suggestions == 0));
+        .all(|e| e.outcome == "parsed" && e.profile_id.is_some() && e.suggestions == CORPUS_RULE_HITS));
 
     // every entry became a real profile, with its raw text stored beside it and no field taken from it
     let notes = IntakeRepo::notes_for_batch(&pool, "b1").await.unwrap();
@@ -431,11 +607,14 @@ async fn a_closed_gate_still_creates_profiles_and_keeps_the_raw_text_with_no_mod
             .unwrap();
         assert!(
             stored.profile.fields.is_empty(),
-            "an intake profile starts empty: the entry is the source, not the answer"
+            "the rules only suggest: the entry is the source, not the answer"
         );
+        let pending = repo::pending_suggestions(&pool, &note.profile_id).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(pending.iter().all(|s| s.source == "rule" && s.field == "smoking"));
     }
 
-    // no model was contacted and nothing was parsed
+    // no model was contacted, but the rule tier did run
     let calls: i64 = sqlx::query_scalar("SELECT count(*) FROM mm_ai_log")
         .fetch_one(&pool)
         .await
@@ -450,16 +629,16 @@ async fn a_closed_gate_still_creates_profiles_and_keeps_the_raw_text_with_no_mod
         .unwrap();
     assert_eq!(
         (calls, runs, sugs),
-        (0, 0, 0),
-        "a closed gate never reaches a model"
+        (0, 3, 3 * CORPUS_RULE_HITS),
+        "a closed gate never reaches a model, but still runs the rules"
     );
 }
 
 #[tokio::test]
 async fn a_scripted_model_gives_suggestions_for_each_entry_and_the_note_is_what_it_reads() {
     let pool = test_pool().await;
-    // a person already owns `sex` on one entry: a suggestion for it is a conflict, and a plain accept must refuse it
-    let m = Mock::with(vec![GOOD, GOOD, GOOD]);
+    // the rules find smoking in every entry, so the model is only asked about what is left
+    let m = Mock::with(vec![SLIM, SLIM, SLIM]);
     let report = intake_commands::run_batch_with(
         &pool,
         None,
@@ -468,17 +647,18 @@ async fn a_scripted_model_gives_suggestions_for_each_entry_and_the_note_is_what_
         "b1".into(),
         Some(&session(&m, false, true)),
         None,
+        None,
     )
     .await
     .unwrap();
 
     assert!(report.parsed);
     assert_eq!((report.created, report.dropped), (3, 0));
-    assert_eq!(report.suggestions, 9, "three suggestions per entry");
+    assert_eq!(report.suggestions, 6, "one rule hit and one AI field per entry");
     assert!(report
         .entries
         .iter()
-        .all(|e| e.outcome == "parsed" && e.suggestions == 3));
+        .all(|e| e.outcome == "parsed" && e.suggestions == 2));
     assert_eq!(m.calls(), 3, "one model request per entry, sequential");
     assert_eq!(
         m.max_active.load(Ordering::SeqCst),
@@ -496,6 +676,10 @@ async fn a_scripted_model_gives_suggestions_for_each_entry_and_the_note_is_what_
         sent.contains("I work as a nurse") && sent.contains("does not smoke"),
         "the entry's own words: {sent}"
     );
+    assert!(
+        !sent.contains("- smoking (Smoking)"),
+        "the rule hit was not asked about again: {sent}"
+    );
 
     // each entry's suggestions hang off its own profile
     for note in IntakeRepo::notes_for_batch(&pool, "b1").await.unwrap() {
@@ -504,18 +688,20 @@ async fn a_scripted_model_gives_suggestions_for_each_entry_and_the_note_is_what_
             .unwrap();
         assert_eq!(
             pending.len(),
-            3,
+            2,
             "{} got {} suggestions",
             note.label,
             pending.len()
         );
+        assert_eq!(pending.iter().filter(|s| s.source == "rule").count(), 1);
+        assert_eq!(pending.iter().filter(|s| s.source == "ai").count(), 1);
     }
 }
 
 #[tokio::test]
 async fn a_person_owned_value_is_refused_by_both_a_single_accept_and_the_batch_accept() {
     let pool = test_pool().await;
-    let m = Mock::with(vec![GOOD, GOOD]);
+    let m = Mock::with(vec![SLIM]);
     intake_commands::run_batch_with(
         &pool,
         None,
@@ -526,6 +712,7 @@ async fn a_person_owned_value_is_refused_by_both_a_single_accept_and_the_batch_a
         None,
         "b1".into(),
         Some(&session(&m, false, true)),
+        None,
         None,
     )
     .await
@@ -556,15 +743,12 @@ async fn a_person_owned_value_is_refused_by_both_a_single_accept_and_the_batch_a
             .contains("already entered")
     );
 
-    // ... and the batch accept is the same path, so it skips exactly that one and takes the rest
+    // ... and the batch accept is the same path, so it skips exactly that one and takes the rule's own finding
     let accepted = intake_commands::run_accept_all(&pool, "b1".into())
         .await
         .unwrap();
     assert_eq!(accepted.skipped, 1);
-    assert_eq!(
-        accepted.accepted, 2,
-        "smoking and the smoking preference are taken"
-    );
+    assert_eq!(accepted.accepted, 1, "the rule's smoking suggestion is taken");
     assert!(accepted.fields.contains(&"smoking".to_string()));
     assert!(!accepted.fields.contains(&"occupation".to_string()));
 
@@ -578,6 +762,11 @@ async fn a_person_owned_value_is_refused_by_both_a_single_accept_and_the_batch_a
         "the person's own value stood"
     );
     assert_eq!(after.profile.get("smoking"), Some(&txt("never")));
+    assert_eq!(
+        after.profile.fields["smoking"].source,
+        Provenance::RuleExtracted,
+        "the source follows the suggestion, not the tier that happened to be last"
+    );
 
     // running it again accepts nothing new: the refused suggestion stays pending for a deliberate per-item
     // override, and the two that were taken are no longer pending
@@ -596,7 +785,8 @@ async fn an_unusable_entry_is_reported_against_itself_and_the_others_go_through(
         "   ".to_string(),
         format!("Reza has never smoked. {}", "x".repeat(25_000)),
     ];
-    let m = Mock::with(vec![GOOD, GOOD]);
+    // the rules fill smoking on both readable entries, so only occupation is left for the model
+    let m = Mock::with(vec![SLIM, SLIM]);
     let report = intake_commands::run_batch_with(
         &pool,
         None,
@@ -604,6 +794,7 @@ async fn an_unusable_entry_is_reported_against_itself_and_the_others_go_through(
         Some(entries),
         "b1".into(),
         Some(&session(&m, false, true)),
+        None,
         None,
     )
     .await
@@ -633,8 +824,8 @@ async fn an_unusable_entry_is_reported_against_itself_and_the_others_go_through(
 #[tokio::test]
 async fn the_audit_trail_names_actions_and_fields_but_never_the_note_or_its_lookup() {
     let pool = test_pool().await;
-    let m = Mock::with(vec![GOOD]);
-    let report = intake_commands::run_batch_with(&pool, None, Some("Sara Karimi: I have never smoked and I work as a nurse. I want a partner who does not smoke. Phone +98 912 345 6789.".into()), None, "b1".into(), Some(&session(&m, false, true)), None).await.unwrap();
+    let m = Mock::with(vec![SLIM]);
+    let report = intake_commands::run_batch_with(&pool, None, Some("Sara Karimi: I have never smoked and I work as a nurse. I want a partner who does not smoke. Phone +98 912 345 6789.".into()), None, "b1".into(), Some(&session(&m, false, true)), None, None).await.unwrap();
     intake_commands::run_accept_all(&pool, "b1".into())
         .await
         .unwrap();
@@ -688,6 +879,7 @@ async fn a_batch_can_be_reported_from_what_was_stored_without_running_anything_a
         "b1".into(),
         None,
         Some("off".into()),
+        None,
     )
     .await
     .unwrap();
@@ -699,7 +891,12 @@ async fn a_batch_can_be_reported_from_what_was_stored_without_running_anything_a
     assert!(report
         .entries
         .iter()
-        .all(|e| e.outcome == "created" && e.profile_id.is_some()));
+        .all(|e| e.outcome == "parsed" && e.profile_id.is_some() && e.suggestions == CORPUS_RULE_HITS));
+    assert_eq!(
+        report.suggestions,
+        3 * CORPUS_RULE_HITS,
+        "the rule results are reported from what was stored"
+    );
     // a batch nobody has heard of is an empty report, not an error
     assert_eq!(
         intake_commands::run_report(&pool, "nope".into())
@@ -715,7 +912,7 @@ async fn a_batch_can_be_reported_from_what_was_stored_without_running_anything_a
 #[tokio::test]
 async fn the_per_profile_extraction_reads_the_stored_intake_note() {
     let pool = test_pool().await;
-    let m = Mock::with(vec![GOOD, GOOD]);
+    let m = Mock::with(vec![SLIM, SLIM]);
     let entry = "I have never smoked and I work as a nurse. I want a partner who does not smoke. Call +98 912 345 6789.";
     intake_commands::run_batch_with(
         &pool,
@@ -725,6 +922,7 @@ async fn the_per_profile_extraction_reads_the_stored_intake_note() {
         "b1".into(),
         Some(&session(&m, false, true)),
         None,
+        None,
     )
     .await
     .unwrap();
@@ -733,7 +931,7 @@ async fn the_per_profile_extraction_reads_the_stored_intake_note() {
         .clone();
 
     // the "Read profile" call passes no extra text and still finds the entry to read
-    let view = service::extract_profile(&pool, &session(&m, false, true), &profile_id, None)
+    let view = service::extract_profile(&pool, Some(&session(&m, false, true)), &profile_id, None, None, false)
         .await
         .unwrap();
     assert_eq!(
@@ -741,7 +939,8 @@ async fn the_per_profile_extraction_reads_the_stored_intake_note() {
             .iter()
             .filter(|s| s.kind == "field")
             .count(),
-        2
+        2,
+        "the rule's smoking and the model's occupation"
     );
     let sent = m.last_user();
     assert!(
@@ -759,9 +958,12 @@ async fn the_per_profile_extraction_reads_the_stored_intake_note() {
             include_sensitive: false,
         },
         matchmaking_core::Locale::En,
+        None,
+        false,
     )
     .await
-    .unwrap();
+    .unwrap()
+    .expect("a prompt is prepared for the fields the rules left open");
     assert!(preview.contains("Intake notes:") && preview.contains("I work as a nurse"));
     assert!(
         !preview.contains("+98 912 345 6789"),
@@ -792,6 +994,7 @@ mod golden {
             "g-closed".into(),
             None,
             Some("AI is turned off.".into()),
+            None,
         )
         .await
         .unwrap();
@@ -814,7 +1017,7 @@ mod golden {
     #[tokio::test]
     async fn gate_open_run_parses_the_single_entry() {
         let pool = test_pool().await;
-        let m = Mock::with(vec![GOOD]);
+        let m = Mock::with(vec![SLIM]);
         let report = intake_commands::run_batch_with(
             &pool,
             None,
@@ -823,11 +1026,12 @@ mod golden {
             "g-open".into(),
             Some(&session(&m, false, true)),
             None,
+            None,
         )
         .await
         .unwrap();
         assert_eq!((report.created, report.dropped), (1, 0));
-        assert_eq!(report.suggestions, 3, "two fields and one preference");
+        assert_eq!(report.suggestions, 2, "the rule's smoking and the model's occupation");
         assert_eq!(m.calls(), 1);
     }
 
@@ -837,7 +1041,7 @@ mod golden {
         // the file arrives already split, so the command reads it as strings rather than splitting a paste again
         let entries = matchmaking_core::intake::parse_json_corpus(ENTRIES_JSON).unwrap();
         assert_eq!(entries.len(), 3);
-        let m = Mock::with(vec![GOOD, GOOD]);
+        let m = Mock::with(vec![SLIM, SLIM]);
         let report = intake_commands::run_batch_with(
             &pool,
             None,
@@ -845,6 +1049,7 @@ mod golden {
             Some(entries),
             "g-json".into(),
             Some(&session(&m, false, true)),
+            None,
             None,
         )
         .await
@@ -861,8 +1066,8 @@ mod golden {
             .await
             .unwrap();
         assert_eq!(
-            accepted.accepted, 5,
-            "the two fields of each entry plus the preference the second one states"
+            accepted.accepted, 4,
+            "smoking and occupation on each of the two readable entries"
         );
         assert_eq!(accepted.skipped, 0);
         assert!(accepted
@@ -876,7 +1081,7 @@ mod golden {
     #[tokio::test]
     async fn the_target_gets_its_own_profile_apart_from_the_corpus() {
         let pool = test_pool().await;
-        let m = Mock::with(vec![GOOD, GOOD]);
+        let m = Mock::with(vec![SLIM, SLIM, SLIM]);
         let report = intake_commands::run_batch_with(
             &pool,
             Some("# Sara\nI have never smoked and I work as a nurse. I want a partner who does not smoke.".into()),
@@ -884,6 +1089,7 @@ mod golden {
             None,
             "g-target".into(),
             Some(&session(&m, false, true)),
+            None,
             None,
         )
         .await
@@ -1118,8 +1324,14 @@ mod selection {
         assert_eq!(TaskProfile::for_kind("extract"), TaskProfile::Extraction);
         assert_eq!(TaskProfile::for_kind("intake"), TaskProfile::Extraction);
         assert_eq!(TaskProfile::for_kind("pair"), TaskProfile::PairAnalysis);
+        let slim = |fields, with_preferences| TaskProfile::SlimExtraction { fields, with_preferences };
         assert!(TaskProfile::Extraction.max_tokens() > TaskProfile::PairAnalysis.max_tokens());
-        for t in [TaskProfile::Extraction, TaskProfile::PairAnalysis] {
+        assert_eq!(slim(3, false).max_tokens(), 96 * 3 + 128);
+        assert_eq!(slim(50, false).max_tokens(), 1024, "the slim budget is capped");
+        assert_eq!(slim(3, true).max_tokens(), 2048, "preferences need room");
+        assert_eq!(slim(3, false).timeout_secs(), 180);
+        assert!(slim(3, false).temperature() <= 0.2);
+        for t in [TaskProfile::Extraction, slim(3, false), slim(3, true), TaskProfile::PairAnalysis] {
             assert!(t.temperature() <= 0.2);
             let o = t.overrides_for(models::default_model()).expect("overrides");
             let s = o.sampling.unwrap();
@@ -1168,8 +1380,9 @@ mod selection {
         make_profile(&pool, "p1", &[("full_name", txt("Sara Example"))]).await;
         let rec = Recorder::default();
         let s = Session { backend: &rec, provider: "mock".into(), model: "m".into(), mode: Mode { is_cloud: false, include_sensitive: true }, locale: matchmaking_core::Locale::En };
-        let _ = service::extract_profile(&pool, &s, "p1", Some("She likes hiking and wants children.")).await;
-        assert_eq!(rec.0.lock().unwrap().first(), Some(&TaskProfile::Extraction));
+        let _ = service::extract_profile(&pool, Some(&s), "p1", Some("She likes hiking and wants children."), None, false).await;
+        let first = *rec.0.lock().unwrap().first().expect("the model was asked");
+        assert!(matches!(first, TaskProfile::SlimExtraction { fields, with_preferences } if fields > 0 && !with_preferences));
     }
 }
 

@@ -9,7 +9,7 @@
 //! * Pair analysis must **cite the facts** it relies on; claims that cite nothing, or cite facts that do not exist, are dropped.
 //! * Text inside the data tags is untrusted content, not instructions.
 
-use crate::field::{FieldKind, FieldRegistry};
+use crate::field::{FieldDef, FieldKind, FieldRegistry};
 use crate::locale::Locale;
 use crate::preferences::{describe_preference, validate_preference, Preference, Strength};
 use crate::profile::{Profile, Provenance, Value};
@@ -18,7 +18,7 @@ use crate::search::{Condition, ConditionOp};
 use crate::sharing::{display_value, NEVER_SHARED};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
+use serde_json::{json, Value as Json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_VALUE_CHARS: usize = 300;
@@ -197,6 +197,18 @@ pub struct FieldSuggestion {
     pub confidence: f64,
     /// The profile already holds a different value entered by a person; accepting needs a deliberate human override.
     pub conflict: bool,
+    /// Which tier found it. Deserialising an older stored suggestion without this field means AI.
+    #[serde(default)]
+    pub source: SuggestionSource,
+}
+
+/// Which tier produced a suggestion: the local rules, or a model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionSource {
+    #[default]
+    Ai,
+    Rule,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -275,7 +287,7 @@ pub fn parse_extraction(raw: &str, registry: &FieldRegistry, text: &str, profile
             continue; // already known: nothing to suggest
         }
         let conflict = existing.map_or(false, |e| e.source.rank() > Provenance::AiInferred.rank());
-        let s = FieldSuggestion { field: field.clone(), value, evidence: clip(&evidence, MAX_ITEM_CHARS), confidence, conflict };
+        let s = FieldSuggestion { field: field.clone(), value, evidence: clip(&evidence, MAX_ITEM_CHARS), confidence, conflict, source: SuggestionSource::Ai };
         match seen.get(&field) {
             Some(&i) if out.suggestions[i].confidence >= confidence => {}
             Some(&i) => out.suggestions[i] = s,
@@ -567,4 +579,217 @@ pub fn parse_pair_analysis(raw: &str, facts: &[AiFact]) -> Result<PairAnalysis, 
         }
     });
     Ok(PairAnalysis { why_it_may_work: why, potential_challenges: challenges, important_differences: differences, questions_to_discuss: questions, missing_information: missing, overall_assessment: overall, dropped })
+}
+
+// ------------------------------------------------------------------ slim extraction (rule tier + constrained model)
+
+fn kind_spec(def: &FieldDef) -> String {
+    match &def.kind {
+        FieldKind::Bool => "yes/no (true or false)".to_string(),
+        FieldKind::Number => "number".to_string(),
+        FieldKind::Text => "short text".to_string(),
+        FieldKind::Choice(o) => format!("one of: {}", o.join(", ")),
+        FieldKind::MultiChoice(o) => format!("list of any of: {}", o.join(", ")),
+        FieldKind::Records(_) => unreachable!(),
+    }
+}
+
+/// The requested fields a model may be asked about, in registry order.
+fn asked_fields<'a>(registry: &'a FieldRegistry, fields: &'a [String], include_sensitive: bool) -> Vec<&'a FieldDef> {
+    registry
+        .defs()
+        .filter(|d| fields.iter().any(|k| k == &d.key))
+        .filter(|d| !never_for_ai(&d.key) && !matches!(d.kind, FieldKind::Records(_)) && (!d.sensitive || include_sensitive))
+        .collect()
+}
+
+/// A smaller prompt: only the fields the rules did not fill, and the preference section only when asked for.
+pub fn slim_extraction_prompt(registry: &FieldRegistry, text: &str, fields: &[String], with_preferences: bool) -> (String, String) {
+    slim_extraction_prompt_for(registry, text, fields, Locale::En, with_preferences)
+}
+
+pub fn slim_extraction_prompt_for(registry: &FieldRegistry, text: &str, fields: &[String], locale: Locale, with_preferences: bool) -> (String, String) {
+    let mut schema = String::new();
+    for def in asked_fields(registry, fields, true) {
+        schema.push_str(&format!("- {} ({}): {}\n", def.key, def.label, kind_spec(def)));
+    }
+    let mut shape = String::from("{\"fields\":{KEY:{\"value\":VALUE,\"evidence\":\"exact words copied from the text\"}}");
+    if with_preferences {
+        shape.push_str(",\"preferences\":[{\"field\":KEY,\"op\":\"eq|ne|ge|le|between|in\",\"value\":VALUE,\"value2\":VALUE_OR_NULL,\"strength\":\"required|deal_breaker|preferred|flexible\",\"evidence\":\"exact words\"}],\"contradictions\":[{\"description\":\"...\",\"evidence\":[\"exact words\"]}],\"missing\":[KEY],\"questions\":[\"a short question\"]");
+    }
+    shape.push('}');
+    let prefs_help = if with_preferences {
+        "Also list what this person says they want in a partner (preferences), any contradictions, important fields the text does not answer (missing), and short questions to ask. "
+    } else {
+        ""
+    };
+    let user = format!(
+        "Read the text below about ONE person and fill in ONLY these fields.\n\nFields:\n{schema}\nReturn one JSON object of this shape:\n{shape}\nOnly include a field when the text states it; leave it out otherwise. Copy evidence exactly from the text. Use field keys exactly as listed. {prefs_help}{language}\n\n<data>\n{text}\n</data>",
+        language = answer_language(locale)
+    );
+    (SYSTEM_RULES.to_string(), user)
+}
+
+/// Validate a slim reply. Same rules as `parse_extraction`, plus: keys that were not requested are dropped.
+pub fn parse_slim_extraction(raw: &str, registry: &FieldRegistry, text: &str, profile: &Profile, include_sensitive: bool, requested: &[String]) -> Result<Extraction, String> {
+    let root = extract_json_object(raw).ok_or("The model did not return readable JSON")?;
+    let mut items = vec![];
+    if let Some(map) = root.get("fields").and_then(|v| v.as_object()) {
+        for (field, body) in map {
+            if !requested.iter().any(|k| k == field) {
+                continue; // never asked for: silently dropped, it cannot widen the request
+            }
+            let mut item = serde_json::Map::new();
+            item.insert("field".into(), Json::String(field.clone()));
+            item.insert("value".into(), body.get("value").cloned().unwrap_or(Json::Null));
+            item.insert("evidence".into(), body.get("evidence").cloned().unwrap_or(Json::Null));
+            if let Some(c) = body.get("confidence") {
+                item.insert("confidence".into(), c.clone());
+            }
+            items.push(Json::Object(item));
+        }
+    }
+    let mut wrapped = root;
+    if let Some(o) = wrapped.as_object_mut() {
+        o.insert("suggestions".into(), Json::Array(items));
+    }
+    parse_extraction(&wrapped.to_string(), registry, text, profile, include_sensitive)
+}
+
+// ------------------------------------------------------------------ structured-output constraint
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExtractionConstraint {
+    pub gbnf: String,
+    pub json_schema: Json,
+}
+
+fn gbnf_literal(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn choice_alternatives(opts: &[String]) -> String {
+    let alts: Vec<String> = opts.iter().map(|o| gbnf_literal(o)).collect();
+    format!("({})", alts.join(" | "))
+}
+
+fn value_schema(def: &FieldDef) -> Json {
+    match &def.kind {
+        FieldKind::Bool => json!({"type": "boolean"}),
+        FieldKind::Number => json!({"type": "number"}),
+        FieldKind::Text => json!({"type": "string", "maxLength": MAX_VALUE_CHARS}),
+        FieldKind::Choice(opts) => json!({"type": "string", "enum": opts}),
+        FieldKind::MultiChoice(opts) => json!({"type": "array", "items": {"type": "string", "enum": opts}}),
+        FieldKind::Records(_) => unreachable!(),
+    }
+}
+
+fn value_rule(def: &FieldDef) -> String {
+    match &def.kind {
+        FieldKind::Bool => "bool-value".to_string(),
+        FieldKind::Number => "number-value".to_string(),
+        FieldKind::Text => "evidence".to_string(),
+        FieldKind::Choice(o) => choice_alternatives(o),
+        FieldKind::MultiChoice(_) => format!("list-{}", safe_name(&def.key)),
+        FieldKind::Records(_) => unreachable!(),
+    }
+}
+
+fn safe_name(key: &str) -> String {
+    key.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect()
+}
+
+/// Grammar and JSON schema for exactly these fields, generated from one spec: keys are limited to the
+/// target fields, choices to their options, numbers to JSON numbers and booleans to true/false.
+pub fn output_constraint(registry: &FieldRegistry, fields: &[String], with_preferences: bool) -> ExtractionConstraint {
+    let defs = asked_fields(registry, fields, true);
+
+    // JSON schema
+    let mut properties = serde_json::Map::new();
+    for def in &defs {
+        properties.insert(
+            def.key.clone(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": value_schema(def),
+                    "evidence": {"type": "string", "maxLength": 200}
+                },
+                "required": ["value", "evidence"],
+                "additionalProperties": false
+            }),
+        );
+    }
+    let mut schema = json!({
+        "type": "object",
+        "properties": {"fields": {"type": "object", "properties": properties, "additionalProperties": false}},
+        "required": ["fields"],
+        "additionalProperties": false
+    });
+    if with_preferences {
+        schema["properties"]["preferences"] = json!({"type": "array"});
+        schema["properties"]["contradictions"] = json!({"type": "array"});
+        schema["properties"]["missing"] = json!({"type": "array", "items": {"type": "string"}});
+        schema["properties"]["questions"] = json!({"type": "array", "items": {"type": "string"}});
+    }
+
+    // GBNF
+    let mut g = String::new();
+    if defs.is_empty() {
+        g.push_str("root ::= \"{\" ws \"\\\"fields\\\"\" ws \":\" ws \"{\" ws \"}\" ws \"}\" ws\n");
+        g.push_str("ws ::= [ \\t\\n\\r]*\n");
+        return ExtractionConstraint { gbnf: g, json_schema: schema };
+    }
+    let extra = if with_preferences {
+        " (ws \",\" ws extra-pair)*"
+    } else {
+        ""
+    };
+    g.push_str(&format!("root ::= \"{{\" ws \"\\\"fields\\\"\" ws \":\" ws fields-object{extra} ws \"}}\" ws\n"));
+    let mut pairs = String::new();
+    for (i, d) in defs.iter().enumerate() {
+        if i > 0 {
+            pairs.push_str(" | ");
+        }
+        pairs.push_str(&format!("{} ws \":\" ws field-object-{}", gbnf_literal(&d.key), safe_name(&d.key)));
+    }
+    g.push_str(&format!("fields-pair ::= {pairs}\n"));
+    g.push_str("fields-object ::= \"{\" ws (fields-pair (ws \",\" ws fields-pair)*)? ws \"}\"\n");
+    for d in &defs {
+        if let FieldKind::MultiChoice(o) = &d.kind {
+            let alts = choice_alternatives(o);
+            g.push_str(&format!("list-{} ::= \"[\" ws ({alts} (ws \",\" ws {alts})*)? ws \"]\"\n", safe_name(&d.key)));
+        }
+    }
+    for d in &defs {
+        g.push_str(&format!(
+            "field-object-{} ::= \"{{\" ws \"\\\"value\\\"\" ws \":\" ws {} ws \",\" ws \"\\\"evidence\\\"\" ws \":\" ws evidence ws \"}}\"\n",
+            safe_name(&d.key),
+            value_rule(d)
+        ));
+    }
+    g.push_str("bool-value ::= \"true\" | \"false\"\n");
+    g.push_str("number-value ::= \"-\"? (\"0\" | [1-9] [0-9]*) (\".\" [0-9]+)?\n");
+    g.push_str("evidence ::= \"\\\"\" ([^\"\\\\\\x7f\\x00-\\x1f] | \"\\\\\" ([\"\\\\/bfnrt] | \"u\" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])){0,200} \"\\\"\"\n");
+    if with_preferences {
+        g.push_str("extra-pair ::= \"\\\"preferences\\\"\" ws \":\" ws any-array | \"\\\"contradictions\\\"\" ws \":\" ws any-array | \"\\\"missing\\\"\" ws \":\" ws any-array | \"\\\"questions\\\"\" ws \":\" ws any-array\n");
+        g.push_str("any-array ::= \"[\" ws (any-value (ws \",\" ws any-value)*)? ws \"]\"\n");
+        g.push_str("any-value ::= \"{\" ws (json-pair (ws \",\" ws json-pair)*)? ws \"}\" | any-array | evidence | number-value | \"true\" | \"false\" | \"null\"\n");
+        g.push_str("json-pair ::= evidence ws \":\" ws any-value\n");
+    }
+    g.push_str("ws ::= [ \\t\\n\\r]*\n");
+    ExtractionConstraint { gbnf: g, json_schema: schema }
 }
