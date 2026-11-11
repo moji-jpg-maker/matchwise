@@ -39,6 +39,7 @@ pub fn help_text(locale: Locale) -> String {
      /status - where things stand\n\
      /settings - notifications and privacy\n\
      /language - change the language\n\n\
+     Send a photo here and your matchmaker can add it to your profile.\n\
      You can also just write a message here and your matchmaker will read it.\n\
      /cancel stops whatever we are in the middle of."
             .to_string(),
@@ -52,6 +53,7 @@ pub fn help_text(locale: Locale) -> String {
      /status - وضعیت کارها\n\
      /settings - اعلان‌ها و حریم خصوصی\n\
      /language - تغییر زبان\n\n\
+     عکس خود را همین‌جا بفرستید تا مشاورتان آن را به پروفایل شما اضافه کند.\n\
      می‌توانید همین‌جا پیام بنویسید و مشاورتان آن را می‌خواند.\n\
      /cancel هر کاری را که در میانه آن هستیم متوقف می‌کند."
             .to_string(),
@@ -95,6 +97,7 @@ pub fn consent_text(locale: Locale) -> String {
      • Your profile is kept by your matchmaker, who can see everything you send here.\n\
      • I will never show other people your contact details. If you are introduced to someone, they see only the facts your matchmaker chose to share, and your first name.\n\
      • I will not display sensitive details you have given (for example health or finances) back to you in this chat.\n\
+     • Photos you send here are kept with your profile, for your matchmaker, exactly as they arrive.\n\
      • You can stop messages (/stop), unlink this chat (/unlink) or ask for your data to be deleted (/forget) at any time.\n\n\
      Do you agree?"
             .to_string(),
@@ -104,6 +107,7 @@ pub fn consent_text(locale: Locale) -> String {
      • پروفایل شما نزد مشاورتان نگهداری می‌شود و او هر چه را اینجا بفرستید می‌بیند.\n\
      • من هرگز اطلاعات تماس شما را به دیگران نشان نمی‌دهم. اگر به کسی معرفی شوید، او فقط اطلاعاتی را می‌بیند که مشاورتان برای اشتراک انتخاب کرده و نام کوچک شما را.\n\
      • من اطلاعات حساسی را که داده‌اید (مثلاً سلامت یا امور مالی) در این گفتگو دوباره به شما نشان نمی‌دهم.\n\
+     • عکس‌هایی که اینجا می‌فرستید در کنار پروفایل شما و برای مشاورتان نگهداری می‌شوند، همان‌گونه که می‌رسند.\n\
      • هر زمان بخواهید می‌توانید پیام‌ها را متوقف کنید (/stop)، اتصال این گفتگو را قطع کنید (/unlink) یا درخواست حذف اطلاعاتتان را بدهید (/forget).\n\n\
      موافقید؟"
             .to_string(),
@@ -117,6 +121,42 @@ pub fn consent_declined_text(locale: Locale) -> String {
             "مشکلی نیست. اتصال این گفتگو را قطع کردم و چیزی برایتان نمی‌فرستم. اگر نظرتان عوض شد، مشاورتان می‌تواند دعوت‌نامه تازه‌ای بفرستد.",
         )
         .to_string()
+}
+
+pub fn photo_received_text(locale: Locale) -> String {
+    locale
+        .pick("Thank you. Your matchmaker can see the photo now.", "ممنون. مشاور شما اکنون می‌تواند عکس را ببیند.")
+        .to_string()
+}
+
+pub fn only_photos_text(locale: Locale) -> String {
+    locale
+        .pick(
+            "I can only take photos (JPEG, PNG or WebP). Please send the file as a photo.",
+            "فقط عکس می‌پذیرم (JPEG، PNG یا WebP). لطفاً فایل را به‌صورت عکس بفرستید.",
+        )
+        .to_string()
+}
+
+pub fn photo_too_large_text(locale: Locale) -> String {
+    locale
+        .pick("That photo is too large. Please send one under 10 MB.", "این عکس خیلی بزرگ است. لطفاً عکسی زیر ۱۰ مگابایت بفرستید.")
+        .to_string()
+}
+
+pub fn photo_limit_text(locale: Locale, limit: u32) -> String {
+    match locale {
+        Locale::En => format!("Your profile already has {limit} photos, which is the limit. Ask your matchmaker to remove one before sending more."),
+        Locale::Fa => format!(
+            "پروفایل شما از قبل {} عکس دارد و این سقف است. برای فرستادن عکس بیشتر از مشاورتان بخواهید یکی را حذف کند.",
+            number(locale, limit)
+        ),
+    }
+}
+
+/// The inbox line for an incoming photo. One per album, not one per photo.
+pub fn photo_inbox_marker() -> &'static str {
+    "📷"
 }
 
 pub fn welcome_text(locale: Locale, name: &str) -> String {

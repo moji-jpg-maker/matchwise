@@ -44,6 +44,20 @@ fn tap(chat: i64, data: &str) -> Update {
         "message": {"message_id": 77, "chat": {"id": chat, "type": "private"}, "text": "x"}}})).unwrap()
 }
 
+/// One photo, as Telegram sends it: two sizes, smallest first.
+fn photo(chat: i64, file_id: &str, group: Option<&str>) -> Update {
+    serde_json::from_value(json!({"update_id": 3, "message": {"message_id": 20, "from": {"id": chat, "is_bot": false, "username": "u"},
+        "chat": {"id": chat, "type": "private"}, "media_group_id": group, "caption": "this caption must be ignored",
+        "photo": [{"file_id": format!("{file_id}-small"), "width": 90, "height": 90, "file_size": 900},
+                  {"file_id": file_id, "width": 800, "height": 800, "file_size": 90_000}]}})).unwrap()
+}
+
+fn document(chat: i64, name: &str, mime: &str, size: i64) -> Update {
+    serde_json::from_value(json!({"update_id": 4, "message": {"message_id": 21, "from": {"id": chat, "is_bot": false, "username": "u"},
+        "chat": {"id": chat, "type": "private"},
+        "document": {"file_id": format!("doc-{name}"), "file_name": name, "mime_type": mime, "file_size": size}}})).unwrap()
+}
+
 async fn say(pool: &SqlitePool, chat: i64, text: &str) -> Vec<Reply> {
     handle_update(pool, msg(chat, text)).await.unwrap()
 }
@@ -542,6 +556,158 @@ async fn unlink_and_forget_are_confirmed_and_complete() {
 }
 
 // ------------------------------------------------------------------ delivery
+
+// ------------------------------------------------------------------ photos
+
+async fn photo_rows(pool: &SqlitePool, profile: &str) -> Vec<(Option<String>, String, String)> {
+    sqlx::query_as("SELECT telegram_file_id, status, mime FROM mm_profile_photos WHERE profile_id = ? ORDER BY position")
+        .bind(profile).fetch_all(pool).await.unwrap()
+}
+
+async fn inbox(pool: &SqlitePool, profile: &str) -> Vec<String> {
+    repo::messages(pool, profile, 20).await.unwrap().into_iter().map(|m| m.text).collect()
+}
+
+#[tokio::test]
+async fn a_consented_photo_waits_for_download_and_is_noted_in_the_inbox() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[("full_name", txt("Sara"))]).await;
+    link(&pool, "p1", 100).await;
+
+    let r = texts(&handle_update(&pool, photo(100, "file-a", None)).await.unwrap());
+    assert!(r.contains("matchmaker can see the photo"), "{r}");
+    let rows = photo_rows(&pool, "p1").await;
+    assert_eq!(rows.len(), 1);
+    // the largest size is asked for, and nothing is downloaded yet
+    assert_eq!(rows[0].0.as_deref(), Some("file-a"));
+    assert_eq!(rows[0].1, "pending");
+    assert_eq!(rows[0].2, "image/jpeg");
+    assert_eq!(inbox(&pool, "p1").await, vec!["📷".to_string()]);
+    // the caption is not stored or read
+    let stored: String = sqlx::query_scalar("SELECT group_concat(text, ' ') FROM mm_telegram_messages").fetch_one(&pool).await.unwrap();
+    assert!(!stored.contains("ignored"), "{stored}");
+    // a file name never reaches the audit log: the entry counts the photos and says nothing else
+    let audit: Vec<String> = sqlx::query_scalar("SELECT detail FROM mm_audit_log WHERE action = 'telegram_photo'").fetch_all(&pool).await.unwrap();
+    assert_eq!(audit, vec!["1 photo".to_string()]);
+
+    // an image sent as a document is a photo too
+    let r = texts(&handle_update(&pool, document(100, "portrait.png", "image/png", 4_000)).await.unwrap());
+    assert!(r.contains("matchmaker can see the photo"), "{r}");
+    let rows = photo_rows(&pool, "p1").await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].2, "image/png");
+    // a repeat of the same Telegram file adds nothing
+    handle_update(&pool, photo(100, "file-a", None)).await.unwrap();
+    assert_eq!(photo_rows(&pool, "p1").await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_photo_before_consent_stores_nothing() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[]).await;
+    let invite = repo::create_invite(&pool, "p1").await.unwrap();
+    say(&pool, 100, &format!("/start {}", invite.code)).await;
+    // linked but not yet agreed: the notice, and no photo
+    let r = texts(&handle_update(&pool, photo(100, "file-a", None)).await.unwrap());
+    assert!(r.contains("Do you agree"), "{r}");
+    assert!(photo_rows(&pool, "p1").await.is_empty());
+    // an unlinked chat only hears how to get an invitation
+    let r = texts(&handle_update(&pool, photo(555, "file-b", None)).await.unwrap());
+    assert!(r.contains("invitation"), "{r}");
+    assert!(photo_rows(&pool, "p1").await.is_empty());
+    press(&pool, 100, "consent:y").await;
+    handle_update(&pool, photo(100, "file-a", None)).await.unwrap();
+    assert_eq!(photo_rows(&pool, "p1").await.len(), 1);
+}
+
+#[tokio::test]
+async fn consent_from_before_photos_existed_is_asked_again() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[]).await;
+    link(&pool, "p1", 100).await;
+    // the notice gained the photo line, so an older agreement does not cover a photo
+    sqlx::query("UPDATE mm_telegram_links SET consent_version = 1 WHERE profile_id = 'p1'").execute(&pool).await.unwrap();
+    let r = texts(&handle_update(&pool, photo(100, "file-a", None)).await.unwrap());
+    assert!(r.contains("Photos you send here"), "{r}");
+    assert!(photo_rows(&pool, "p1").await.is_empty());
+}
+
+#[tokio::test]
+async fn an_album_is_answered_and_noted_once() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[]).await;
+    link(&pool, "p1", 100).await;
+    for (n, id) in ["g1-a", "g1-b", "g1-c"].iter().enumerate() {
+        let r = handle_update(&pool, photo(100, id, Some("group-1"))).await.unwrap();
+        // the first photo of the album speaks; the rest arrive silently
+        assert_eq!(r.len(), usize::from(n == 0), "photo {n} of the album");
+    }
+    assert_eq!(photo_rows(&pool, "p1").await.len(), 3);
+    assert_eq!(inbox(&pool, "p1").await, vec!["📷".to_string()]);
+    // a different album is answered again
+    let r = handle_update(&pool, photo(100, "g2-a", Some("group-2"))).await.unwrap();
+    assert!(texts(&r).contains("matchmaker can see"));
+    assert_eq!(inbox(&pool, "p1").await.len(), 2);
+}
+
+#[tokio::test]
+async fn an_album_is_answered_once_even_from_an_unlinked_chat() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[]).await;
+    for (n, id) in ["u-a", "u-b"].iter().enumerate() {
+        let r = handle_update(&pool, photo(555, id, Some("group-9"))).await.unwrap();
+        assert_eq!(r.len(), usize::from(n == 0), "photo {n} of the album");
+    }
+    assert!(photo_rows(&pool, "p1").await.is_empty());
+}
+
+#[tokio::test]
+async fn an_album_that_starts_with_a_resend_still_leaves_one_line() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[]).await;
+    link(&pool, "p1", 100).await;
+    // the album's first photo is one the profile already has, so nothing is stored for it and it leaves no line
+    handle_update(&pool, photo(100, "old", None)).await.unwrap();
+    let r = handle_update(&pool, photo(100, "old", Some("group-3"))).await.unwrap();
+    assert_eq!(r.len(), 1, "the resend still answers for the album");
+    assert_eq!(inbox(&pool, "p1").await.len(), 1, "and adds no line of its own");
+    // the rest are stored, and the first one kept leaves the album's single line
+    let r = handle_update(&pool, photo(100, "new-b", Some("group-3"))).await.unwrap();
+    assert!(r.is_empty(), "the album already answered");
+    assert_eq!(inbox(&pool, "p1").await, vec!["📷".to_string(), "📷".to_string()]);
+    assert_eq!(photo_rows(&pool, "p1").await.len(), 2);
+}
+
+#[tokio::test]
+async fn non_images_and_oversize_files_are_refused_without_a_row() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[]).await;
+    link(&pool, "p1", 100).await;
+    let r = texts(&handle_update(&pool, document(100, "cv.pdf", "application/pdf", 2_000)).await.unwrap());
+    assert!(r.contains("only take photos"), "{r}");
+    let r = texts(&handle_update(&pool, document(100, "huge.jpg", "image/jpeg", 11 * 1024 * 1024)).await.unwrap());
+    assert!(r.contains("too large"), "{r}");
+    assert!(photo_rows(&pool, "p1").await.is_empty());
+    assert!(inbox(&pool, "p1").await.is_empty());
+}
+
+#[tokio::test]
+async fn the_tenth_photo_is_the_limit() {
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[]).await;
+    link(&pool, "p1", 100).await;
+    for i in 0..10 {
+        handle_update(&pool, photo(100, &format!("file-{i}"), None)).await.unwrap();
+    }
+    assert_eq!(photo_rows(&pool, "p1").await.len(), 10);
+    let r = texts(&handle_update(&pool, photo(100, "file-11", None)).await.unwrap());
+    assert!(r.contains("10 photos, which is the limit"), "{r}");
+    assert_eq!(photo_rows(&pool, "p1").await.len(), 10);
+    // resending one that is already there is not the limit again
+    let r = texts(&handle_update(&pool, photo(100, "file-0", None)).await.unwrap());
+    assert!(r.contains("matchmaker can see the photo"), "{r}");
+    assert_eq!(photo_rows(&pool, "p1").await.len(), 10);
+}
 
 #[derive(Default)]
 struct MockApi {

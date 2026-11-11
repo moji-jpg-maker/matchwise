@@ -18,7 +18,10 @@ pub fn now_str() -> String {
 }
 
 /// Text of the consent notice is versioned: bump this when it changes so people are asked again.
-pub const CONSENT_VERSION: i64 = 1;
+///
+/// Version 2 adds photos: a photo sent to the bot is now kept with the profile, and nobody agreed to that under
+/// version 1. A link still on version 1 is asked again, and nothing is stored from it until it agrees.
+pub const CONSENT_VERSION: i64 = 2;
 pub const INVITE_HOURS: i64 = 48;
 pub const MAX_FAILED_CODES: i64 = 5;
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTVWXYZ23456789"; // no 0/O, 1/I/L, U
@@ -269,6 +272,60 @@ pub async fn set_state(pool: &SqlitePool, chat_id: i64, state: &serde_json::Valu
 pub async fn clear_state(pool: &SqlitePool, chat_id: i64) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM mm_telegram_state WHERE chat_id = ?").bind(chat_id).execute(pool).await?;
     Ok(())
+}
+
+// ------------------------------------------------------------------ albums
+
+/// What an album has already spent: its one reply and its one line in the inbox.
+#[derive(Default)]
+struct AlbumUse {
+    replied: bool,
+    noted: bool,
+}
+
+/// Albums heard from so far, keyed by `(chat_id, media_group_id)`.
+static ALBUMS: std::sync::Mutex<Vec<(i64, String, AlbumUse)>> = std::sync::Mutex::new(Vec::new());
+const MAX_ALBUMS: usize = 500;
+
+/// Spend one of an album's allowances and report whether it was still free.
+fn spend_album(chat_id: i64, media_group_id: Option<&str>, pick: impl Fn(&mut AlbumUse) -> &mut bool) -> bool {
+    let Some(group) = media_group_id else {
+        // Not an album: every photo is its own thing, so it spends nothing.
+        return true;
+    };
+    let Ok(mut albums) = ALBUMS.lock() else { return true };
+    let slot = match albums.iter().position(|(c, g, _)| *c == chat_id && g == group) {
+        Some(i) => i,
+        None => {
+            if albums.len() >= MAX_ALBUMS {
+                albums.remove(0);
+            }
+            albums.push((chat_id, group.to_string(), AlbumUse::default()));
+            albums.len() - 1
+        }
+    };
+    let spent = pick(&mut albums[slot].2);
+    if *spent {
+        return false;
+    }
+    *spent = true;
+    true
+}
+
+/// Whether this is the photo that answers for its album. An album reaches the bot as one update per photo, so
+/// without this the person would get a reply per photo. The claim is recorded in the same call, so two photos of
+/// one album cannot both see `true`.
+///
+/// The record is kept in memory on purpose: losing it on a restart can only mean a second reply, never a lost
+/// photo, and it is capped so a long-running bot cannot grow without bound.
+pub fn first_of_album(chat_id: i64, media_group_id: Option<&str>) -> bool {
+    spend_album(chat_id, media_group_id, |use_| &mut use_.replied)
+}
+
+/// The same, for the album's single line in the inbox. Kept apart from the reply so a photo that is refused does
+/// not use up the line the rest of the album should still leave.
+pub fn first_kept_of_album(chat_id: i64, media_group_id: Option<&str>) -> bool {
+    spend_album(chat_id, media_group_id, |use_| &mut use_.noted)
 }
 
 // ------------------------------------------------------------------ outbox

@@ -19,6 +19,40 @@ pub struct Message {
     pub chat: Chat,
     #[serde(default)]
     pub text: Option<String>,
+    /// The sizes Telegram offers for one photo, smallest first. The bot asks for the largest.
+    #[serde(default)]
+    pub photo: Option<Vec<PhotoSize>>,
+    #[serde(default)]
+    pub document: Option<Document>,
+    /// Text that came with a photo or document. Photos are stored as they are, so captions are not read.
+    #[serde(default)]
+    pub caption: Option<String>,
+    /// Photos sent together (an album) share this id and arrive as one update each.
+    #[serde(default)]
+    pub media_group_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PhotoSize {
+    pub file_id: String,
+    #[serde(default)]
+    pub width: i64,
+    #[serde(default)]
+    pub height: i64,
+    #[serde(default)]
+    pub file_size: Option<i64>,
+}
+
+/// A file sent as a document. An image sent this way is still a photo; anything else is refused.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Document {
+    pub file_id: String,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

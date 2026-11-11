@@ -12,6 +12,7 @@ use super::render;
 use super::repo::{self, Link, LinkError, MAX_FAILED_CODES};
 use super::types::{button, CallbackQuery, InlineButton, Keyboard, Message, Reply, Update};
 use crate::mm::match_commands::set_response_inner;
+use crate::mm::photo_repo::{PhotoRepo, PhotoRow, MAX_PHOTOS_PER_PROFILE, MAX_PHOTO_BYTES};
 use crate::questionnaires::{repo as qrepo, service as qservice};
 use crate::mm::match_repo::{MatchRepo, MatchRow};
 use crate::mm::repository::{MmRepository, StoredProfile};
@@ -101,6 +102,30 @@ fn language_keyboard() -> Keyboard {
     vec![vec![button("English", "lang:en"), button("فارسی", "lang:fa")]]
 }
 
+/// The image a message carries, ready to be fetched later. `None` means there is nothing we would keep.
+struct IncomingImage {
+    file_id: String,
+    mime: String,
+    /// What Telegram says the file weighs, `0` when it did not say.
+    size: i64,
+}
+
+/// The image to fetch for a message: the largest size of a photo, or an image sent as a document. The file name is
+/// dropped either way: it can identify the person, and the format is checked again from the bytes on download.
+fn incoming_image(msg: &Message) -> Option<IncomingImage> {
+    if let Some(sizes) = msg.photo.as_ref().filter(|s| !s.is_empty()) {
+        let largest = sizes.iter().max_by_key(|s| (s.file_size.unwrap_or(0), s.width * s.height, s.width))?;
+        // Telegram compresses a photo it delivers as a photo into a JPEG.
+        return Some(IncomingImage { file_id: largest.file_id.clone(), mime: "image/jpeg".to_string(), size: largest.file_size.unwrap_or(0) });
+    }
+    let doc = msg.document.as_ref()?;
+    let mime = doc.mime_type.as_deref()?;
+    if !matches!(mime, "image/jpeg" | "image/png" | "image/webp") {
+        return None;
+    }
+    Some(IncomingImage { file_id: doc.file_id.clone(), mime: mime.to_string(), size: doc.file_size.unwrap_or(0) })
+}
+
 // ------------------------------------------------------------------ messages
 
 async fn handle_message(pool: &SqlitePool, msg: Message) -> R {
@@ -114,6 +139,18 @@ async fn handle_message(pool: &SqlitePool, msg: Message) -> R {
     };
     let existing = repo::link_by_chat(pool, chat_id).await.map_err(err)?;
     let loc = existing.as_ref().map_or_else(|| Locale::parse_or_default(from.language_code.as_deref().unwrap_or("")), |link| link.locale);
+    if msg.photo.is_some() || msg.document.is_some() {
+        // A photo is not text: none of the text flow applies to it. An album arrives as one update per photo, so
+        // only its first answers — the refusal branches included, since a two-photo album from an unlinked chat
+        // should not get two invitations.
+        let speak = repo::first_of_album(chat_id, msg.media_group_id.as_deref());
+        let reply = match existing {
+            None => Reply::text(chat_id, render::unlinked_text(loc)),
+            Some(link) if !link.consented => consent_prompt(chat_id, loc),
+            Some(link) => return photo_message(pool, &link, &msg, loc, speak).await,
+        };
+        return Ok(if speak { vec![reply] } else { vec![] });
+    }
     let Some(text) = msg.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
         return Ok(vec![Reply::text(chat_id, loc.pick("I can only read text messages for now.", "فعلاً فقط پیام‌های متنی را می‌توانم بخوانم."))]);
     };
@@ -128,6 +165,54 @@ async fn handle_message(pool: &SqlitePool, msg: Message) -> R {
         Some(link) if !link.consented => awaiting_consent(pool, &link, text).await,
         Some(link) => linked(pool, &link, text).await,
     }
+}
+
+/// Store a photo sent by someone who is linked and has agreed to the notice, and reply as their matchmaker will.
+///
+/// Nothing is downloaded here: the row holds the Telegram file id and is `pending` until the downloader fills in
+/// the bytes. Captions are ignored: a photo is kept exactly as received.
+///
+/// An album arrives as one update per photo, and the person should hear about it once. The album's first photo
+/// leaves the single line in the inbox, and `speak` says whether this one is the one that gets the reply.
+async fn photo_message(pool: &SqlitePool, link: &Link, msg: &Message, loc: Locale, speak: bool) -> R {
+    let chat_id = link.chat_id;
+    let say = |reply: Reply| -> R { Ok(if speak { vec![reply] } else { vec![] }) };
+    let Some(image) = incoming_image(msg) else {
+        return say(Reply::text(chat_id, render::only_photos_text(loc)));
+    };
+    if image.size > MAX_PHOTO_BYTES as i64 {
+        return say(Reply::text(chat_id, render::photo_too_large_text(loc)));
+    }
+    // A resend of a photo that is already on the profile changes nothing, so it is neither counted nor answered
+    // with the limit message.
+    let already: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mm_profile_photos WHERE profile_id = ? AND telegram_file_id = ?)")
+        .bind(&link.profile_id).bind(&image.file_id).fetch_one(pool).await.map_err(err)?;
+    if !already {
+        let photo = PhotoRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            profile_id: link.profile_id.clone(),
+            stored_name: None,
+            original_name: None,
+            mime: image.mime,
+            size_bytes: image.size,
+            sha256: None, // filled in when the downloader has the bytes
+            position: 0,  // the repo assigns the next free slot
+            source: "telegram".to_string(),
+            status: "pending".to_string(),
+            telegram_file_id: Some(image.file_id),
+            created_at: repo::now_str(),
+        };
+        // `append` reads the count and the next slot in one transaction, so it is also what enforces the limit.
+        if PhotoRepo::append(pool, &photo).await.map_err(err)?.is_none() {
+            return say(Reply::text(chat_id, render::photo_limit_text(loc, MAX_PHOTOS_PER_PROFILE as u32)));
+        }
+        MmRepository::audit(pool, "telegram_photo", "profile", &link.profile_id, Some("1 photo")).await;
+        // The inbox shows one line per album, not one per photo, and only for a photo that was kept.
+        if repo::first_kept_of_album(chat_id, msg.media_group_id.as_deref()) {
+            repo::add_message(pool, &link.profile_id, "in", render::photo_inbox_marker(), None).await.map_err(err)?;
+        }
+    }
+    say(Reply::text(chat_id, render::photo_received_text(loc)))
 }
 
 fn consent_prompt(chat_id: i64, loc: Locale) -> Reply {

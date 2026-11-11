@@ -143,8 +143,9 @@ finish, and always return something; the model is optional and is only asked abo
 
 ## M11.1
 The M11.1 work is split into twelve vertical phases on `feat/m11-two-tier-extraction`: seven on the rule
-tier, then five on profile photos. Phases 1–7 are committed; this section covers phase 8, photo storage and
-its commands.
+tier, then five on profile photos. Phases 1–10 are committed; this section covers the photo track so far —
+storage and its commands, the profile and intake UI, and the Telegram intake that fills the queue the
+downloader will drain.
 
 ### What changed in the rule tier (phases 1–6)
 - Number reading takes the first run of digits only, so «۲ خواهر و ۱ برادر» is one sibling line and sums to
@@ -235,6 +236,37 @@ its commands.
   attached to the profile that row created without leaving the batch.
 - English and Persian strings live in `photosPanel.*` in both catalogs; the i18n parity check covers them.
 
+### Phase 10: Telegram intake
+- `Message` now carries `photo`, `document`, `caption` and `media_group_id`. A photo arrives as a list of
+  sizes; the bot keeps the largest, by file size and then by pixel count. Telegram recompresses anything it
+  delivers as a photo into a JPEG, so those rows are recorded as `image/jpeg` without asking.
+- An image sent as a document (a file, not a photo) is accepted when its declared type is exactly
+  `image/jpeg`, `image/png` or `image/webp`. Any other document gets "I can only take photos". The file name
+  is dropped in both cases: it can identify the sender, and the format is re-checked from the bytes when the
+  file is downloaded, not from what the sender claimed.
+- A photo is only stored for someone who is linked and has agreed to the notice. Unlinked senders get the
+  usual invitation and unconsented ones get the consent prompt, so an unlinked two-photo album gets one
+  invitation rather than two.
+- The row is written `pending` with the Telegram file id and `source = "telegram"`, and nothing else: no
+  bytes, no name, no hash, no caption. The downloader in phase 11 fills in the rest. Captions are ignored —
+  a photo is stored as it arrives, so a caption would be a second, unchecked way into the profile.
+- An album reaches the bot as one update per photo. The first photo spends the album's single reply and the
+  first photo that is actually kept leaves the album's single `📷` line in the inbox, so two photos give one
+  "thank you" and one inbox line. The two are tracked separately, so a refused first photo does not consume
+  the inbox line the rest of the album should still leave. The record lives in memory, capped at 500 albums:
+  losing it on a restart can only mean a second reply, never a lost photo.
+- A resend of a file id already on the profile is skipped before the count is checked, so resending at the
+  limit is not told the profile is full. The limits themselves are the phase 8 ones: 10 MB per file and ten
+  photos per profile, pending rows included. Over-size files get their own message.
+- `CONSENT_VERSION` goes from 1 to 2, because photos are now kept and nobody agreed to that under version 1.
+  A link still on version 1 is asked again and stores nothing until it agrees. The consent notice and
+  `/help` both gained a photo line, in English and Persian.
+- The audit row is `telegram_photo` with `"1 photo"` — a count, never a file id, name, path or hash.
+- `telegram::tests` covers a consented photo waiting for download with exactly one audit row and no stored
+  caption, a photo before consent storing nothing, a version-1 consent being asked again, an album answered
+  and noted once (including from an unlinked chat and when its first photo is a resend), non-image and
+  oversize files refused without a row, and the tenth photo as the limit.
+
 ### Verified here
 - `cargo test -p matchmaking-core`: 167 passed across all suites, 24 of them in `tests/extract_rules.rs`.
 - `cargo test -p matchmaking-core --release --test extract_rules`: 24 passed. The 20 020-character entry
@@ -244,13 +276,18 @@ its commands.
   regression; 20 consecutive warm runs passed.
 - Golden corpus: 52 fixtures, precision 1.000, recall 0.939 (108 of 115 expected values). The new fixture
   adds no false positive, and the earlier aliases fixture still resolves.
-- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 386 passed, 9 of them in
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 394 passed, 9 of them in
   `mm::photo_tests`. The 17 failures are the loopback/network tests that cannot bind a socket in this sandbox
-  (`PermissionDenied`), as before this work.
+  (`PermissionDenied`), the same set as before this work. The `telegram::` module holds 36 tests: 8 are new
+  in phase 10 and 35 pass, the 36th being the socket test counted among the 17.
 - Phase 9: `npx tsc --noEmit` is clean, `check-i18n` reports both catalogs in sync (1765 keys), and
   `check-invoke-handlers` finds `mm_pick_photo_files` registered.
+- Phase 10 touched no frontend TypeScript, so the typecheck was not re-run for it.
 
 ### Still open
-- Phases 10–12 (Telegram intake and download, privacy check) are not started.
+- Phases 11–12 are not started: the download worker (`get_file` and `download_file` on `TelegramApi` with
+  the token stripped from error text, an `infer` check on each download, a photo marked failed after three
+  attempts, and the photos folder passed to `rt.start`) and the privacy check. Until phase 11 lands, a photo
+  sent to the bot is queued and shows as `pending` but cannot be seen or downloaded.
 - The manual checks in the plan — sending a two-photo album from Telegram and seeing it on the profile page
   and in the inbox — need a real Telegram bot and a running app.
