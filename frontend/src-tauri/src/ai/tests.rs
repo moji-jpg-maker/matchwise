@@ -413,10 +413,11 @@ async fn the_default_preset_decides_which_fields_are_read() {
     let reg = MmRepository::registry(&pool).await.unwrap();
     let everything = service::resolve_targets(&pool, &reg, None).await.unwrap();
     assert!(everything.contains(&"age".to_string()) && everything.contains(&"smoking".to_string()));
-    assert!(!everything.contains(&"full_name".to_string()), "fields nobody may share are never targets");
+    assert!(everything.contains(&"full_name".to_string()), "the local rules read names");
+    assert!(!everything.contains(&"phone".to_string()), "contact details are never targets");
 
     repo::save_extraction_preset(&pool, None, "Just smoking", &["smoking".into(), "full_name".into()], false, true).await.unwrap();
-    assert_eq!(service::resolve_targets(&pool, &reg, None).await.unwrap(), vec!["smoking".to_string()]);
+    assert_eq!(service::resolve_targets(&pool, &reg, None).await.unwrap(), vec!["full_name".to_string(), "smoking".to_string()]);
     assert_eq!(service::resolve_targets(&pool, &reg, Some(vec!["age".into()])).await.unwrap(), vec!["age".to_string()], "an explicit list beats the default");
 }
 

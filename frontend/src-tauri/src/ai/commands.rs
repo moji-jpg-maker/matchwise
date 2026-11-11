@@ -278,7 +278,7 @@ async fn presets_view(pool: &SqlitePool, locale: Locale) -> Result<ExtractionPre
     let reg = MmRepository::registry(pool).await.map_err(err)?;
     let known: Vec<String> = matchmaking_core::FieldRegistry::defs(&reg).map(|def| def.key.clone()).collect();
     let fields = matchmaking_core::FieldRegistry::defs(&reg)
-        .filter(|def| !matchmaking_core::NEVER_SHARED.contains(&def.key.as_str()) && !matches!(def.kind, matchmaking_core::FieldKind::Records(_)))
+        .filter(|def| matchmaking_core::extract_rules::rules_may_read(&def.key) && !matches!(def.kind, matchmaking_core::FieldKind::Records(_)))
         .map(|def| PresetFieldView { key: def.key.clone(), label: if locale == Locale::Fa { def.label_fa.clone().unwrap_or_else(|| def.label.clone()) } else { def.label.clone() }, sensitive: def.sensitive })
         .collect();
     let presets = repo::extraction_presets(pool, &known).await.map_err(err)?;

@@ -113,10 +113,24 @@ fn targets_limit_the_fields() {
 }
 
 #[test]
-fn never_shared_fields_are_never_read() {
+fn contact_details_are_skipped_but_names_are_read() {
     let reg = default_registry();
-    let out = extract_with_rules(&reg, "full name: Sara Karimi\nphone: 09123456789", None, &Profile::new("x"));
-    assert!(out.suggestions.iter().all(|s| s.field != "full_name" && s.field != "phone"), "{:?}", out.suggestions);
+    let out = extract_with_rules(&reg, "full name: Sara Karimi\nphone: 09123456789\ntelegram: @sara", None, &Profile::new("x"));
+    assert_eq!(value("full name: Sara Karimi", "full_name"), txt("Sara Karimi"));
+    assert!(out.suggestions.iter().all(|s| s.field != "phone" && s.field != "telegram_username"), "{:?}", out.suggestions);
+}
+
+#[test]
+fn aliases_resolve_a_noisy_form() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extraction/fa-aliases.json");
+    let sample: Sample = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let found = run(&sample.text);
+    for (field, want) in sample.expected {
+        let Some((v, _)) = found.get(&field) else { panic!("{field} missing: {found:?}") };
+        let got = serde_json::to_value(v).unwrap();
+        assert!(got == want || value_matches(&want, &got), "{field}: {found:?}");
+    }
+    assert!(!found.contains_key("gender") && !found.contains_key("employment_status"), "{found:?}");
 }
 
 #[test]

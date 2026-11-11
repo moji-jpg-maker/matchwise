@@ -144,8 +144,14 @@ pub struct ExtractionView {
 const NO_TEXT_EN: &str = "There is no free text to read. Add notes about the person (for example from an intake interview) first.";
 const NO_TEXT_FA: &str = "متنی برای خواندن وجود ندارد. ابتدا یادداشت‌هایی دربارهٔ فرد بنویسید (مثلاً از مصاحبهٔ ورودی).";
 
+/// Fields extraction may read at all. Names are read by the local rules; they never leave the computer.
 fn eligible(registry: &FieldRegistry, key: &str) -> bool {
-    !NEVER_SHARED.contains(&key) && registry.get(key).is_some_and(|def| !matches!(def.kind, FieldKind::Records(_)))
+    matchmaking_core::extract_rules::rules_may_read(key) && registry.get(key).is_some_and(|def| !matches!(def.kind, FieldKind::Records(_)))
+}
+
+/// Fields the model may be asked for. It never sees a name, so asking for one only invites an invention.
+fn llm_eligible(registry: &FieldRegistry, key: &str) -> bool {
+    eligible(registry, key) && !NEVER_SHARED.contains(&key)
 }
 
 /// Which fields to read: the explicit list, else the default preset, else every eligible field. Registry order.
@@ -162,11 +168,11 @@ pub async fn resolve_targets(pool: &SqlitePool, registry: &FieldRegistry, explic
 }
 
 /// What the rules read: the profile's text fields and the intake text exactly as typed. Nothing leaves the
-/// computer here, so no redaction; the fields nobody may share are still left out.
+/// computer here, so no redaction; only the contact details the rules never read are left out.
 fn raw_text_for_rules(profile: &Profile, registry: &FieldRegistry, extra: Option<&str>) -> String {
     let mut parts = vec![];
     for def in registry.defs() {
-        if NEVER_SHARED.contains(&def.key.as_str()) || !matches!(def.kind, FieldKind::Text) {
+        if !matchmaking_core::extract_rules::rules_may_read(&def.key) || !matches!(def.kind, FieldKind::Text) {
             continue;
         }
         if let Some(Value::Text(text)) = profile.get(&def.key) {
@@ -187,7 +193,7 @@ fn llm_targets(registry: &FieldRegistry, profile: &Profile, targets: &[String], 
         .iter()
         .filter(|key| {
             let Some(def) = registry.get(key) else { return false };
-            eligible(registry, key)
+            llm_eligible(registry, key)
                 && (include_sensitive || !def.sensitive)
                 && (ambiguous.contains(*key) || (!hit.contains(key) && profile.get(key).is_none()))
         })

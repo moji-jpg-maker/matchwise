@@ -10,7 +10,6 @@
 use crate::ai::{FieldSuggestion, SuggestionSource, MAX_VALUE_CHARS};
 use crate::field::{FieldDef, FieldKind, FieldRegistry};
 use crate::profile::{Profile, Value};
-use crate::sharing::NEVER_SHARED;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
@@ -26,9 +25,18 @@ pub struct RuleExtraction {
     pub ambiguous: BTreeSet<String>,
 }
 
-/// Fields the rule tier never fills, whatever the matchmaker asks for.
+/// Contact details the rule tier never fills, whatever the matchmaker asks for. Names are read: the rules run
+/// locally, and `full_name` stays out of introductions and model prompts through [`crate::sharing::NEVER_SHARED`].
+pub const RULES_SKIPPED: &[&str] = &["phone", "telegram_username", "date_of_birth"];
+
+/// Whether the rule tier may read a field at all.
+pub fn rules_may_read(key: &str) -> bool {
+    !never_by_rules(key)
+}
+
+/// Fields the rule tier never fills.
 fn never_by_rules(key: &str) -> bool {
-    NEVER_SHARED.contains(&key)
+    RULES_SKIPPED.contains(&key)
 }
 
 /// Which fields may be read: `None` means every eligible field in the registry.
@@ -138,7 +146,7 @@ fn patterns() -> &'static Patterns {
     P.get_or_init(|| {
         let r = |s: &str| Regex::new(s).expect("static rule regex");
         Patterns {
-            labelled: r(r"(?m)^[ \t]*(?P<label>[^:：\-\n]{1,60}?)[ \t]*[:：\-][ \t]*(?P<value>\S.*)$"),
+            labelled: r(r"(?m)^[^\p{L}\p{N}\n]{0,6}(?P<label>[^:：\-\n]{1,60}?)[ \t]*[:：\-][ \t]*(?P<value>\S.*)$"),
             age: vec![
                 r(r"(?P<v>\d{1,3})[ \t]*(?:years?[ \t]*old|y/?o\b)"),
                 r(r"(?P<v>\d{1,3})[ \t]*(?:ساله|سال[ \t]*دارد|سال[ \t]*سن)"),
@@ -211,6 +219,9 @@ struct Candidate {
 
 struct Collector {
     clauses: Vec<(usize, usize)>,
+    /// Values a labelled line already owns, with the field that owns them. A pattern or keyword inside another
+    /// field's value describes that other field, so it is dropped.
+    owned: Vec<(usize, usize, String)>,
     out: Vec<Candidate>,
 }
 
@@ -222,6 +233,14 @@ impl Collector {
         self.out.push(Candidate { field: field.to_string(), value, start, end, confidence });
     }
 
+    /// Push a candidate found by a pattern or keyword: dropped when it sits inside another field's labelled value.
+    fn push_inferred(&mut self, field: &str, value: Value, start: usize, end: usize, confidence: f64) {
+        if self.owned.iter().any(|(a, b, owner)| owner != field && start < *b && end > *a) {
+            return;
+        }
+        self.push(field, value, start, end, confidence);
+    }
+
     /// `text` is `norm` joined once by the caller, so a run builds the searched string a single time.
     fn regex_all(&mut self, text: &str, re: &Regex, field: &str, conf: f64, map: &dyn Fn(&str) -> Option<Value>) {
         for cap in re.captures_iter(text) {
@@ -230,7 +249,7 @@ impl Collector {
             let end = start + m.as_str().chars().count();
             let raw = m.as_str();
             if let Some(v) = map(raw) {
-                self.push(field, v, start, end, conf);
+                self.push_inferred(field, v, start, end, conf);
             }
         }
     }
@@ -317,16 +336,250 @@ fn number_in_range(v: f64, lo: f64, hi: f64) -> Option<Value> {
 
 // ------------------------------------------------------------------ labelled lines
 
-fn label_matches(def: &FieldDef, label: &str) -> bool {
-    let norm = |s: &str| s.trim().to_lowercase().replace(['_', '‑'], " ");
-    let needle = norm(label);
-    if needle.is_empty() {
-        return false;
+/// Built-in label aliases: the forms matchmakers actually type, mapped to the fields they name. A label may
+/// name more than one field: «استان و شهر محل سکونت» fills both the province and the city.
+const LABEL_ALIASES: &[(&str, &[&str])] = &[
+    // name and contact details
+    ("full name", &["full_name"]),
+    ("name", &["full_name"]),
+    ("first and last name", &["full_name"]),
+    ("نام و نام خانوادگی", &["full_name"]),
+    ("نام کامل", &["full_name"]),
+    ("نام", &["full_name"]),
+    ("اسم و فامیل", &["full_name"]),
+    ("اسم", &["full_name"]),
+    // basics
+    ("gender", &["gender"]),
+    ("sex", &["gender"]),
+    ("جنسیت", &["gender"]),
+    ("جنس", &["gender"]),
+    ("age", &["age"]),
+    ("سن", &["age"]),
+    ("سن فعلی", &["age"]),
+    ("date of birth", &["date_of_birth"]),
+    ("dob", &["date_of_birth"]),
+    ("birth date", &["date_of_birth"]),
+    ("birthday", &["date_of_birth"]),
+    ("تاریخ تولد", &["date_of_birth"]),
+    ("تاریخ تولد میلادی", &["date_of_birth"]),
+    ("height", &["height_cm"]),
+    ("height cm", &["height_cm"]),
+    ("قد", &["height_cm"]),
+    ("قد به سانتی متر", &["height_cm"]),
+    ("weight", &["weight_kg"]),
+    ("weight kg", &["weight_kg"]),
+    ("وزن", &["weight_kg"]),
+    ("وزن به کیلوگرم", &["weight_kg"]),
+    // places
+    ("birthplace", &["birthplace"]),
+    ("place of birth", &["birthplace"]),
+    ("city of birth", &["birthplace"]),
+    ("محل تولد", &["birthplace"]),
+    ("شهر تولد", &["birthplace"]),
+    ("city", &["city"]),
+    ("current city", &["city"]),
+    ("city of residence", &["city"]),
+    ("شهر", &["city"]),
+    ("شهر محل سکونت", &["city"]),
+    ("شهر سکونت", &["city"]),
+    ("محل سکونت", &["city"]),
+    ("province", &["province"]),
+    ("region", &["province"]),
+    ("province region", &["province"]),
+    ("استان", &["province"]),
+    ("منطقه", &["province"]),
+    ("استان و شهر محل سکونت", &["province", "city"]),
+    ("استان و شهر", &["province", "city"]),
+    ("استان شهر محل سکونت", &["province", "city"]),
+    ("family origin", &["family_origin"]),
+    ("اصالت خانوادگی", &["family_origin"]),
+    ("اصالت", &["family_origin"]),
+    // education, work and money
+    ("education", &["education"]),
+    ("education level", &["education"]),
+    ("degree", &["education"]),
+    ("تحصیلات", &["education"]),
+    ("سطح تحصیلات", &["education"]),
+    ("مدرک تحصیلی", &["education"]),
+    ("occupation", &["occupation"]),
+    ("job", &["occupation"]),
+    ("profession", &["occupation"]),
+    ("شغل", &["occupation"]),
+    ("وضعیت و نوع شغل", &["occupation"]),
+    ("نوع شغل", &["occupation"]),
+    ("employment status", &["employment_status"]),
+    ("وضعیت اشتغال", &["employment_status"]),
+    ("وضعیت شغلی", &["employment_status"]),
+    ("financial situation", &["financial_situation"]),
+    ("financial status", &["financial_situation"]),
+    ("وضعیت مالی", &["financial_situation"]),
+    ("وضعیت اقتصادی", &["financial_situation"]),
+    ("توضیحاتی در مورد شرایط مالی", &["financial_situation"]),
+    ("شرایط مالی", &["financial_situation"]),
+    // faith, marriage and family
+    ("religion", &["religion"]),
+    ("دین", &["religion"]),
+    ("مذهب", &["religion"]),
+    ("religiosity", &["religiosity"]),
+    ("religious observance", &["religiosity"]),
+    ("میزان پایبندی دینی", &["religiosity"]),
+    ("پایبندی دینی", &["religiosity"]),
+    ("اعتقادات مذهبی", &["religiosity"]),
+    ("میزان اعتقادات مذهبی", &["religiosity"]),
+    ("marital status", &["marital_status"]),
+    ("marriage history", &["marital_status"]),
+    ("سابقه ازدواج", &["marital_status"]),
+    ("وضعیت تاهل", &["marital_status"]),
+    ("وضعیت تإهل", &["marital_status"]),
+    ("وضعیت ازدواج", &["marital_status"]),
+    ("has children", &["has_children"]),
+    ("فرزند دارد", &["has_children"]),
+    ("دارای فرزند", &["has_children"]),
+    ("number of children", &["children_count"]),
+    ("children count", &["children_count"]),
+    ("تعداد فرزندان", &["children_count"]),
+    ("تعداد فرزند", &["children_count"]),
+    ("تعداد بچه", &["children_count"]),
+    ("number of siblings", &["siblings_count"]),
+    ("siblings count", &["siblings_count"]),
+    ("تعداد خواهر و برادر", &["siblings_count"]),
+    ("تعداد خواهر برادر", &["siblings_count"]),
+    ("father's occupation", &["father_occupation"]),
+    ("father occupation", &["father_occupation"]),
+    ("شغل پدر", &["father_occupation"]),
+    ("کار پدر", &["father_occupation"]),
+    ("mother's occupation", &["mother_occupation"]),
+    ("mother occupation", &["mother_occupation"]),
+    ("شغل مادر", &["mother_occupation"]),
+    ("کار مادر", &["mother_occupation"]),
+    ("accepts a partner's children", &["accepts_children"]),
+    ("فرزندان همسر را می پذیرد", &["accepts_children"]),
+    // health and habits
+    ("smoking", &["smoking"]),
+    ("مصرف دخانیات", &["smoking"]),
+    ("استعمال دخانیات", &["smoking"]),
+    ("میزان استفاده از سیگار", &["smoking"]),
+    ("سیگار", &["smoking"]),
+    ("health information", &["health_notes"]),
+    ("سلامتی", &["health_notes"]),
+    ("وضعیت سلامتی", &["health_notes"]),
+    ("اطلاعات سلامت", &["health_notes"]),
+    ("lifestyle", &["lifestyle_notes"]),
+    ("سبک زندگی", &["lifestyle_notes"]),
+    ("about", &["about"]),
+    ("about me", &["about"]),
+    ("درباره", &["about"]),
+    ("درباره من", &["about"]),
+    ("توضیحات", &["about"]),
+    ("مشخصات روانشناختی", &["about"]),
+    ("ویژگی های شخصیتی", &["about"]),
+    ("خصوصیات اخلاقی", &["about"]),
+];
+
+fn is_decoration(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1F000..=0x1FAFF
+            | 0xFE00..=0xFE0F
+            | 0x200D
+            | 0x200B
+            | 0x2600..=0x27BF
+            | 0x2B00..=0x2BFF
+            | 0x2190..=0x21FF
+            | 0x2300..=0x23FF
+            | 0x25A0..=0x25FF
+            | 0x2934..=0x2935
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+    ) || matches!(c, '*' | '·' | '~' | '|' | '»' | '«')
+}
+
+/// The label as a matchmaker wrote it, reduced to the plain words: no emoji, bullets or numbering, nothing in
+/// brackets, no trailing «خودم» / «شما» / «من», ZWNJ as a space and folded Persian letters.
+fn clean_label(raw: &str) -> String {
+    let mut kept = String::new();
+    let mut depth = 0usize;
+    for c in raw.chars() {
+        match c {
+            '(' | '（' | '[' | '【' => depth += 1,
+            ')' | '）' | ']' | '】' if depth > 0 => depth -= 1,
+            _ if depth > 0 => {}
+            _ if is_decoration(c) => {}
+            ',' | '،' | ';' | '؛' => kept.push(' '),
+            'ي' => kept.push('ی'),
+            'ك' => kept.push('ک'),
+            '\u{200c}' | '\u{200e}' | '\u{200f}' | '\u{feff}' => kept.push(' '),
+            other => kept.push(other.to_lowercase().next().unwrap_or(other)),
+        }
     }
-    norm(&def.key) == needle
-        || norm(&def.label) == needle
-        || def.label_fa.as_deref().map(|l| norm(l) == needle).unwrap_or(false)
-        || norm(&def.key.replace('_', " ")) == needle
+    let mut label: String = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    // leading numbering: "1." "۲)" "(3)" and bullet leftovers such as "- " or ": "
+    let without_number = {
+        let chars: Vec<char> = label.chars().collect();
+        let digits = chars.iter().take_while(|c| digit_value(**c).is_some()).count();
+        let after = chars.get(digits).copied();
+        if digits > 0 && matches!(after, Some('.' | ')' | '-' | ':' | '、')) {
+            chars[digits + 1..].iter().collect::<String>()
+        } else {
+            label.clone()
+        }
+    };
+    label = without_number
+        .trim_matches(|c: char| matches!(c, '-' | '–' | '—' | ':' | '：' | '.' | ')') || c.is_whitespace())
+        .to_string();
+    for _ in 0..4 {
+        let trimmed = label.trim_end();
+        let mut cut = None;
+        for word in ["خودم", "شما", "من"] {
+            if let Some(head) = trimmed.strip_suffix(word) {
+                if head.is_empty() || head.ends_with(char::is_whitespace) {
+                    cut = Some(head.trim_end().to_string());
+                    break;
+                }
+            }
+        }
+        match cut {
+            Some(rest) => label = rest,
+            None => break,
+        }
+    }
+    label.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The cleaned labels a registry accepts, each mapped to the fields it names. Built once per run: the registry
+/// is the same for every line, so its labels are cleaned once rather than per line.
+fn label_index(registry: &FieldRegistry) -> BTreeMap<String, Vec<String>> {
+    let mut index: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let cleaned_aliases = LABEL_ALIASES.iter().map(|(alias, fields)| (clean_label(alias), *fields)).collect::<Vec<_>>();
+    for def in registry.defs() {
+        let names = [
+            clean_label(&def.key),
+            clean_label(&def.label),
+            def.label_fa.as_deref().map(clean_label).unwrap_or_default(),
+            clean_label(&def.key.replace('_', " ")),
+        ];
+        for name in names.into_iter().filter(|name| !name.is_empty()) {
+            let fields = index.entry(name).or_default();
+            if !fields.contains(&def.key) {
+                fields.push(def.key.clone());
+            }
+        }
+    }
+    for (alias, fields) in cleaned_aliases {
+        if alias.is_empty() {
+            continue;
+        }
+        let entry = index.entry(alias).or_default();
+        for field in fields {
+            let field = (*field).to_string();
+            if !entry.contains(&field) {
+                entry.push(field);
+            }
+        }
+    }
+    index
 }
 
 fn value_from_label(def: &FieldDef, raw: &str) -> Option<Value> {
@@ -403,22 +656,28 @@ fn synonym(needle: &str, opts: &[String]) -> Option<String> {
     None
 }
 
-fn labelled(registry: &FieldRegistry, text: &str, c: &mut Collector, targets: Option<&[String]>) {
+/// Labels are matched on the folded text, values are taken as typed: a name keeps its capital letters and the
+/// evidence stays an exact substring of the original.
+fn labelled(registry: &FieldRegistry, index: &BTreeMap<String, Vec<String>>, folded: &str, original: &[char], c: &mut Collector, targets: Option<&[String]>) {
     let p = patterns();
-    for cap in p.labelled.captures_iter(text) {
+    for cap in p.labelled.captures_iter(folded) {
         let (Some(label), Some(value)) = (cap.name("label"), cap.name("value")) else { continue };
-        let label_text = label.as_str().trim();
-        let Some(def) = registry.defs().find(|d| label_matches(d, label_text)) else { continue };
-        if !wanted(registry, targets, &def.key) {
-            continue;
-        }
-        let Some(v) = value_from_label(def, value.as_str()).map(|v| normalize_place(&def.key, v)) else { continue };
-        if registry.validate_value(&def.key, &v).is_err() {
-            continue;
-        }
-        let start = text[..value.start()].chars().count();
+        let start = folded[..value.start()].chars().count();
         let end = start + value.as_str().chars().count();
-        c.push(&def.key, v, start, end, CONFIDENCE_LABEL);
+        let typed: String = original[start..end.min(original.len())].iter().collect();
+        let Some(keys) = index.get(&clean_label(label.as_str())) else { continue };
+        for key in keys {
+            if !wanted(registry, targets, key) {
+                continue;
+            }
+            let Some(def) = registry.get(key) else { continue };
+            let Some(v) = value_from_label(def, &typed).map(|v| normalize_place(key, v)) else { continue };
+            if registry.validate_value(key, &v).is_err() {
+                continue;
+            }
+            c.owned.push((start, end, key.clone()));
+            c.push(key, v, start, end, CONFIDENCE_LABEL);
+        }
     }
 }
 
@@ -447,7 +706,7 @@ fn keywords(c: &mut Collector, text: &str, registry: &FieldRegistry, targets: Op
                 continue;
             }
             let start = idx(b);
-            c.push(field, value.clone(), start, start + needle.chars().count(), conf);
+            c.push_inferred(field, value.clone(), start, start + needle.chars().count(), conf);
         }
     };
 
@@ -581,7 +840,7 @@ fn patterns_scan(c: &mut Collector, text: &str, registry: &FieldRegistry, target
                 for pat in [format!("{word} children"), format!("{word} kids"), format!("{word} فرزند"), format!("{word} بچه")] {
                     for (b, _) in text.match_indices(&pat) {
                         let start = text[..b].chars().count();
-                        c.push("children_count", Value::Num(*n as f64), start, start + pat.chars().count(), CONFIDENCE_PATTERN);
+                        c.push_inferred("children_count", Value::Num(*n as f64), start, start + pat.chars().count(), CONFIDENCE_PATTERN);
                     }
                 }
             }
@@ -649,8 +908,8 @@ pub fn extract_with_rules(registry: &FieldRegistry, text: &str, targets: Option<
     let original: Vec<char> = text.chars().collect();
     // Joined once and shared by every scan: a run never rebuilds the searched string.
     let norm_text: String = norm_chars.iter().collect();
-    let mut c = Collector { clauses: partner_clauses(&norm_chars), out: vec![] };
-    labelled(registry, &norm_text, &mut c, targets);
+    let mut c = Collector { clauses: partner_clauses(&norm_chars), owned: vec![], out: vec![] };
+    labelled(registry, &label_index(registry), &norm_text, &original, &mut c, targets);
     keywords(&mut c, &norm_text, registry, targets);
     patterns_scan(&mut c, &norm_text, registry, targets);
 
@@ -705,7 +964,10 @@ pub fn extract_with_rules(registry: &FieldRegistry, text: &str, targets: Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{first_number, siblings_total};
+    use super::{clean_label, extract_with_rules, first_number, siblings_total};
+    use crate::defaults::default_registry;
+    use crate::profile::Profile;
+    use std::collections::BTreeMap;
 
     #[test]
     fn first_number_reads_only_the_first_run_of_digits() {
@@ -727,4 +989,43 @@ mod tests {
         assert_eq!(siblings_total("4"), Some(4.0));
         assert_eq!(siblings_total("none"), None);
     }
+
+    #[test]
+    fn label_cleaning_removes_noise_but_keeps_the_words() {
+        assert_eq!(clean_label("🌷نام و نام خانوادگی :"), "نام و نام خانوادگی");
+        assert_eq!(clean_label("🌷سن"), "سن");
+        assert_eq!(clean_label("🌷 عکس من 👇‍‍‍‍‍‍"), "عکس");
+        assert_eq!(clean_label("١. سطح تحصیلات"), "سطح تحصیلات");
+        assert_eq!(clean_label("۲) شغل"), "شغل");
+        assert_eq!(clean_label("- تحصیلات -"), "تحصیلات");
+        assert_eq!(clean_label("تحصیلات (کامل)"), "تحصیلات");
+        assert_eq!(clean_label("( لطفا توضیح دهید )"), "");
+        assert_eq!(clean_label("شهر محل سکونت خودم"), "شهر محل سکونت");
+        assert_eq!(clean_label("نام شما"), "نام");
+        assert_eq!(clean_label("توضیحات من"), "توضیحات");
+        assert_eq!(clean_label("نام\u{200c}و\u{200c}نام\u{200c}خانوادگی"), "نام و نام خانوادگی");
+        assert_eq!(clean_label("ميزان پايبندي ديني"), "میزان پایبندی دینی");
+        assert_eq!(clean_label("  وزن   به   کیلوگرم  "), "وزن به کیلوگرم");
+        assert_eq!(clean_label("Age:"), "age");
+    }
+
+    #[test]
+    fn aliases_resolve_noisy_labels_and_the_combined_location_label() {
+        let reg = default_registry();
+        let run = |text: &str| {
+            extract_with_rules(&reg, text, None, &Profile::new("x"))
+                .suggestions
+                .into_iter()
+                .map(|s| (s.field, s.value))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let got = run("🌷نام و نام خانوادگی : مهسا قویمی\n🌷شغل پدر: بازنشسته");
+        assert_eq!(got["full_name"], crate::profile::Value::Text("مهسا قویمی".into()));
+        assert_eq!(got["father_occupation"], crate::profile::Value::Text("بازنشسته".into()));
+
+        let got = run("🌷استان و شهر محل سکونت خودم : تهران");
+        assert_eq!(got["province"], crate::profile::Value::Text("تهران".into()));
+        assert_eq!(got["city"], crate::profile::Value::Text("تهران".into()));
+    }
 }
+
