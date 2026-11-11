@@ -749,6 +749,7 @@ pub fn run() {
             mm::commands::mm_delete_profile,
             mm::photo_commands::mm_profile_photos,
             mm::photo_commands::mm_add_profile_photos,
+            mm::photo_commands::mm_pick_photo_files,
             mm::photo_commands::mm_delete_profile_photo,
             mm::commands::mm_get_preferences,
             mm::commands::mm_save_preferences,

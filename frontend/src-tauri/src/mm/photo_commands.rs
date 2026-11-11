@@ -10,6 +10,7 @@ use matchmaking_core::Locale;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -127,6 +128,30 @@ pub async fn mm_add_profile_photos(
             .map(|(name, reason)| RejectedPhoto { name, reason: reason.code().to_string() })
             .collect(),
     })
+}
+
+/// Open the system file picker for images and return the paths the matchmaker chose. Empty when they cancel.
+/// The picker runs on its own thread, so the window keeps painting while it is open.
+#[tauri::command]
+pub async fn mm_pick_photo_files(app: tauri::AppHandle, locale: Option<String>) -> Result<Vec<String>, String> {
+    let locale = Locale::parse_or_default(locale.as_deref().unwrap_or_default());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter(
+            locale.pick("Images", "تصاویر"),
+            &["jpg", "jpeg", "png", "webp"],
+        )
+        .set_title(locale.pick("Add photos", "افزودن عکس"))
+        .pick_files(move |paths| {
+            let _ = tx.send(paths.unwrap_or_default());
+        });
+    let paths = rx.await.map_err(|e| e.to_string())?;
+    Ok(paths
+        .into_iter()
+        .filter_map(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .collect())
 }
 
 #[tauri::command]

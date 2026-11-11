@@ -216,6 +216,25 @@ its commands.
   ordering and slot reuse after a delete, folder removal on profile delete, and a name that tries to escape
   the photo folder.
 
+### Phase 9: photos in the UI
+- `PhotosPanel` sits on the profile page. Thumbnails go through `convertFileSrc`, which the existing asset
+  protocol scope (`$APPDATA/**`) already covers, so the panel is read-only over the files the backend owns.
+  The header shows `n of 10`, and "Add photos" is disabled at the limit.
+- A thumbnail that is still `pending` or `failed` shows a placeholder with the state (and "failed" once the
+  downloader gives up) rather than a broken image. A photo that arrived through Telegram carries a
+  `Telegram` badge, so an upload and an arrival are not silently mixed.
+- "Add photos" opens the system picker through the already-initialised dialog plugin
+  (`mm_pick_photo_files`, filtered to `jpg`/`jpeg`/`png`/`webp`) and allows several files at once. The
+  picker returns paths; the bytes never cross into the web view.
+- Rejections come back as codes from phase 8 and are translated on the client in one place
+  (`lib/photo-rejections.ts`): not an image, over 10 MB, already on the profile, the profile already has ten.
+  Partial success is normal: the files that were stored are added and the rest are named in a warning.
+- Deleting takes a second press on the same thumbnail, which shows an inline "Delete this photo?" with
+  Delete and Cancel. The dialog plugin keeps the confirmation in the page rather than a system modal.
+- Each parsed report row on the intake page gets an "Add photos" button beside "Open", so a photo can be
+  attached to the profile that row created without leaving the batch.
+- English and Persian strings live in `photosPanel.*` in both catalogs; the i18n parity check covers them.
+
 ### Verified here
 - `cargo test -p matchmaking-core`: 167 passed across all suites, 24 of them in `tests/extract_rules.rs`.
 - `cargo test -p matchmaking-core --release --test extract_rules`: 24 passed. The 20 020-character entry
@@ -228,8 +247,10 @@ its commands.
 - `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 386 passed, 9 of them in
   `mm::photo_tests`. The 17 failures are the loopback/network tests that cannot bind a socket in this sandbox
   (`PermissionDenied`), as before this work.
+- Phase 9: `npx tsc --noEmit` is clean, `check-i18n` reports both catalogs in sync (1765 keys), and
+  `check-invoke-handlers` finds `mm_pick_photo_files` registered.
 
 ### Still open
-- Phases 9–12 (photo UI, Telegram intake and download, privacy check) are not started.
+- Phases 10–12 (Telegram intake and download, privacy check) are not started.
 - The manual checks in the plan — sending a two-photo album from Telegram and seeing it on the profile page
   and in the inbox — need a real Telegram bot and a running app.

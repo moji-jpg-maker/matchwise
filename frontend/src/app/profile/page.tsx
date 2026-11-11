@@ -14,6 +14,7 @@ import { PreferencesPanel } from '@/components/matchmaking/PreferencesPanel';
 import { setNavigationGuard } from '@/lib/navigation-guard';
 import { MatchesPanel } from '@/components/matchmaking/MatchesPanel';
 import { TelegramPanel } from '@/components/matchmaking/TelegramPanel';
+import { PhotosPanel } from '@/components/matchmaking/PhotosPanel';
 import { AiPanel } from '@/components/matchmaking/AiPanel';
 import { QuestionnairePanel } from '@/components/matchmaking/QuestionnairePanel';
 import { useI18n } from '@/i18n';
@@ -254,6 +255,8 @@ function ProfileEditor() {
         <MatchesPanel profileId={id} />
 
         <TelegramPanel profileId={id} />
+
+        <PhotosPanel profileId={id} />
 
         <div className="flex items-center justify-between pt-2">
           <Button variant="outline" onClick={toggleActive}>

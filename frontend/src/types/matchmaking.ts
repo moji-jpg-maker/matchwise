@@ -453,6 +453,34 @@ export interface TelegramLink {
   unread: number;
 }
 
+/** One stored photo. Mirrors `mm::photo_commands::PhotoView`. */
+export interface ProfilePhoto {
+  id: string;
+  profile_id: string;
+  /** Absolute file path, shown through the asset protocol. Null while a Telegram photo is still pending. */
+  path: string | null;
+  original_name: string | null;
+  mime: string;
+  size_bytes: number;
+  position: number;
+  /** `upload` (picked here) or `telegram`. */
+  source: 'upload' | 'telegram' | string;
+  /** `ready`, `pending` (Telegram download not done) or `failed`. */
+  status: 'ready' | 'pending' | 'failed' | string;
+  created_at: string;
+}
+
+/** Why one picked file was not stored. `reason` is a short code such as `not_image` or `too_large`. */
+export interface RejectedPhoto {
+  name: string;
+  reason: string;
+}
+
+export interface AddPhotosResult {
+  photos: ProfilePhoto[];
+  rejected: RejectedPhoto[];
+}
+
 export interface TelegramInvite {
   code: string;
   link: string | null;

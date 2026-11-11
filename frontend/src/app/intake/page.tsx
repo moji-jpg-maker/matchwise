@@ -3,13 +3,14 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { ArrowLeft, FileUp, ListOrdered, CheckCheck, Loader2 } from 'lucide-react';
+import { ArrowLeft, FileUp, ImagePlus, ListOrdered, CheckCheck, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { ExtractionPresetsView, IntakeAcceptReport, IntakeBatchReport } from '@/types/matchmaking';
+import { AddPhotosResult, ExtractionPresetsView, IntakeAcceptReport, IntakeBatchReport } from '@/types/matchmaking';
 import { useI18n } from '@/i18n';
 import type { Translate } from '@/lib/conditions';
+import { describeRejections } from '@/lib/photo-rejections';
 
 const readFile = async (file: File, t: Translate): Promise<{ text: string | null; entries: string[] | null }> => {
   const raw = await file.text();
@@ -50,6 +51,33 @@ export default function IntakePage() {
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<'idle' | 'reading' | 'accepting'>('idle');
   const [elapsed, setElapsed] = useState(0);
+  const [addingPhotos, setAddingPhotos] = useState<string | null>(null);
+
+  /** Attach the photo(s) the matchmaker picks to one report row's profile. Only ready JPEG, PNG or WebP are kept. */
+  const addPhotos = async (profileId: string) => {
+    setAddingPhotos(profileId);
+    try {
+      let paths: string[];
+      try {
+        paths = await invoke<string[]>('mm_pick_photo_files', { locale });
+      } catch (e) {
+        toast.error(t('photosPanel.pickFailed', { error: `${e}` }));
+        return;
+      }
+      if (paths.length === 0) return;
+      try {
+        const res = await invoke<AddPhotosResult>('mm_add_profile_photos', { profileId, paths, locale });
+        if (res.photos.length > 0) toast.success(t('photosPanel.added', { count: fmt.number(res.photos.length) }));
+        if (res.rejected.length > 0) {
+          toast.warning(t('photosPanel.rejected', { items: describeRejections(res.rejected, t) }));
+        }
+      } catch (e) {
+        toast.error(t('photosPanel.addFailed', { error: `${e}` }));
+      }
+    } finally {
+      setAddingPhotos(null);
+    }
+  };
 
   useEffect(() => {
     if (phase === 'idle') {
@@ -274,9 +302,21 @@ export default function IntakePage() {
                   </span>
                   <span className="text-xs text-gray-500 w-16 text-end shrink-0">{t('intake.suggestionsShort', { count: fmt.number(e.suggestions) })}</span>
                   {e.profile_id && (
-                    <button className="text-xs text-blue-600 hover:underline shrink-0" onClick={() => router.push(`/profile?id=${encodeURIComponent(e.profile_id!)}`)}>
-                      {t('intake.open')}
-                    </button>
+                    <>
+                      <button
+                        className="text-xs text-gray-600 hover:underline shrink-0 inline-flex items-center gap-1 disabled:opacity-50"
+                        onClick={() => void addPhotos(e.profile_id!)}
+                        disabled={addingPhotos !== null}
+                      >
+                        {addingPhotos === e.profile_id
+                          ? <Loader2 className="w-3 h-3 animate-spin" aria-hidden />
+                          : <ImagePlus className="w-3 h-3" aria-hidden />}
+                        {t('photosPanel.add')}
+                      </button>
+                      <button className="text-xs text-blue-600 hover:underline shrink-0" onClick={() => router.push(`/profile?id=${encodeURIComponent(e.profile_id!)}`)}>
+                        {t('intake.open')}
+                      </button>
+                    </>
                   )}
                 </div>
               ))}
