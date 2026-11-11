@@ -55,6 +55,13 @@ fn gender_marital_and_children() {
 }
 
 #[test]
+fn siblings_are_summed_not_concatenated() {
+    assert_eq!(value("تعداد خواهر و برادر: ۲ خواهر و ۱ برادر", "siblings_count"), num(3.0));
+    assert_eq!(value("number of siblings: 2 sisters and 1 brother", "siblings_count"), num(3.0));
+    assert_eq!(value("siblings count: 4", "siblings_count"), num(4.0));
+}
+
+#[test]
 fn education_longest_match_wins() {
     assert_eq!(value("کارشناسی ارشد مهندسی", "education"), txt("master"));
     assert_eq!(value("کارشناسی مهندسی", "education"), txt("bachelor"));

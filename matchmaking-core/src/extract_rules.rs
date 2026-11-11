@@ -114,6 +114,7 @@ fn partner_clauses(norm: &[char]) -> Vec<(usize, usize)> {
     out
 }
 
+
 fn guarded(clauses: &[(usize, usize)], start: usize, end: usize) -> bool {
     clauses.iter().any(|(a, b)| start < *b && end > *a)
 }
@@ -235,9 +236,75 @@ impl Collector {
     }
 }
 
+fn digit_value(c: char) -> Option<char> {
+    match c {
+        '0'..='9' => Some(c),
+        '۰'..='۹' => Some(char::from(b'0' + (c as u32 - '۰' as u32) as u8)),
+        '٠'..='٩' => Some(char::from(b'0' + (c as u32 - '٠' as u32) as u8)),
+        _ => None,
+    }
+}
+
+/// The first run of digits in `s`, as a number. Persian and Arabic-Indic digits count as digits, a single
+/// `.` or `,` between two digits is the decimal separator, and a second run ("2 sisters, 1 brother") is not
+/// glued onto the first ("21").
 fn first_number(s: &str) -> Option<f64> {
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',').collect();
-    digits.replace(',', ".").parse::<f64>().ok()
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if digit_value(c).is_some() {
+            break;
+        }
+        chars.next();
+    }
+    while let Some(&c) = chars.peek() {
+        if let Some(d) = digit_value(c) {
+            out.push(d);
+            chars.next();
+        } else if matches!(c, '.' | ',') && !out.contains('.') && chars.clone().nth(1).and_then(digit_value).is_some() {
+            out.push('.');
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        out.parse().ok()
+    }
+}
+
+/// «۲ خواهر و ۱ برادر» is three siblings, not twenty-one. Every sibling noun immediately preceded by a
+/// number adds that number; with no such pair the first number is the count.
+fn siblings_total(s: &str) -> Option<f64> {
+    const NOUNS: &[&str] = &["خواهر", "برادر", "sister", "brother"];
+    let mut total: u32 = 0;
+    let mut seen: Vec<usize> = vec![];
+    let mut found = false;
+    for noun in NOUNS {
+        for (b, _) in s.match_indices(noun) {
+            let prefix = s[..b].trim_end();
+            let trailing = prefix.chars().rev().take_while(|c| digit_value(*c).is_some()).count();
+            let digits: String = prefix.chars().skip(prefix.chars().count() - trailing).filter_map(digit_value).collect();
+            if digits.is_empty() || trailing > 2 {
+                continue;
+            }
+            let Ok(n) = digits.parse::<u32>() else { continue };
+            let byte_start = prefix.char_indices().nth(prefix.chars().count() - trailing).map(|(b, _)| b).unwrap_or(prefix.len());
+            if seen.contains(&byte_start) {
+                continue;
+            }
+            seen.push(byte_start);
+            total += n;
+            found = true;
+        }
+    }
+    if found {
+        Some(total as f64)
+    } else {
+        first_number(s)
+    }
 }
 
 fn number_in_range(v: f64, lo: f64, hi: f64) -> Option<Value> {
@@ -268,7 +335,10 @@ fn value_from_label(def: &FieldDef, raw: &str) -> Option<Value> {
         return None;
     }
     match &def.kind {
-        FieldKind::Number => first_number(v).map(Value::Num),
+        FieldKind::Number => {
+            let n = if def.key == "siblings_count" { siblings_total(v) } else { first_number(v) }?;
+            number_in_range(n, 0.0, 20.0)
+        }
         FieldKind::Bool => match v.to_lowercase().as_str() {
             "yes" | "true" | "y" | "1" | "بله" | "دارد" | "درست" => Some(Value::Bool(true)),
             "no" | "false" | "n" | "0" | "خیر" | "نه" | "ندارد" => Some(Value::Bool(false)),
@@ -631,4 +701,30 @@ pub fn extract_with_rules(registry: &FieldRegistry, text: &str, targets: Option<
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{first_number, siblings_total};
+
+    #[test]
+    fn first_number_reads_only_the_first_run_of_digits() {
+        assert_eq!(first_number("28"), Some(28.0));
+        assert_eq!(first_number("۲۸ ساله"), Some(28.0));
+        assert_eq!(first_number("٢٨"), Some(28.0));
+        assert_eq!(first_number("he is 31, she is 29"), Some(31.0));
+        assert_eq!(first_number("Dob 1368/1/1"), Some(1368.0));
+        assert_eq!(first_number("1.80 m"), Some(1.80));
+        assert_eq!(first_number("1,5"), Some(1.5));
+        assert_eq!(first_number("no digits"), None);
+    }
+
+    #[test]
+    fn siblings_total_adds_each_sister_and_brother_count() {
+        assert_eq!(siblings_total("۲ خواهر و ۱ برادر"), Some(3.0));
+        assert_eq!(siblings_total("2 sisters and 1 brother"), Some(3.0));
+        assert_eq!(siblings_total("۶"), Some(6.0));
+        assert_eq!(siblings_total("4"), Some(4.0));
+        assert_eq!(siblings_total("none"), None);
+    }
 }
