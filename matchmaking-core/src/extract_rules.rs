@@ -80,6 +80,13 @@ fn is_boundary(c: char) -> bool {
     matches!(c, '.' | '!' | '?' | '؟' | '؛' | ';' | '\n' | '\r')
 }
 
+/// Words that mark text as describing the desired partner rather than the person in the form.
+const PARTNER_MARKERS: &[&str] = &[
+    "looking for", "searching for", "seeking", "want a", "want an", "want to meet", "wants a", "wants an",
+    "would like a", "hoping to meet", "partner should", "partner must", "must be a", "should be a",
+    "دنبال", "مایل به", "همسری", "می‌خواهد", "میخواهد", "همسر آینده", "طالب", "انتظار",
+];
+
 /// Where a clause that starts at `marker` begins: after the nearest coordinating conjunction or comma, so
 /// "41 years old and looking for a woman" keeps the age and only ignores the woman.
 fn clause_start(norm: &[char], marker: usize) -> usize {
@@ -100,14 +107,9 @@ fn clause_start(norm: &[char], marker: usize) -> usize {
 
 /// Clauses that talk about the desired partner. Matches inside them describe someone else.
 fn partner_clauses(norm: &[char]) -> Vec<(usize, usize)> {
-    const MARKERS: &[&str] = &[
-        "looking for", "searching for", "seeking", "want a", "want an", "want to meet", "wants a", "wants an",
-        "would like a", "hoping to meet", "partner should", "partner must", "must be a", "should be a",
-        "دنبال", "مایل به", "همسری", "می‌خواهد", "میخواهد", "همسر آینده", "طالب", "انتظار",
-    ];
     let joined: String = norm.iter().collect();
     let mut out: Vec<(usize, usize)> = vec![];
-    for m in MARKERS {
+    for m in PARTNER_MARKERS {
         for (byte_start, _) in joined.match_indices(m) {
             let start = joined[..byte_start].chars().count();
             let len = m.chars().count();
@@ -130,7 +132,7 @@ fn guarded(clauses: &[(usize, usize)], start: usize, end: usize) -> bool {
 // ------------------------------------------------------------------ patterns
 
 struct Patterns {
-    labelled: Regex,
+    heading: Regex,
     age: Vec<Regex>,
     height_cm: Vec<Regex>,
     height_m: Vec<Regex>,
@@ -146,7 +148,8 @@ fn patterns() -> &'static Patterns {
     P.get_or_init(|| {
         let r = |s: &str| Regex::new(s).expect("static rule regex");
         Patterns {
-            labelled: r(r"(?m)^[^\p{L}\p{N}\n]{0,6}(?P<label>[^:：\-\n]{1,60}?)[ \t]*[:：\-][ \t]*(?P<value>\S.*)$"),
+            // A labelled line, with or without a value: a heading whose value is empty owns the lines below it.
+            heading: r(r"(?m)^[^\p{L}\p{N}\n]{0,6}(?P<label>[^:：\-\n]{1,60}?)[ \t]*(?P<sep>[:：\-])[ \t]*(?P<value>[^\n]*)$"),
             age: vec![
                 r(r"(?P<v>\d{1,3})[ \t]*(?:years?[ \t]*old|y/?o\b)"),
                 r(r"(?P<v>\d{1,3})[ \t]*(?:ساله|سال[ \t]*دارد|سال[ \t]*سن)"),
@@ -222,12 +225,15 @@ struct Collector {
     /// Values a labelled line already owns, with the field that owns them. A pattern or keyword inside another
     /// field's value describes that other field, so it is dropped.
     owned: Vec<(usize, usize, String)>,
+    /// Spans that describe something other than this person's fields, such as a partner block or a photo
+    /// marker. Nothing is read from inside them.
+    ignored: Vec<(usize, usize)>,
     out: Vec<Candidate>,
 }
 
 impl Collector {
     fn push(&mut self, field: &str, value: Value, start: usize, end: usize, confidence: f64) {
-        if guarded(&self.clauses, start, end) {
+        if guarded(&self.clauses, start, end) || guarded(&self.ignored, start, end) {
             return;
         }
         self.out.push(Candidate { field: field.to_string(), value, start, end, confidence });
@@ -656,27 +662,198 @@ fn synonym(needle: &str, opts: &[String]) -> Option<String> {
     None
 }
 
+/// A labelled heading and the fields its cleaned label names. `line_end` is the end of the heading's own line,
+/// so a value written below it can be told apart from the label.
+struct Heading {
+    start: usize,
+    /// Just after the colon or dash that separates the label from its value.
+    value_start: usize,
+    line_end: usize,
+    label: String,
+    fields: Vec<String>,
+}
+
+/// Every labelled line in the text, in document order. A heading is recognised by cleanable label shape alone;
+/// whether it names a field is decided later.
+fn headings(chars: &[char], index: &BTreeMap<String, Vec<String>>) -> Vec<Heading> {
+    let text: String = chars.iter().collect();
+    let mut out = vec![];
+    for cap in patterns().heading.captures_iter(&text) {
+        let (Some(label), Some(sep)) = (cap.name("label"), cap.name("sep")) else { continue };
+        let start = text[..cap.get(0).map_or(label.start(), |m| m.start())].chars().count();
+        let value_start = text[..sep.end()].chars().count();
+        let line_end = start + cap.get(0).map_or(0, |m| m.as_str().chars().count());
+        let label = label.as_str().to_string();
+        let fields = index.get(&clean_label(&label)).cloned().unwrap_or_default();
+        out.push(Heading { start, value_start, line_end, label, fields });
+    }
+    out
+}
+
+/// The heading a value may continue below: a later labelled line ends it. A value never crosses a blank line or
+/// a line that is not part of the text.
+fn next_heading_line(headings: &[Heading], i: usize, chars_len: usize) -> usize {
+    headings.get(i + 1).map_or(chars_len, |h| h.start)
+}
+
+/// The value a heading owns. A value on the label's own line is taken as typed. When nothing follows the colon,
+/// the value is the lines below it up to the next labelled line, capped at [`MAX_VALUE_CHARS`].
+struct HeadingValue {
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+fn heading_value(chars: &[char], original: &[char], headings: &[Heading], i: usize, ignored: &[(usize, usize)]) -> Option<HeadingValue> {
+    let heading = &headings[i];
+    // Everything after the label on its own line. A Colon-less dash line still leaves the text after the dash.
+    let rest_start = skip_whitespace(original, heading.value_start, heading.line_end);
+    let inline = trim_span(original, rest_start, heading.line_end);
+    if inline.1 > inline.0 {
+        let text: String = original[inline.0..inline.1].iter().collect();
+        return Some(HeadingValue { text, start: inline.0, end: inline.1 });
+    }
+    // Nothing after the colon: the value is the block below the heading. An ignored line is never part of it,
+    // neither as a leading instruction nor in the middle, so the evidence stays one contiguous span.
+    let block_end = next_heading_line(headings, i, chars.len());
+    let lines: Vec<(usize, usize)> = line_spans(&chars[..block_end])
+        .into_iter()
+        .filter(|(start, _)| *start >= heading.line_end)
+        .map(|(start, end)| trim_span(original, start, end))
+        .filter(|(start, end)| end > start)
+        .collect();
+    let kept: Vec<(usize, usize)> = lines.iter().copied().filter(|(start, end)| !is_ignored(ignored, *start, *end)).collect();
+    let (first, rest) = kept.split_first()?;
+    let mut value_end = first.1;
+    for (start, end) in rest {
+        if lines.iter().any(|line| line.0 > value_end && line.1 <= *start && is_ignored(ignored, line.0, line.1)) {
+            break;
+        }
+        value_end = *end;
+    }
+    let block: String = original[first.0..value_end].iter().collect();
+    let clipped = block.trim().trim_end();
+    if clipped.is_empty() {
+        return None;
+    }
+    let text: String = clipped.chars().take(MAX_VALUE_CHARS).collect();
+    let text = text.trim_end().to_string();
+    Some(HeadingValue { start: first.0, end: first.0 + text.chars().count(), text })
+}
+
+/// Spans that describe something other than this person's fields: text fully wrapped in brackets, a photo
+/// marker line, and a partner block. Nothing inside them becomes a suggestion.
+fn ignored_ranges(chars: &[char], headings: &[Heading]) -> Vec<(usize, usize)> {
+    let mut out = vec![];
+    for (start, end) in line_spans(chars) {
+        let line = &chars[start..end];
+        if bracketed_text(line) {
+            out.push((start, end));
+        }
+        if photo_marker(line) {
+            out.push((start, end));
+        }
+    }
+    for (i, heading) in headings.iter().enumerate() {
+        if !partner_heading(&heading.label) {
+            continue;
+        }
+        out.push((heading.start, next_heading_line(headings, i, chars.len())));
+    }
+    out
+}
+
+/// Every line as a `(start, end)` span without its trailing newline.
+fn line_spans(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut out = vec![];
+    let mut start = 0;
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '\n' {
+            out.push((start, i));
+            start = i + 1;
+        }
+    }
+    if start < chars.len() {
+        out.push((start, chars.len()));
+    }
+    out
+}
+
+fn trim_span(chars: &[char], start: usize, end: usize) -> (usize, usize) {
+    let (mut a, mut b) = (start.min(chars.len()), end.min(chars.len()));
+    while a < b && chars[a].is_whitespace() {
+        a += 1;
+    }
+    while b > a && chars[b - 1].is_whitespace() {
+        b -= 1;
+    }
+    (a, b)
+}
+
+fn is_ignored(ignored: &[(usize, usize)], start: usize, end: usize) -> bool {
+    ignored.iter().any(|(a, b)| start < *b && end > *a)
+}
+
+fn skip_whitespace(chars: &[char], start: usize, end: usize) -> usize {
+    let mut i = start.min(end);
+    while i < end && (chars[i].is_whitespace() || chars[i] == '\u{feff}') {
+        i += 1;
+    }
+    i
+}
+
+/// A whole line inside one pair of brackets: an instruction such as «( لطفا توضیح دهید )», never a value.
+fn bracketed_text(line: &[char]) -> bool {
+    const PAIRS: &[(char, char)] = &[('(', ')'), ('（', '）'), ('[', ']'), ('【', '】')];
+    let (start, end) = trim_span(line, 0, line.len());
+    if end <= start {
+        return false;
+    }
+    let (Some(first), Some(last)) = (line.get(start).copied(), line.get(end - 1).copied()) else {
+        return false;
+    };
+    PAIRS.iter().any(|(open, close)| *open == first && *close == last)
+}
+
+/// A line that starts with a word naming a photo, such as «🌷 عکس من» or «photo 2»: the picture is stored by the
+/// photo tier, not read as text.
+fn photo_marker(line: &[char]) -> bool {
+    const WORDS: &[&str] = &[
+        "عکس", "عکسها", "عکس\u{200c}ها", "تصویر", "تصاویر", "photo", "photos", "pic", "pics", "picture", "pictures",
+    ];
+    let text: String = line.iter().filter(|c| !is_decoration(**c)).collect();
+    text.split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\u{200c}').to_lowercase())
+        .find(|word| !word.is_empty() && !word.chars().all(|c| digit_value(c).is_some()))
+        .is_some_and(|word| WORDS.contains(&word.as_str()))
+}
+
+/// A heading that starts a block about the wanted partner rather than the person whose form this is.
+fn partner_heading(label: &str) -> bool {
+    let text = label.to_lowercase();
+    PARTNER_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
 /// Labels are matched on the folded text, values are taken as typed: a name keeps its capital letters and the
 /// evidence stays an exact substring of the original.
 fn labelled(registry: &FieldRegistry, index: &BTreeMap<String, Vec<String>>, folded: &str, original: &[char], c: &mut Collector, targets: Option<&[String]>) {
-    let p = patterns();
-    for cap in p.labelled.captures_iter(folded) {
-        let (Some(label), Some(value)) = (cap.name("label"), cap.name("value")) else { continue };
-        let start = folded[..value.start()].chars().count();
-        let end = start + value.as_str().chars().count();
-        let typed: String = original[start..end.min(original.len())].iter().collect();
-        let Some(keys) = index.get(&clean_label(label.as_str())) else { continue };
-        for key in keys {
+    let chars: Vec<char> = folded.chars().collect();
+    let headings = headings(&chars, index);
+    c.ignored.extend(ignored_ranges(&chars, &headings));
+    for (i, heading) in headings.iter().enumerate() {
+        let ignored = c.ignored.clone();
+        let Some(value) = heading_value(&chars, original, &headings, i, &ignored) else { continue };
+        for key in &heading.fields {
             if !wanted(registry, targets, key) {
                 continue;
             }
             let Some(def) = registry.get(key) else { continue };
-            let Some(v) = value_from_label(def, &typed).map(|v| normalize_place(key, v)) else { continue };
+            let Some(v) = value_from_label(def, &value.text).map(|v| normalize_place(key, v)) else { continue };
             if registry.validate_value(key, &v).is_err() {
                 continue;
             }
-            c.owned.push((start, end, key.clone()));
-            c.push(key, v, start, end, CONFIDENCE_LABEL);
+            c.owned.push((value.start, value.end, key.clone()));
+            c.push(key, v, value.start, value.end, CONFIDENCE_LABEL);
         }
     }
 }
@@ -908,7 +1085,7 @@ pub fn extract_with_rules(registry: &FieldRegistry, text: &str, targets: Option<
     let original: Vec<char> = text.chars().collect();
     // Joined once and shared by every scan: a run never rebuilds the searched string.
     let norm_text: String = norm_chars.iter().collect();
-    let mut c = Collector { clauses: partner_clauses(&norm_chars), owned: vec![], out: vec![] };
+    let mut c = Collector { clauses: partner_clauses(&norm_chars), owned: vec![], ignored: vec![], out: vec![] };
     labelled(registry, &label_index(registry), &norm_text, &original, &mut c, targets);
     keywords(&mut c, &norm_text, registry, targets);
     patterns_scan(&mut c, &norm_text, registry, targets);
@@ -969,6 +1146,14 @@ mod tests {
     use crate::profile::Profile;
     use std::collections::BTreeMap;
 
+    fn fields(text: &str) -> BTreeMap<String, crate::profile::Value> {
+        extract_with_rules(&default_registry(), text, None, &Profile::new("x"))
+            .suggestions
+            .into_iter()
+            .map(|s| (s.field, s.value))
+            .collect()
+    }
+
     #[test]
     fn first_number_reads_only_the_first_run_of_digits() {
         assert_eq!(first_number("28"), Some(28.0));
@@ -1026,6 +1211,50 @@ mod tests {
         let got = run("🌷استان و شهر محل سکونت خودم : تهران");
         assert_eq!(got["province"], crate::profile::Value::Text("تهران".into()));
         assert_eq!(got["city"], crate::profile::Value::Text("تهران".into()));
+    }
+
+    #[test]
+    fn a_heading_with_nothing_after_the_colon_reads_the_lines_below_it() {
+        let got = fields("درباره:\nخط اول\nخط دوم\nسن: ۳۷");
+        assert_eq!(got["about"], crate::profile::Value::Text("خط اول\nخط دوم".into()));
+        assert_eq!(got["age"], crate::profile::Value::Num(37.0));
+    }
+
+    #[test]
+    fn a_multi_line_value_is_capped_at_the_value_limit() {
+        use crate::ai::MAX_VALUE_CHARS;
+        let long = "الف ".repeat(MAX_VALUE_CHARS);
+        let got = fields(&format!("درباره:\n{long}\nسن: ۳۷"));
+        let crate::profile::Value::Text(text) = &got["about"] else { panic!("{:?}", got.get("about")) };
+        assert!(text.chars().count() > MAX_VALUE_CHARS / 2, "value not read below the heading");
+        assert!(text.chars().count() <= MAX_VALUE_CHARS, "value not capped: {}", text.chars().count());
+        assert!(!text.ends_with(char::is_whitespace));
+        assert_eq!(got["age"], crate::profile::Value::Num(37.0));
+    }
+
+    #[test]
+    fn text_in_brackets_and_photo_marker_lines_is_ignored() {
+        let got = fields("( ۲۵ ساله و مذهبی )\nعکس ۲۸ ساله\nسن: ۳۸");
+        assert_eq!(got["age"], crate::profile::Value::Num(38.0));
+        assert!(!got.contains_key("religiosity"), "{got:?}");
+
+        let got = fields("🌷 عکس من 👇\n photo 2, 30 years old");
+        assert!(!got.contains_key("age"), "{got:?}");
+    }
+
+    #[test]
+    fn a_multi_line_value_skips_an_instruction_line_but_keeps_reading() {
+        let got = fields("درباره:\n( توضیح دهید )\nخط اول\nخط دوم\nسن: ۳۷");
+        assert_eq!(got["about"], crate::profile::Value::Text("خط اول\nخط دوم".into()));
+        assert_eq!(got["age"], crate::profile::Value::Num(37.0));
+    }
+
+    #[test]
+    fn a_partner_block_is_ignored_up_to_the_next_labelled_line() {
+        let got = fields("سن: ۳۸\nهمسر آینده:\n۲۵ ساله، مذهبی\nشغل: مهندس");
+        assert_eq!(got["age"], crate::profile::Value::Num(38.0));
+        assert_eq!(got["occupation"], crate::profile::Value::Text("مهندس".into()));
+        assert!(!got.contains_key("religiosity"), "{got:?}");
     }
 }
 
