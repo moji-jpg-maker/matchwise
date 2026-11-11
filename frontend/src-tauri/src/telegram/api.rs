@@ -40,6 +40,16 @@ pub struct BotInfo {
     pub username: String,
 }
 
+/// What Telegram says about a file before it is fetched: where to get it and how big it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileInfo {
+    pub file_id: String,
+    /// The path on Telegram's file server. It is only meaningful together with the bot token.
+    pub file_path: String,
+    /// `None` when Telegram did not say.
+    pub file_size: Option<i64>,
+}
+
 #[async_trait]
 pub trait TelegramApi: Send + Sync {
     async fn get_me(&self) -> Result<BotInfo, TgError>;
@@ -48,6 +58,10 @@ pub trait TelegramApi: Send + Sync {
     async fn answer_callback(&self, id: &str, text: Option<&str>) -> Result<(), TgError>;
     async fn edit_markup(&self, chat_id: i64, message_id: i64, keyboard: Option<&Keyboard>) -> Result<(), TgError>;
     async fn set_commands(&self) -> Result<(), TgError>;
+    /// Where to fetch a file. Telegram only accepts files up to 20 MB this way; a larger one answers `BadRequest`.
+    async fn get_file(&self, file_id: &str) -> Result<FileInfo, TgError>;
+    /// Fetch a file already located with [`TelegramApi::get_file`]. The bytes are exactly what Telegram serves.
+    async fn download_file(&self, file: &FileInfo) -> Result<Vec<u8>, TgError>;
 }
 
 /// Perform one reply. Errors for purely cosmetic actions (a toast, button clean-up) are ignored by the caller.
@@ -105,6 +119,30 @@ impl HttpTelegramApi {
             400 => TgError::BadRequest(self.redact(desc)),
             _ => TgError::Other(self.redact(format!("{code}: {desc}"))),
         })
+    }
+
+    /// Fetch bytes from the file server. The response is not JSON, and a failure can be JSON: Telegram answers a
+    /// missing file with its usual error body and a 404. Either way the text must not contain the token.
+    async fn download(&self, file_path: &str) -> Result<Vec<u8>, TgError> {
+        let url = format!("{}/file/bot{}/{}", self.base, self.token, file_path.trim_start_matches('/'));
+        let resp = self.client.get(&url).send().await.map_err(|e| TgError::Network(self.redact(e.to_string())))?;
+        let status = resp.status();
+        let body = resp.bytes().await.map_err(|e| TgError::Network(self.redact(e.to_string())))?;
+        match status.as_u16() {
+            200 => Ok(body.to_vec()),
+            401 => Err(TgError::Unauthorized),
+            403 => Err(TgError::Forbidden),
+            404 => Err(TgError::BadRequest(self.redact("the file is no longer on Telegram".into()))),
+            429 => Err(TgError::RateLimited { retry_after_secs: 5 }),
+            _ => {
+                let text = String::from_utf8_lossy(&body).to_string();
+                let desc = serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|v| v.get("description").and_then(|d| d.as_str()).map(str::to_string))
+                    .unwrap_or_else(|| format!("unexpected response (HTTP {status})"));
+                Err(TgError::Other(self.redact(desc)))
+            }
+        }
     }
 }
 
@@ -165,5 +203,19 @@ impl TelegramApi for HttpTelegramApi {
             {"command": "help", "description": "How this works"}
         ]);
         self.call("setMyCommands", json!({ "commands": commands })).await.map(|_| ())
+    }
+
+    async fn get_file(&self, file_id: &str) -> Result<FileInfo, TgError> {
+        let r = self.call("getFile", json!({ "file_id": file_id })).await?;
+        let file_path = r.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| TgError::BadRequest("Telegram gave no path for the file".into()))?;
+        Ok(FileInfo {
+            file_id: r.get("file_id").and_then(|v| v.as_str()).unwrap_or(file_id).to_string(),
+            file_path: file_path.to_string(),
+            file_size: r.get("file_size").and_then(|v| v.as_i64()),
+        })
+    }
+
+    async fn download_file(&self, file: &FileInfo) -> Result<Vec<u8>, TgError> {
+        self.download(&file.file_path).await
     }
 }

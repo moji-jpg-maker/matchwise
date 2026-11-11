@@ -51,6 +51,8 @@ pub struct PhotoRow {
     pub source: String,
     pub status: String,
     pub telegram_file_id: Option<String>,
+    /// Times the Telegram downloader has tried this row. A new row starts at 0.
+    pub download_attempts: i64,
     pub created_at: String,
 }
 /// A file that was written for a photo.
@@ -161,7 +163,7 @@ pub struct PhotoRepo;
 fn bad(msg: impl Into<String>) -> sqlx::Error {
     sqlx::Error::Protocol(msg.into())
 }
-const COLS: &str = "id, profile_id, stored_name, original_name, mime, size_bytes, sha256, position, source, status, telegram_file_id, created_at";
+const COLS: &str = "id, profile_id, stored_name, original_name, mime, size_bytes, sha256, position, source, status, telegram_file_id, download_attempts, created_at";
 fn from_row(r: &sqlx::sqlite::SqliteRow) -> PhotoRow {
     PhotoRow {
         id: r.get("id"),
@@ -175,6 +177,7 @@ fn from_row(r: &sqlx::sqlite::SqliteRow) -> PhotoRow {
         source: r.get("source"),
         status: r.get("status"),
         telegram_file_id: r.get("telegram_file_id"),
+        download_attempts: r.get("download_attempts"),
         created_at: r.get("created_at"),
     }
 }
@@ -227,7 +230,7 @@ impl PhotoRepo {
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query(&format!(
-            "INSERT INTO mm_profile_photos (org_id, {COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO mm_profile_photos (org_id, {COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(ORG)
         .bind(&photo.id)
@@ -241,6 +244,7 @@ impl PhotoRepo {
         .bind(&photo.source)
         .bind(&photo.status)
         .bind(&photo.telegram_file_id)
+        .bind(photo.download_attempts)
         .bind(&photo.created_at)
         .execute(&mut *tx)
         .await?;
@@ -273,6 +277,93 @@ impl PhotoRepo {
             .execute(pool)
             .await?;
         Ok(r.rows_affected())
+    }
+    /// Photos that arrived through Telegram and still have no bytes, oldest first. A row is only handed out while it
+    /// is `pending`: a `failed` row is done with, and a `ready` one already has its file.
+    pub async fn pending_downloads(pool: &SqlitePool, limit: i64) -> Result<Vec<PhotoRow>, sqlx::Error> {
+        let rows = sqlx::query(&format!(
+            "SELECT {COLS} FROM mm_profile_photos
+             WHERE org_id = ? AND source = 'telegram' AND status = 'pending' AND telegram_file_id IS NOT NULL
+             ORDER BY created_at, id LIMIT ?"
+        ))
+        .bind(ORG)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.iter().map(from_row).collect())
+    }
+    /// Give one pending row its bytes. The hash decides duplicates across the whole profile, not just across
+    /// uploads: a photo sent twice by different routes is still one picture. Returns `false` when the row was
+    /// already filled in by a racing worker, in which case the caller removes the file it just wrote.
+    pub async fn complete_download(
+        pool: &SqlitePool,
+        profile_id: &str,
+        id: &str,
+        file: &StoredFile,
+        mime: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let r = sqlx::query(
+            "UPDATE mm_profile_photos
+             SET stored_name = ?, mime = ?, size_bytes = ?, sha256 = ?, status = 'ready'
+             WHERE id = ? AND profile_id = ? AND org_id = ? AND status = 'pending'",
+        )
+        .bind(&file.stored_name)
+        .bind(mime)
+        .bind(file.size_bytes)
+        .bind(&file.sha256)
+        .bind(id)
+        .bind(profile_id)
+        .bind(ORG)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(r == 1)
+    }
+    /// Delete a `pending` row outright. Used when the bytes turn out to repeat a photo the person already has, so
+    /// the duplicate does not hold a slot. Returns whether a row was removed.
+    pub async fn delete_pending(pool: &SqlitePool, profile_id: &str, id: &str) -> Result<bool, sqlx::Error> {
+        let r = sqlx::query("DELETE FROM mm_profile_photos WHERE id = ? AND profile_id = ? AND org_id = ? AND status = 'pending'")
+            .bind(id)
+            .bind(profile_id)
+            .bind(ORG)
+            .execute(pool)
+            .await?
+            .rows_affected();
+        Ok(r == 1)
+    }
+    /// Count one failed attempt and give up after `max_attempts`. Returns the attempt number just recorded.
+    pub async fn record_download_failure(
+        pool: &SqlitePool,
+        profile_id: &str,
+        id: &str,
+        max_attempts: i64,
+    ) -> Result<i64, sqlx::Error> {
+        sqlx::query(
+            "UPDATE mm_profile_photos
+             SET download_attempts = download_attempts + 1,
+                 status = CASE WHEN download_attempts + 1 >= ? THEN 'failed' ELSE 'pending' END
+             WHERE id = ? AND profile_id = ? AND org_id = ? AND status = 'pending'",
+        )
+        .bind(max_attempts)
+        .bind(id)
+        .bind(profile_id)
+        .bind(ORG)
+        .execute(pool)
+        .await?;
+        sqlx::query_scalar("SELECT download_attempts FROM mm_profile_photos WHERE id = ? AND org_id = ?")
+            .bind(id)
+            .bind(ORG)
+            .fetch_optional(pool)
+            .await
+            .map(|n: Option<i64>| n.unwrap_or(max_attempts))
+    }
+    /// Every hash already on the profile. A download is checked against these before it takes a slot.
+    pub async fn hashes(pool: &SqlitePool, profile_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT sha256 FROM mm_profile_photos WHERE profile_id = ? AND org_id = ? AND sha256 IS NOT NULL")
+            .bind(profile_id)
+            .bind(ORG)
+            .fetch_all(pool)
+            .await
     }
 }
 /// Read files from disk, keep the ones that are JPEG, PNG or WebP within the limits, and store them in order. The
@@ -337,6 +428,7 @@ pub async fn add_paths(
             source: "upload".to_string(),
             status: "ready".to_string(),
             telegram_file_id: None,
+            download_attempts: 0,
             created_at: Utc::now().to_rfc3339(),
         };
         match PhotoRepo::append(pool, &photo).await {

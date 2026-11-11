@@ -6,14 +6,28 @@ use super::engine;
 use super::notify;
 use super::repo;
 use super::types::{Reply, Update};
+use crate::mm::photo_repo::{self, PhotoRepo, PhotoStore, MAX_PHOTO_BYTES};
 use serde::Serialize;
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_ATTEMPTS: i64 = 5;
+/// How often the worker tries to fetch one photo before marking it `failed`, so a broken file does not retry forever.
+pub const MAX_PHOTO_ATTEMPTS: i64 = 3;
+/// Photos fetched per poll round. Keeps a backlog from holding up the next batch of messages.
+const PHOTOS_PER_ROUND: i64 = 10;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DownloadStats {
+    pub stored: usize,
+    pub duplicates: usize,
+    pub failed: usize,
+    pub deferred: usize,
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FlushStats {
@@ -25,6 +39,84 @@ pub struct FlushStats {
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+/// Fetch the photos Telegram told us about but whose bytes we do not have yet.
+///
+/// A row only exists here because someone linked and agreed to the notice; the engine wrote it `pending`. Each
+/// file is fetched, checked against the accepted formats by its bytes (never by its name or the type Telegram
+/// claimed), and written where the profile's photos live. A transient failure is retried on a later round; after
+/// [`MAX_PHOTO_ATTEMPTS`] the row is `failed`, which the UI shows instead of a broken image.
+///
+/// Nothing about a photo is logged: not its id, name, hash or Telegram path.
+pub async fn download_pending_photos(pool: &SqlitePool, api: &dyn TelegramApi, store: &PhotoStore) -> Result<DownloadStats, String> {
+    let mut stats = DownloadStats::default();
+    for photo in PhotoRepo::pending_downloads(pool, PHOTOS_PER_ROUND).await.map_err(err)? {
+        let Some(file_id) = photo.telegram_file_id.as_deref() else {
+            continue;
+        };
+        match fetch_photo(pool, api, store, &photo, file_id).await {
+            Ok(Fetched::Stored) => stats.stored += 1,
+            Ok(Fetched::Duplicate) => stats.duplicates += 1,
+            // Telegram is throttling the whole bot: leave the rest of the queue for the next round.
+            Err(TgError::RateLimited { .. }) | Err(TgError::Unauthorized) => {
+                stats.deferred += 1;
+                break;
+            }
+            Err(e) => {
+                let attempt = PhotoRepo::record_download_failure(pool, &photo.profile_id, &photo.id, MAX_PHOTO_ATTEMPTS)
+                    .await
+                    .map_err(err)?;
+                if attempt >= MAX_PHOTO_ATTEMPTS {
+                    stats.failed += 1;
+                    log::warn!("a Telegram photo could not be downloaded after {attempt} attempts: {}", e);
+                } else {
+                    stats.deferred += 1;
+                    log::debug!("a Telegram photo download will be retried: {}", e);
+                }
+            }
+        }
+    }
+    Ok(stats)
+}
+
+enum Fetched {
+    Stored,
+    /// The bytes repeat a photo the profile already has; the pending row is gone and no slot is used.
+    Duplicate,
+}
+
+async fn fetch_photo(pool: &SqlitePool, api: &dyn TelegramApi, store: &PhotoStore, photo: &crate::mm::photo_repo::PhotoRow, file_id: &str) -> Result<Fetched, TgError> {
+    let info = api.get_file(file_id).await?;
+    if info.file_size.is_some_and(|n| n > MAX_PHOTO_BYTES as i64) {
+        // Recorded as a failure rather than fetched and thrown away: the row still has to stop being `pending`.
+        return Err(TgError::BadRequest("the file is larger than the 10 MB limit".into()));
+    }
+    let bytes = api.download_file(&info).await?;
+    if bytes.len() as u64 > MAX_PHOTO_BYTES {
+        return Err(TgError::BadRequest("the file is larger than the 10 MB limit".into()));
+    }
+    let Some((mime, _)) = photo_repo::image_kind(&bytes) else {
+        return Err(TgError::BadRequest("the bytes are not a JPEG, PNG or WebP image".into()));
+    };
+    let digest = photo_repo::sha256_hex(&bytes);
+    if PhotoRepo::hashes(pool, &photo.profile_id).await.map_err(|e| TgError::Other(e.to_string()))?.contains(&digest) {
+        PhotoRepo::delete_pending(pool, &photo.profile_id, &photo.id).await.map_err(|e| TgError::Other(e.to_string()))?;
+        return Ok(Fetched::Duplicate);
+    }
+    let file = store.save(&photo.profile_id, &bytes, mime).map_err(|e| TgError::Other(e.to_string()))?;
+    match PhotoRepo::complete_download(pool, &photo.profile_id, &photo.id, &file, mime).await {
+        Ok(true) => Ok(Fetched::Stored),
+        // Another worker (or a delete) got there first. The row is no longer ours, so the file goes.
+        Ok(false) => {
+            let _ = store.remove(&photo.profile_id, &file.stored_name);
+            Err(TgError::Other("the photo is no longer waiting to download".into()))
+        }
+        Err(e) => {
+            let _ = store.remove(&photo.profile_id, &file.stored_name);
+            Err(TgError::Other(e.to_string()))
+        }
+    }
 }
 
 /// Deliver due outbox messages. A person who is no longer reachable (unlinked, withdrew consent, stopped
@@ -156,7 +248,7 @@ impl TelegramRuntime {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    pub async fn start(&self, pool: SqlitePool, api: Arc<dyn TelegramApi>) -> Result<BotInfo, String> {
+    pub async fn start(&self, pool: SqlitePool, api: Arc<dyn TelegramApi>, photos_dir: PathBuf) -> Result<BotInfo, String> {
         let mut guard = self.running.lock().await;
         if let Some(running) = guard.as_ref() {
             // A revoked token ends the poll loop on its own, which leaves a dead handle behind while the
@@ -183,7 +275,8 @@ impl TelegramRuntime {
             *s = RuntimeStatus { running: true, bot_username: Some(me.username.clone()), run, ..Default::default() };
         }
         let cancel = CancellationToken::new();
-        let poll = tokio::spawn(poll_loop(pool.clone(), api.clone(), cancel.clone(), self.status.clone(), run));
+        let store = PhotoStore::new(photos_dir);
+        let poll = tokio::spawn(poll_loop(pool.clone(), api.clone(), store, cancel.clone(), self.status.clone(), run));
         let outbox = tokio::spawn(outbox_loop(pool, api, cancel.clone(), self.status.clone(), run));
         *guard = Some(Running { cancel, tasks: vec![poll, outbox] });
         Ok(me)
@@ -214,7 +307,7 @@ async fn sleep_or_cancel(cancel: &CancellationToken, d: Duration) -> bool {
     tokio::select! { _ = cancel.cancelled() => true, _ = tokio::time::sleep(d) => false }
 }
 
-async fn poll_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: CancellationToken, status: Arc<Mutex<RuntimeStatus>>, run: u64) {
+async fn poll_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, store: PhotoStore, cancel: CancellationToken, status: Arc<Mutex<RuntimeStatus>>, run: u64) {
     let _guard = RunGuard::new(status.clone(), run, cancel.clone());
     let mut offset = repo::last_update_id(&pool).await.unwrap_or(0) + 1;
     loop {
@@ -231,6 +324,11 @@ async fn poll_loop(pool: SqlitePool, api: Arc<dyn TelegramApi>, cancel: Cancella
                     process_update(&pool, api.as_ref(), u).await;
                     let _ = repo::set_last_update_id(&pool, id).await;
                     touch(&status, |s| s.processed_updates += 1);
+                }
+                // After each batch (an empty one included, which is what a quiet long poll returns) fetch the photos
+                // those updates queued, and any that an earlier round could not get.
+                if let Err(e) = download_pending_photos(&pool, api.as_ref(), &store).await {
+                    log::warn!("photo download round failed: {e}");
                 }
             }
             Err(TgError::Unauthorized) => {

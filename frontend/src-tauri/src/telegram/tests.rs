@@ -1,12 +1,13 @@
 //! Conversation-level tests: real updates go through the engine against an in-memory database, with a test
 //! double in place of Telegram. Nothing here needs a network.
 
-use super::api::{BotInfo, HttpTelegramApi, TelegramApi, TgError};
+use super::api::{BotInfo, FileInfo, HttpTelegramApi, TelegramApi, TgError};
 use super::engine::handle_update;
 use super::notify;
 use super::repo;
 use super::types::{Keyboard, Reply, Update};
-use super::worker::{flush_outbox, RunGuard, RuntimeStatus, TelegramRuntime, MAX_ATTEMPTS};
+use super::worker::{download_pending_photos, flush_outbox, RunGuard, RuntimeStatus, TelegramRuntime, MAX_ATTEMPTS, MAX_PHOTO_ATTEMPTS};
+use crate::mm::photo_repo::{PhotoRepo, PhotoStore};
 use crate::mm::match_repo::MatchRepo;
 use crate::mm::repository::MmRepository;
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use matchmaking_core::{ConditionOp, Interest, Locale, MatchStatus, Profile, Prov
 use serde_json::json;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -713,16 +715,34 @@ async fn the_tenth_photo_is_the_limit() {
 struct MockApi {
     sent: Mutex<Vec<(i64, String)>>,
     next: Mutex<Vec<Result<i64, TgError>>>,
+    files: Mutex<HashMap<String, Result<Vec<u8>, TgError>>>,
 }
 
 impl MockApi {
     fn script(&self, results: Vec<Result<i64, TgError>>) {
         *self.next.lock().unwrap() = results;
     }
+    fn serve(&self, file_id: &str, outcome: Result<Vec<u8>, TgError>) {
+        self.files.lock().unwrap().insert(file_id.to_string(), outcome);
+    }
 }
 
 #[async_trait]
 impl TelegramApi for MockApi {
+    async fn get_file(&self, file_id: &str) -> Result<FileInfo, TgError> {
+        match self.files.lock().unwrap().get(file_id) {
+            Some(Ok(bytes)) => Ok(FileInfo { file_id: file_id.into(), file_path: file_id.into(), file_size: Some(bytes.len() as i64) }),
+            Some(Err(e)) => Err(e.clone()),
+            None => Err(TgError::BadRequest("no such file".into())),
+        }
+    }
+    async fn download_file(&self, file: &FileInfo) -> Result<Vec<u8>, TgError> {
+        match self.files.lock().unwrap().get(&file.file_id) {
+            Some(Ok(bytes)) => Ok(bytes.clone()),
+            Some(Err(e)) => Err(e.clone()),
+            None => Err(TgError::BadRequest("no such file".into())),
+        }
+    }
     async fn get_me(&self) -> Result<BotInfo, TgError> {
         Ok(BotInfo { id: 1, username: "matchwise_test_bot".into() })
     }
@@ -808,6 +828,12 @@ struct RevokedApi {
 
 #[async_trait]
 impl TelegramApi for RevokedApi {
+    async fn get_file(&self, _f: &str) -> Result<FileInfo, TgError> {
+        Err(TgError::Unauthorized)
+    }
+    async fn download_file(&self, _f: &FileInfo) -> Result<Vec<u8>, TgError> {
+        Err(TgError::Unauthorized)
+    }
     async fn get_me(&self) -> Result<BotInfo, TgError> {
         Ok(BotInfo { id: 1, username: "matchwise_test_bot".into() })
     }
@@ -839,7 +865,7 @@ async fn a_revoked_token_does_not_block_restarting() {
     let api: Arc<dyn TelegramApi> = Arc::new(RevokedApi::default());
     let rt = TelegramRuntime::default();
 
-    rt.start(pool.clone(), api.clone()).await.unwrap();
+    rt.start(pool.clone(), api.clone(), std::env::temp_dir().join("mm_photos_test")).await.unwrap();
     assert!(rt.status().running);
     // the 401 ends the poll loop and says so, without anyone pressing Stop
     let mut stopped = false;
@@ -854,7 +880,7 @@ async fn a_revoked_token_does_not_block_restarting() {
     assert!(rt.status().last_error.unwrap_or_default().contains("rejected the bot token"));
 
     // Start must work again rather than claiming a bot is already running
-    rt.start(pool.clone(), api).await.expect("a dead run must not block a new start");
+    rt.start(pool.clone(), api, std::env::temp_dir().join("mm_photos_test")).await.expect("a dead run must not block a new start");
     assert!(rt.status().running);
     rt.stop().await;
     assert!(!rt.status().running);
@@ -868,6 +894,12 @@ struct PanickingApi {
 
 #[async_trait]
 impl TelegramApi for PanickingApi {
+    async fn get_file(&self, _f: &str) -> Result<FileInfo, TgError> {
+        Err(TgError::Unauthorized)
+    }
+    async fn download_file(&self, _f: &FileInfo) -> Result<Vec<u8>, TgError> {
+        Err(TgError::Unauthorized)
+    }
     async fn get_me(&self) -> Result<BotInfo, TgError> {
         Ok(BotInfo { id: 1, username: "matchwise_test_bot".into() })
     }
@@ -899,7 +931,7 @@ async fn a_panicking_worker_does_not_block_restarting() {
     let api: Arc<dyn TelegramApi> = Arc::new(PanickingApi::default());
     let rt = TelegramRuntime::default();
 
-    rt.start(pool.clone(), api.clone()).await.unwrap();
+    rt.start(pool.clone(), api.clone(), std::env::temp_dir().join("mm_photos_test")).await.unwrap();
     assert!(rt.status().running);
     // A panicking task leaves no running bot behind, even though nothing wrote running = false
     let mut stopped = false;
@@ -915,7 +947,7 @@ async fn a_panicking_worker_does_not_block_restarting() {
     assert!(status.last_error.unwrap_or_default().contains("stopped unexpectedly"), "the operator is told what happened");
 
     // Start must work again rather than claiming a bot is already running
-    rt.start(pool.clone(), api).await.expect("a crashed run must not block a new start");
+    rt.start(pool.clone(), api, std::env::temp_dir().join("mm_photos_test")).await.expect("a crashed run must not block a new start");
     assert!(rt.status().running);
     rt.stop().await;
     assert!(!rt.status().running);
@@ -1156,4 +1188,202 @@ async fn validation_messages_follow_the_language() {
     let error = reg.validate_value_for("age", &txt("x"), Locale::Fa).unwrap_err();
     assert!(has_persian(&error), "{error}");
     assert!(reg.validate_value("age", &txt("x")).unwrap_err().starts_with("expected"));
+}
+
+// ------------------------------------------------------------------ photo download worker
+
+fn jpeg_bytes(tag: u8) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+    bytes.extend(std::iter::repeat(tag).take(32));
+    bytes
+}
+
+fn png_bytes(tag: u8) -> Vec<u8> {
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    bytes.extend(std::iter::repeat(tag).take(32));
+    bytes
+}
+
+fn webp_bytes(tag: u8) -> Vec<u8> {
+    let mut bytes = b"RIFF\0\0\0\0WEBP".to_vec();
+    bytes.extend(std::iter::repeat(tag).take(32));
+    bytes
+}
+
+async fn pending_photo(pool: &SqlitePool, file_ids: &[&str]) {
+    make_profile(pool, "p1", &[]).await;
+    link(pool, "p1", 100).await;
+    for file_id in file_ids {
+        handle_update(pool, photo(100, file_id, None)).await.unwrap();
+    }
+}
+
+async fn photo_state(pool: &SqlitePool, file_id: &str) -> (String, i64, Option<String>, Option<String>) {
+    sqlx::query_as("SELECT status, download_attempts, stored_name, sha256 FROM mm_profile_photos WHERE telegram_file_id = ?")
+        .bind(file_id).fetch_one(pool).await.unwrap()
+}
+
+#[tokio::test]
+async fn pending_photos_are_downloaded_through_the_api_and_stored() {
+    let pool = test_pool().await;
+    pending_photo(&pool, &["f-jpg", "f-png", "f-webp"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = PhotoStore::new(dir.path());
+    let api = MockApi::default();
+    api.serve("f-jpg", Ok(jpeg_bytes(1)));
+    api.serve("f-png", Ok(png_bytes(2)));
+    api.serve("f-webp", Ok(webp_bytes(3)));
+
+    let stats = download_pending_photos(&pool, &api, &store).await.unwrap();
+    assert_eq!(stats.stored, 3);
+    for (file_id, mime) in [("f-jpg", "image/jpeg"), ("f-png", "image/png"), ("f-webp", "image/webp")] {
+        let (status, _, stored_name, sha) = photo_state(&pool, file_id).await;
+        assert_eq!(status, "ready", "{file_id}");
+        assert!(sha.is_some());
+        let stored_name = stored_name.unwrap();
+        assert!(store.path_for("p1", &stored_name).unwrap().is_file());
+        let row_mime: String = sqlx::query_scalar("SELECT mime FROM mm_profile_photos WHERE telegram_file_id = ?").bind(file_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(row_mime, mime);
+    }
+    // nothing is left to do, and a second round changes nothing
+    assert_eq!(download_pending_photos(&pool, &api, &store).await.unwrap(), Default::default());
+}
+
+#[tokio::test]
+async fn bytes_that_are_not_an_image_end_up_failed_after_three_attempts() {
+    let pool = test_pool().await;
+    pending_photo(&pool, &["f-bad"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = PhotoStore::new(dir.path());
+    let api = MockApi::default();
+    api.serve("f-bad", Ok(b"<html>not a picture</html>".to_vec()));
+
+    for round in 1..MAX_PHOTO_ATTEMPTS {
+        let stats = download_pending_photos(&pool, &api, &store).await.unwrap();
+        assert_eq!(stats.failed, 0);
+        let (status, attempts, stored_name, _) = photo_state(&pool, "f-bad").await;
+        assert_eq!((status.as_str(), attempts), ("pending", round));
+        assert!(stored_name.is_none());
+    }
+    let stats = download_pending_photos(&pool, &api, &store).await.unwrap();
+    assert_eq!(stats.failed, 1);
+    let (status, attempts, stored_name, _) = photo_state(&pool, "f-bad").await;
+    assert_eq!((status.as_str(), attempts), ("failed", MAX_PHOTO_ATTEMPTS));
+    assert!(stored_name.is_none());
+    // a failed photo is not tried again
+    assert_eq!(download_pending_photos(&pool, &api, &store).await.unwrap(), Default::default());
+    assert_eq!(photo_state(&pool, "f-bad").await.1, MAX_PHOTO_ATTEMPTS);
+    assert!(!dir.path().join("p1").exists() || std::fs::read_dir(dir.path().join("p1")).unwrap().next().is_none());
+}
+
+#[tokio::test]
+async fn a_transient_error_is_retried_and_can_still_succeed() {
+    let pool = test_pool().await;
+    pending_photo(&pool, &["f-1"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = PhotoStore::new(dir.path());
+    let api = MockApi::default();
+    api.serve("f-1", Err(TgError::Network("connection reset".into())));
+
+    download_pending_photos(&pool, &api, &store).await.unwrap();
+    let (status, attempts, ..) = photo_state(&pool, "f-1").await;
+    assert_eq!((status.as_str(), attempts), ("pending", 1));
+
+    api.serve("f-1", Ok(jpeg_bytes(7)));
+    assert_eq!(download_pending_photos(&pool, &api, &store).await.unwrap().stored, 1);
+    assert_eq!(photo_state(&pool, "f-1").await.0, "ready");
+}
+
+#[tokio::test]
+async fn a_rate_limit_stops_the_round_without_using_an_attempt() {
+    let pool = test_pool().await;
+    pending_photo(&pool, &["f-1", "f-2"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = PhotoStore::new(dir.path());
+    let api = MockApi::default();
+    api.serve("f-1", Err(TgError::RateLimited { retry_after_secs: 30 }));
+    api.serve("f-2", Ok(jpeg_bytes(2)));
+
+    for _ in 0..5 {
+        let stats = download_pending_photos(&pool, &api, &store).await.unwrap();
+        assert_eq!((stats.stored, stats.deferred), (0, 1));
+    }
+    let (status, attempts, ..) = photo_state(&pool, "f-1").await;
+    assert_eq!((status.as_str(), attempts), ("pending", 0));
+    assert_eq!(photo_state(&pool, "f-2").await.0, "pending", "the rest of the queue waits for the next round");
+}
+
+#[tokio::test]
+async fn a_photo_the_profile_already_has_does_not_take_a_second_slot() {
+    let pool = test_pool().await;
+    pending_photo(&pool, &["f-1", "f-2"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = PhotoStore::new(dir.path());
+    let api = MockApi::default();
+    api.serve("f-1", Ok(jpeg_bytes(9)));
+    api.serve("f-2", Ok(jpeg_bytes(9)));
+
+    let stats = download_pending_photos(&pool, &api, &store).await.unwrap();
+    assert_eq!((stats.stored, stats.duplicates), (1, 1));
+    assert_eq!(PhotoRepo::count(&pool, "p1").await.unwrap(), 1);
+    assert_eq!(std::fs::read_dir(dir.path().join("p1")).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn an_oversized_file_is_refused_without_being_stored() {
+    let pool = test_pool().await;
+    pending_photo(&pool, &["f-big"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = PhotoStore::new(dir.path());
+    let api = MockApi::default();
+    let mut big = jpeg_bytes(1);
+    big.resize(10 * 1024 * 1024 + 1, 0);
+    api.serve("f-big", Ok(big));
+
+    for _ in 0..MAX_PHOTO_ATTEMPTS {
+        download_pending_photos(&pool, &api, &store).await.unwrap();
+    }
+    let (status, _, stored_name, _) = photo_state(&pool, "f-big").await;
+    assert_eq!(status, "failed");
+    assert!(stored_name.is_none());
+}
+
+#[tokio::test]
+async fn the_token_never_appears_in_file_errors() {
+    let token = "999999:VERY-SECRET-TOKEN";
+    let api = HttpTelegramApi::with_base("http://127.0.0.1:9", token);
+    let e = api.get_file("some-file").await.unwrap_err();
+    let shown = format!("{e} / {e:?}");
+    assert!(matches!(e, TgError::Network(_)), "{shown}");
+    assert!(!shown.contains("VERY-SECRET-TOKEN") && !shown.contains(token), "token leaked: {shown}");
+
+    let info = FileInfo { file_id: "some-file".into(), file_path: "photos/file_1.jpg".into(), file_size: None };
+    let e = api.download_file(&info).await.unwrap_err();
+    let shown = format!("{e} / {e:?}");
+    assert!(matches!(e, TgError::Network(_)), "{shown}");
+    assert!(!shown.contains("VERY-SECRET-TOKEN") && !shown.contains(token), "token leaked: {shown}");
+}
+
+#[tokio::test]
+async fn files_are_located_and_fetched_from_the_right_urls() {
+    let token = "999999:VERY-SECRET-TOKEN";
+    let (base, seen) = stand_in_server(vec![
+        (200, json!({"ok": true, "result": {"file_id": "f1", "file_path": "photos/file_1.jpg", "file_size": 36}}).to_string()),
+        (200, "image-bytes".to_string()),
+        (404, json!({"ok": false, "error_code": 404, "description": format!("Not Found {token}")}).to_string()),
+        (500, json!({"ok": false, "description": format!("broken {token}")}).to_string()),
+    ])
+    .await;
+    let api = HttpTelegramApi::with_base(&base, token);
+    let info = api.get_file("f1").await.unwrap();
+    assert_eq!((info.file_path.as_str(), info.file_size), ("photos/file_1.jpg", Some(36)));
+    assert_eq!(api.download_file(&info).await.unwrap(), b"image-bytes".to_vec());
+    for _ in 0..2 {
+        let e = api.download_file(&info).await.unwrap_err();
+        let shown = format!("{e} / {e:?}");
+        assert!(!shown.contains("VERY-SECRET-TOKEN"), "token leaked: {shown}");
+    }
+    let reqs = seen.lock().unwrap().clone();
+    assert!(reqs[0].starts_with(&format!("POST /bot{token}/getFile ")), "{}", reqs[0]);
+    assert!(reqs[1].starts_with(&format!("GET /file/bot{token}/photos/file_1.jpg ")), "{}", reqs[1]);
 }

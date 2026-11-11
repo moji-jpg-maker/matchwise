@@ -13,7 +13,7 @@ use matchmaking_core::NEVER_SHARED;
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -131,11 +131,12 @@ pub async fn tg_clear_token(state: State<'_, AppState>, rt: State<'_, TelegramRu
 }
 
 #[tauri::command]
-pub async fn tg_start(state: State<'_, AppState>, rt: State<'_, TelegramRuntime>) -> Result<TelegramStatus, String> {
+pub async fn tg_start(app: tauri::AppHandle, state: State<'_, AppState>, rt: State<'_, TelegramRuntime>) -> Result<TelegramStatus, String> {
     let (token, _) = load_token()?.ok_or("No bot token is stored yet")?;
     let pool = state.db_manager.pool();
     let api: Arc<dyn TelegramApi> = Arc::new(HttpTelegramApi::new(&token));
-    rt.start(pool.clone(), api).await?;
+    let photos = crate::mm::photo_repo::photos_dir(&app.path().app_data_dir().map_err(|e| e.to_string())?);
+    rt.start(pool.clone(), api, photos).await?;
     MmRepository::audit(pool, "telegram_started", "settings", "telegram", None).await;
     status(pool, &rt).await
 }

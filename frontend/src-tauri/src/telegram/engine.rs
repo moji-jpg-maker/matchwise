@@ -200,6 +200,7 @@ async fn photo_message(pool: &SqlitePool, link: &Link, msg: &Message, loc: Local
             source: "telegram".to_string(),
             status: "pending".to_string(),
             telegram_file_id: Some(image.file_id),
+            download_attempts: 0,
             created_at: repo::now_str(),
         };
         // `append` reads the count and the next slot in one transaction, so it is also what enforces the limit.

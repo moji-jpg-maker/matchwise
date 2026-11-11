@@ -267,6 +267,25 @@ downloader will drain.
   and noted once (including from an unlinked chat and when its first photo is a resend), non-image and
   oversize files refused without a row, and the tenth photo as the limit.
 
+### Phase 11: Telegram download worker
+- `TelegramApi` gains `get_file` (Telegram's `getFile`, returning a `FileInfo` with the server path and size) and
+  `download_file` (a GET on the file server). Every error path in both, including the connection error whose
+  text carries the request URL and a JSON error body, goes through the same token redaction as the other calls.
+- After each batch of updates the poll loop calls `download_pending_photos`, which takes up to ten `pending`
+  rows. Each file is checked for size (10 MB), then from its bytes with `infer` (JPEG, PNG or WebP only), then
+  against the hashes the profile already has. A repeat deletes the pending row so it holds no slot; anything
+  else is saved through `PhotoStore` and the row becomes `ready` with its name, size, hash and detected type.
+- A failure counts as an attempt in the new `download_attempts` column (migration
+  `20261111010000_add_photo_download_attempts.sql`); the third one marks the row `failed`, which the photos
+  panel already shows. A rate limit or a 401 stops the round and costs no attempt, so throttling cannot fail a
+  photo. Nothing logs a file id, name, hash or Telegram path.
+- `TelegramRuntime::start` takes the photos folder; `tg_start` passes `app_data_dir/mm_photos`.
+- Tests (8 new in `telegram::tests`): JPEG, PNG and WebP downloaded through the fake API and stored; non-image
+  bytes ending `failed` after exactly three rounds with nothing on disk; a transient error retried and then
+  succeeding; a rate limit using no attempt; a duplicate not taking a slot; an oversize file refused; the
+  token absent from `get_file` and `download_file` errors; and the request URLs and error bodies against the
+  stand-in server.
+
 ### Verified here
 - `cargo test -p matchmaking-core`: 167 passed across all suites, 24 of them in `tests/extract_rules.rs`.
 - `cargo test -p matchmaking-core --release --test extract_rules`: 24 passed. The 20 020-character entry
@@ -285,9 +304,13 @@ downloader will drain.
 - Phase 10 touched no frontend TypeScript, so the typecheck was not re-run for it.
 
 ### Still open
-- Phases 11–12 are not started: the download worker (`get_file` and `download_file` on `TelegramApi` with
-  the token stripped from error text, an `infer` check on each download, a photo marked failed after three
-  attempts, and the photos folder passed to `rt.start`) and the privacy check. Until phase 11 lands, a photo
-  sent to the bot is queued and shows as `pending` but cannot be seen or downloaded.
+- Phase 12 is not started: the privacy check (photos absent from prompts, field exports and intro cards) and
+  the manual album test.
 - The manual checks in the plan — sending a two-photo album from Telegram and seeing it on the profile page
   and in the inbox — need a real Telegram bot and a running app.
+
+### Phase 11 verification
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib` in the sandbox: 401 passed, 18 failed. The
+  failures are the socket tests that cannot bind here (`PermissionDenied`), the 17 known ones plus the new
+  stand-in server test. Run outside the sandbox, `telegram::` passes in full (45 tests).
+- `matchmaking-core` is untouched, and so is the frontend, so neither was re-run.
