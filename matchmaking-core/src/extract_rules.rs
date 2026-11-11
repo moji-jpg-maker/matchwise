@@ -222,9 +222,13 @@ struct Candidate {
 
 struct Collector {
     clauses: Vec<(usize, usize)>,
-    /// Values a labelled line already owns, with the field that owns them. A pattern or keyword inside another
-    /// field's value describes that other field, so it is dropped.
+    /// The value spans labelled lines own, with the field that owns them. A pattern or keyword inside another
+    /// field's value describes that other field, so it is dropped. The map is built while headings are read, so
+    /// it does not depend on which fields the caller asked for or on a value converting successfully.
     owned: Vec<(usize, usize, String)>,
+    /// The label text of every labelled line, from its first character to just after the colon or dash. A
+    /// keyword inside a label names the field the label belongs to, never a value of its own.
+    labels: Vec<(usize, usize)>,
     /// Spans that describe something other than this person's fields, such as a partner block or a photo
     /// marker. Nothing is read from inside them.
     ignored: Vec<(usize, usize)>,
@@ -233,7 +237,7 @@ struct Collector {
 
 impl Collector {
     fn push(&mut self, field: &str, value: Value, start: usize, end: usize, confidence: f64) {
-        if guarded(&self.clauses, start, end) || guarded(&self.ignored, start, end) {
+        if guarded(&self.clauses, start, end) || guarded(&self.ignored, start, end) || guarded(&self.labels, start, end) {
             return;
         }
         self.out.push(Candidate { field: field.to_string(), value, start, end, confidence });
@@ -841,8 +845,13 @@ fn labelled(registry: &FieldRegistry, index: &BTreeMap<String, Vec<String>>, fol
     let headings = headings(&chars, index);
     c.ignored.extend(ignored_ranges(&chars, &headings));
     for (i, heading) in headings.iter().enumerate() {
-        let ignored = c.ignored.clone();
-        let Some(value) = heading_value(&chars, original, &headings, i, &ignored) else { continue };
+        c.labels.push((heading.start, heading.value_start));
+        let Some(value) = heading_value(&chars, original, &headings, i, &c.ignored) else { continue };
+        // The heading owns its value even when no suggestion comes out of it: the text still describes that
+        // field, so a keyword or pattern inside it must not be read as some other field.
+        for key in &heading.fields {
+            c.owned.push((value.start, value.end, key.clone()));
+        }
         for key in &heading.fields {
             if !wanted(registry, targets, key) {
                 continue;
@@ -852,7 +861,6 @@ fn labelled(registry: &FieldRegistry, index: &BTreeMap<String, Vec<String>>, fol
             if registry.validate_value(key, &v).is_err() {
                 continue;
             }
-            c.owned.push((value.start, value.end, key.clone()));
             c.push(key, v, value.start, value.end, CONFIDENCE_LABEL);
         }
     }
@@ -1055,7 +1063,7 @@ fn patterns_scan(c: &mut Collector, text: &str, registry: &FieldRegistry, target
             for pat in [format!("city: {city}"), format!("شهر: {city}"), format!("شهر {city}")] {
                 for (b, _) in text.match_indices(&pat) {
                     let start = text[..b].chars().count() + pat.find(city).unwrap_or(0) + 1;
-                    c.push("city", Value::Text((*city).to_string()), start, start + city.chars().count(), CONFIDENCE_PATTERN);
+                    c.push_inferred("city", Value::Text((*city).to_string()), start, start + city.chars().count(), CONFIDENCE_PATTERN);
                 }
             }
         }
@@ -1069,7 +1077,7 @@ fn patterns_scan(c: &mut Collector, text: &str, registry: &FieldRegistry, target
                 for (b, _) in text.match_indices(&pat) {
                     let offset = pat.find(prov).unwrap_or(0);
                     let start = text[..b].chars().count() + pat[..offset].chars().count();
-                    c.push("province", Value::Text((*prov).to_string()), start, start + prov.chars().count(), CONFIDENCE_PATTERN);
+                    c.push_inferred("province", Value::Text((*prov).to_string()), start, start + prov.chars().count(), CONFIDENCE_PATTERN);
                 }
             }
         }
@@ -1085,7 +1093,7 @@ pub fn extract_with_rules(registry: &FieldRegistry, text: &str, targets: Option<
     let original: Vec<char> = text.chars().collect();
     // Joined once and shared by every scan: a run never rebuilds the searched string.
     let norm_text: String = norm_chars.iter().collect();
-    let mut c = Collector { clauses: partner_clauses(&norm_chars), owned: vec![], ignored: vec![], out: vec![] };
+    let mut c = Collector { clauses: partner_clauses(&norm_chars), owned: vec![], labels: vec![], ignored: vec![], out: vec![] };
     labelled(registry, &label_index(registry), &norm_text, &original, &mut c, targets);
     keywords(&mut c, &norm_text, registry, targets);
     patterns_scan(&mut c, &norm_text, registry, targets);
@@ -1255,6 +1263,41 @@ mod tests {
         assert_eq!(got["age"], crate::profile::Value::Num(38.0));
         assert_eq!(got["occupation"], crate::profile::Value::Text("مهندس".into()));
         assert!(!got.contains_key("religiosity"), "{got:?}");
+    }
+
+    #[test]
+    fn a_keyword_inside_another_fields_value_belongs_to_that_field() {
+        let got = fields("🌷شغل پدر: بازنشسته");
+        assert_eq!(got["father_occupation"], crate::profile::Value::Text("بازنشسته".into()));
+        assert!(!got.contains_key("employment_status"), "{got:?}");
+
+        let got = fields("نام و نام خانوادگی: مهسا قویمی\nشغل: مهندس");
+        assert_eq!(got["occupation"], crate::profile::Value::Text("مهندس".into()));
+        assert!(!got.contains_key("employment_status"), "{got:?}");
+    }
+
+    #[test]
+    fn a_keyword_inside_a_label_is_not_a_value() {
+        let got = fields("🌷میزان پایبندی دینی: متوسط");
+        assert_eq!(got["religiosity"], crate::profile::Value::Text("moderate".into()));
+
+        let got = fields("🌷وضعیت تاهل: مجرد\nسن: ۳۰");
+        assert_eq!(got["marital_status"], crate::profile::Value::Text("never_married".into()));
+        assert_eq!(got["age"], crate::profile::Value::Num(30.0));
+
+        // A label that names no field at all still must not feed a keyword: the words before the colon are a
+        // heading, never a value.
+        let got = fields("🌷یادداشت مذهبی: متن ساده\nسن: ۳۰");
+        assert!(!got.contains_key("religiosity"), "{got:?}");
+        assert_eq!(got["age"], crate::profile::Value::Num(30.0));
+    }
+
+    #[test]
+    fn a_value_that_does_not_convert_still_belongs_to_its_field() {
+        // «بازنشسته» is a value for a field the rules cannot fill, not a fact about employment: the heading
+        // owns the text even though no suggestion comes out of it.
+        let got = fields("🌷توضیح بازنشسته: متن ساده");
+        assert!(!got.contains_key("employment_status"), "{got:?}");
     }
 }
 
