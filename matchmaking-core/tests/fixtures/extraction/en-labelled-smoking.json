@@ -1,0 +1,6 @@
+{
+  "text": "Smoking: occasionally",
+  "expected": {
+    "smoking": "occasionally"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "text": "Number of children: 3",
+  "expected": {
+    "children_count": 3,
+    "has_children": true
+  }
+}

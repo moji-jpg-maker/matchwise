@@ -1,0 +1,7 @@
+{
+  "text": "City: Tehran\nProvince: Tehran",
+  "expected": {
+    "city": "tehran",
+    "province": "tehran"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "text": "Religious observance: moderately religious",
+  "expected": {
+    "religiosity": "moderate"
+  }
+}

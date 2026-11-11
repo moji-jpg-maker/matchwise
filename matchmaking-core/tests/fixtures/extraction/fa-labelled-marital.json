@@ -1,0 +1,6 @@
+{
+  "text": "وضعیت تاهل: مطلقه\nسابقه ازدواج: مجرد",
+  "expected": {
+    "marital_status": "divorced"
+  }
+}

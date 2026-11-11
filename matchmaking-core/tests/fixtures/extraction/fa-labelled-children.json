@@ -1,0 +1,7 @@
+{
+  "text": "تعداد فرزندان: ۲",
+  "expected": {
+    "children_count": 2,
+    "has_children": true
+  }
+}

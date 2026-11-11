@@ -170,8 +170,10 @@ fn patterns() -> &'static Patterns {
                 r(r"(?:فرزند|بچه|children|kids)[ \t]*(?:دارد|has|:)?[ \t]*(?P<v>\d{1,2})"),
             ],
             birth_date: r(r"\b(?P<v>\d{4}-\d{2}-\d{2})\b"),
-            lives_in: vec![r(r"(?:lives[ \t]+in|based[ \t]+in|living[ \t]+in)[ \t]+(?P<v>[\p{L}][\p{L} \-]{1,40})"), r(r"(?:ساکن|سکونت[ \t]*در|زندگی[ \t]*در)[ \t]*(?P<v>[\p{L}][\p{L} \-]{1,40})")],
-            born_in: vec![r(r"(?:born[ \t]+in|birthplace)[ \t]*[:：]?[ \t]*(?P<v>[\p{L}][\p{L} \-]{1,40})"), r(r"متولد[ \t]*(?P<v>[\p{L}][\p{L} \-]{1,40})")],
+            // These three classes are written unbounded and clipped in code: a `{1,40}` bound over a large
+            // Unicode class costs ~12 ms to compile, and compilation happens on the first run of the process.
+            lives_in: vec![r(r"(?:lives[ \t]+in|based[ \t]+in|living[ \t]+in)[ \t]+(?P<v>[\p{L}][\p{L} \-]*)"), r(r"(?:ساکن|سکونت[ \t]*در|زندگی[ \t]*در)[ \t]*(?P<v>[\p{L}][\p{L} \-]*)")],
+            born_in: vec![r(r"(?:born[ \t]+in|birthplace)[ \t]*[:：]?[ \t]*(?P<v>[\p{L}][\p{L} \-]*)"), r(r"متولد[ \t]*(?P<v>[\p{L}][\p{L} \-]*)")],
         }
     })
 }
@@ -208,6 +210,11 @@ fn pick_city(value: &str) -> Option<&'static str> {
 fn pick_province(value: &str) -> Option<&'static str> {
     let v = value.trim().trim_end_matches([',', '،', '.']).to_lowercase();
     PROVINCES.iter().find(|c| **c == v).copied()
+}
+
+/// A matched span may run long when the pattern leaves the tail open: keep the first words only.
+fn clip_words(value: &str, max: usize) -> String {
+    value.trim().chars().take(max).collect::<String>().trim_end().to_string()
 }
 
 // ------------------------------------------------------------------ candidate collection
@@ -599,8 +606,12 @@ fn value_from_label(def: &FieldDef, raw: &str) -> Option<Value> {
     }
     match &def.kind {
         FieldKind::Number => {
-            let n = if def.key == "siblings_count" { siblings_total(v) } else { first_number(v) }?;
-            number_in_range(n, 0.0, 20.0)
+            let mut n = if def.key == "siblings_count" { siblings_total(v) } else { first_number(v) }?;
+            // «قد: ۱.۷۲ متر» is metres; anything above 3 is already centimetres.
+            if def.key == "height_cm" && n > 0.0 && n < 3.0 {
+                n *= 100.0;
+            }
+            number_in_range(n, number_floor(&def.key), number_ceiling(&def.key))
         }
         FieldKind::Bool => match v.to_lowercase().as_str() {
             "yes" | "true" | "y" | "1" | "بله" | "دارد" | "درست" => Some(Value::Bool(true)),
@@ -608,8 +619,10 @@ fn value_from_label(def: &FieldDef, raw: &str) -> Option<Value> {
             _ => None,
         },
         FieldKind::Choice(opts) => {
-            let needle = v.to_lowercase();
-            opts.iter().find(|o| o.to_lowercase() == needle).cloned().or_else(|| synonym(&needle, opts)).map(Value::Text)
+            if def.key == "education" {
+                return highest_education(opts, v).map(Value::Text);
+            }
+            choice_in_value(opts, v).map(Value::Text)
         }
         FieldKind::MultiChoice(opts) => {
             let mut picked = vec![];
@@ -631,35 +644,106 @@ fn value_from_label(def: &FieldDef, raw: &str) -> Option<Value> {
     }
 }
 
-/// A small built-in synonym table for the default choice fields.
+/// The largest number a labelled value may hold. Everything else is a count from zero up.
+fn number_ceiling(key: &str) -> f64 {
+    match key {
+        "age" => 100.0,
+        "height_cm" => 230.0,
+        "weight_kg" => 250.0,
+        _ => 20.0,
+    }
+}
+
+/// The smallest number a labelled value may hold.
+fn number_floor(key: &str) -> f64 {
+    match key {
+        "age" => 16.0,
+        "height_cm" => 120.0,
+        "weight_kg" => 35.0,
+        _ => 0.0,
+    }
+}
+
+/// An option written exactly, or the longest synonym found anywhere in the value. Returns the option string.
+fn choice_in_value(opts: &[String], value: &str) -> Option<String> {
+    let needle = value.trim().to_lowercase();
+    if let Some(exact) = opts.iter().find(|o| o.to_lowercase() == needle) {
+        return Some(exact.clone());
+    }
+    // Longest synonym wins so «غیرمذهبی» is not read as «مذهبی».
+    let mut best: Option<(usize, String)> = None;
+    for name in SYNONYMS {
+        if !opts.iter().any(|o| o == name.0) {
+            continue;
+        }
+        for alias in name.1 {
+            let alias = alias.to_lowercase();
+            if !alias.is_empty() && needle.contains(&alias) && best.as_ref().is_none_or(|(len, _)| alias.chars().count() > *len) {
+                best = Some((alias.chars().count(), name.0.to_string()));
+            }
+        }
+    }
+    best.map(|(_, option)| option)
+}
+
+/// The highest education level named anywhere in the value. A labelled education field never leaves the rules
+/// ambiguous: "کارشناسی ارشد" names a master's even though it also contains "کارشناسی".
+fn highest_education(opts: &[String], value: &str) -> Option<String> {
+    const ORDER: &[&str] = &["secondary", "diploma", "bachelor", "master", "doctorate"];
+    let needle = value.to_lowercase();
+    let mut best: Option<(usize, &str)> = None;
+    for (rank, option) in ORDER.iter().enumerate() {
+        if !opts.iter().any(|o| o == option) {
+            continue;
+        }
+        let mut named = needle == *option;
+        if !named {
+            if let Some((_, aliases)) = SYNONYMS.iter().find(|(name, _)| name == option) {
+                named = aliases.iter().any(|alias| {
+                    let alias = alias.to_lowercase();
+                    !alias.is_empty() && needle.contains(&alias)
+                });
+            }
+        }
+        if named && best.is_none_or(|(seen, _)| rank > seen) {
+            best = Some((rank, option));
+        }
+    }
+    best.map(|(_, option)| option.to_string())
+}
+
+/// A small built-in synonym table for the default choice fields. The first entry of each pair is the option
+/// string; the rest are the words a matchmaker uses for it, in English and Persian.
+const SYNONYMS: &[(&str, &[&str])] = &[
+    ("female", &["woman", "girl", "زن", "خانم", "دختر", "زنانه"]),
+    ("male", &["man", "boy", "مرد", "آقا", "پسر", "مردانه"]),
+    ("never_married", &["single", "never married", "مجرد", "هرگز ازدواج نکرده", "بدون سابقه ازدواج"]),
+    ("divorced", &["divorced", "مطلقه", "جدا شده"]),
+    ("widowed", &["widow", "widowed", "بیوه", "همسر فوت شده"]),
+    ("separated", &["separated", "جدا زندگی می‌کند"]),
+    ("secondary", &["secondary", "دبیرستان", "متوسطه", "سیکل"]),
+    ("diploma", &["diploma", "دیپلم"]),
+    ("bachelor", &["bachelor", "ba", "bsc", "کارشناسی", "لیسانس"]),
+    ("master", &["master", "ma", "msc", "کارشناسی ارشد", "فوق لیسانس"]),
+    ("doctorate", &["phd", "doctorate", "دکترا", "دکتری"]),
+    ("other", &["other", "فوق دیپلم", "کاردانی", "سایر"]),
+    ("employed", &["employed", "full time", "شاغل", "تمام وقت"]),
+    ("self_employed", &["self employed", "freelance", "خودشتغل", "آزاد"]),
+    ("student", &["student", "دانشجو", "محصل"]),
+    ("unemployed", &["unemployed", "بیکار"]),
+    ("retired", &["retired", "بازنشسته"]),
+    ("never", &["never", "no", "هیچ", "هرگز", "اصلا", "نمی‌کشد", "نمی‌کشم", "سیگاری نیست", "سیگار نمی‌کشد"]),
+    ("occasionally", &["occasionally", "sometimes", "گاهی", "به ندرت", "کمی"]),
+    ("regularly", &["regularly", "daily", "regular", "روزانه", "همیشه", "مستمر", "سیگاری"]),
+    ("low", &["low", "کم", "ضعیف", "غیرمذهبی", "بدون اعتقادات"]),
+    ("moderate", &["moderate", "متوسط", "معمولی", "تا حدی"]),
+    ("high", &["high", "زیاد", "خیلی", "قوی", "مذهبی", "پایبند"]),
+];
+
+/// Kept for callers that only have a bare value rather than a labelled one.
 fn synonym(needle: &str, opts: &[String]) -> Option<String> {
-    let alias: &[(&str, &[&str])] = &[
-        ("female", &["woman", "girl", "زن", "خانم", "دختر", "زنانه"]),
-        ("male", &["man", "boy", "مرد", "آقا", "پسر", "مردانه"]),
-        ("never_married", &["single", "never married", "مجرد", "هرگز ازدواج نکرده"]),
-        ("divorced", &["divorced", "مطلقه", "جدا شده"]),
-        ("widowed", &["widow", "widowed", "بیوه", "همسر فوت شده"]),
-        ("separated", &["separated", "جدا زندگی می‌کند"]),
-        ("secondary", &["secondary", "دبیرستان", "متوسطه"]),
-        ("diploma", &["diploma", "دیپلم"]),
-        ("bachelor", &["bachelor", "ba", "bsc", "کارشناسی", "لیسانس"]),
-        ("master", &["master", "ma", "msc", "کارشناسی ارشد", "فوق لیسانس"]),
-        ("doctorate", &["phd", "doctorate", "دکترا", "دکتری"]),
-        ("other", &["other", "فوق دیپلم", "کاردانی", "سایر"]),
-        ("employed", &["employed", "full time", "شاغل", "تمام وقت"]),
-        ("self_employed", &["self employed", "freelance", "خودشتغل", "آزاد"]),
-        ("student", &["student", "دانشجو", "محصل"]),
-        ("unemployed", &["unemployed", "بیکار"]),
-        ("retired", &["retired", "بازنشسته"]),
-        ("never", &["never", "no", "هرگز", "اصلا"]),
-        ("occasionally", &["occasionally", "sometimes", "گاهی", "به ندرت"]),
-        ("regularly", &["regularly", "daily", "regular", "روزانه", "همیشه"]),
-        ("low", &["low", "کم", "ضعیف"]),
-        ("moderate", &["moderate", "متوسط", "معمولی"]),
-        ("high", &["high", "زیاد", "خیلی", "قوی"]),
-    ];
-    for (key, names) in alias {
-        if opts.iter().any(|o| o == key) && names.contains(&needle) {
+    for (key, names) in SYNONYMS {
+        if opts.iter().any(|o| o == key) && names.iter().any(|name| name.to_lowercase() == needle) {
             return Some((*key).to_string());
         }
     }
@@ -852,30 +936,75 @@ fn labelled(registry: &FieldRegistry, index: &BTreeMap<String, Vec<String>>, fol
         for key in &heading.fields {
             c.owned.push((value.start, value.end, key.clone()));
         }
+        // One value may name two fields (a place that is a city and a province): emit each pair once.
+        let mut emitted: Vec<(String, Value)> = vec![];
         for key in &heading.fields {
             if !wanted(registry, targets, key) {
                 continue;
             }
             let Some(def) = registry.get(key) else { continue };
-            let Some(v) = value_from_label(def, &value.text).map(|v| normalize_place(key, v)) else { continue };
-            if registry.validate_value(key, &v).is_err() {
-                continue;
+            let Some(v) = value_from_label(def, &value.text) else { continue };
+            for (field, v) in label_values(registry, key, v, &value.text) {
+                if !wanted(registry, targets, &field) || registry.validate_value(&field, &v).is_err() {
+                    continue;
+                }
+                if emitted.contains(&(field.clone(), v.clone())) {
+                    continue;
+                }
+                emitted.push((field.clone(), v.clone()));
+                c.push(&field, v, value.start, value.end, CONFIDENCE_LABEL);
             }
-            c.push(key, v, value.start, value.end, CONFIDENCE_LABEL);
         }
     }
 }
 
-/// A labelled city or province is stored under the built-in spelling when it is one, so two entries that write
-/// "Tehran" and "tehran" compare equal.
-fn normalize_place(field: &str, value: Value) -> Value {
-    let Value::Text(text) = &value else { return value };
-    let picked = match field {
-        "city" => pick_city(text),
-        "province" => pick_province(text),
-        _ => None,
-    };
-    picked.map_or(value, |name| Value::Text(name.to_string()))
+/// The suggestions one labelled value makes: the field the label names, plus the ones the value implies. A
+/// children count says whether there are children. A place that is both a city and a province fills both, and
+/// «X، Y» is read as province, then city.
+fn label_values(registry: &FieldRegistry, key: &str, value: Value, raw: &str) -> Vec<(String, Value)> {
+    match key {
+        "children_count" => {
+            let Value::Num(n) = value else { return vec![] };
+            let mut out = vec![(key.to_string(), Value::Num(n))];
+            if registry.get("has_children").is_some() {
+                out.push(("has_children".to_string(), Value::Bool(n > 0.0)));
+            }
+            out
+        }
+        "city" => place_labels(raw)
+            .into_iter()
+            .map(|(field, text)| (field.to_string(), Value::Text(text)))
+            .collect(),
+        "province" => {
+            let first = raw.split([',', '،', '/']).next().map(str::trim).unwrap_or(raw);
+            let text = pick_province(first).map(str::to_string).unwrap_or_else(|| first.to_string());
+            vec![(key.to_string(), Value::Text(text))]
+        }
+        _ => vec![(key.to_string(), value)],
+    }
+}
+
+/// The city and province a place value names. A known name is stored under its built-in spelling, so two
+/// entries that write "Tehran" and "tehran" compare equal.
+fn place_labels(raw: &str) -> Vec<(&'static str, String)> {
+    let parts: Vec<&str> = raw.split([',', '،', '/']).map(str::trim).filter(|p| !p.is_empty()).collect();
+    if let [first, second, ..] = parts.as_slice() {
+        if let (Some(province), Some(city)) = (pick_province(first), pick_city(second)) {
+            return vec![("province", province.to_string()), ("city", city.to_string())];
+        }
+    }
+    let whole = parts.first().copied().unwrap_or(raw).trim();
+    let mut out = vec![];
+    if let Some(city) = pick_city(whole) {
+        out.push(("city", city.to_string()));
+    }
+    if let Some(province) = pick_province(whole) {
+        out.push(("province", province.to_string()));
+    }
+    if out.is_empty() {
+        out.push(("city", whole.to_string()));
+    }
+    out
 }
 
 // ------------------------------------------------------------------ keyword patterns
@@ -1041,6 +1170,8 @@ fn patterns_scan(c: &mut Collector, text: &str, registry: &FieldRegistry, target
     if wanted(registry, targets, "city") {
         for re in &p.lives_in {
             c.regex_all(text, re, "city", CONFIDENCE_PATTERN, &|raw: &str| {
+                let raw = clip_words(raw, 40);
+                let raw = raw.as_str();
                 pick_city(raw).or_else(|| {
                     let first = raw.split_whitespace().next()?;
                     pick_city(first)
@@ -1051,7 +1182,7 @@ fn patterns_scan(c: &mut Collector, text: &str, registry: &FieldRegistry, target
     }
     if wanted(registry, targets, "birthplace") {
         for re in &p.born_in {
-            c.regex_all(text, re, "birthplace", CONFIDENCE_PATTERN, &|raw: &str| Some(Value::Text(raw.trim().to_string())));
+            c.regex_all(text, re, "birthplace", CONFIDENCE_PATTERN, &|raw: &str| Some(Value::Text(clip_words(raw, 40))));
         }
     }
     // a bare city name next to "city" / a known city mentioned alone
@@ -1089,6 +1220,9 @@ fn patterns_scan(c: &mut Collector, text: &str, registry: &FieldRegistry, target
 /// Read `text` with the local rules. `targets` limits which fields are considered (`None` = every
 /// eligible field); `profile` supplies the fields that are already filled (nothing is suggested twice).
 pub fn extract_with_rules(registry: &FieldRegistry, text: &str, targets: Option<&[String]>, profile: &Profile) -> RuleExtraction {
+    // Compiling the static regexes costs far more than reading a 20 000-character entry. Build them once, on the
+    // first run, so the first entry a matchmaker pastes is not the one that pays for it.
+    patterns();
     let norm_chars = fold(text);
     let original: Vec<char> = text.chars().collect();
     // Joined once and shared by every scan: a run never rebuilds the searched string.
@@ -1123,28 +1257,47 @@ pub fn extract_with_rules(registry: &FieldRegistry, text: &str, targets: Option<
     for (field, mut cands) in by_field {
         // labelled > pattern > keyword; then the first occurrence for stability
         cands.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal).then(a.start.cmp(&b.start)));
+        // Education names more than one level at once ("کارشناسی ارشد" contains "کارشناسی"): the highest level
+        // is the person's, so the field is read rather than left for the model.
+        if field == "education" {
+            if let Some(best) = cands.iter().max_by_key(|c| education_rank(&c.value)) {
+                let (value, start, end) = (best.value.clone(), best.start, best.end);
+                let confidence = best.confidence;
+                push_suggestion(&mut out, &original, field, value, start, end, confidence);
+                if out.suggestions.len() >= 40 {
+                    break;
+                }
+                continue;
+            }
+        }
         let best = &cands[0];
         if cands.iter().any(|c| c.value != best.value) {
             out.ambiguous.insert(field);
             continue;
         }
-        let evidence = slice_chars(&original, best.start, best.end);
-        if evidence.is_empty() {
-            continue;
-        }
-        out.suggestions.push(FieldSuggestion {
-            field,
-            value: best.value.clone(),
-            evidence,
-            confidence: best.confidence,
-            conflict: false,
-            source: SuggestionSource::Rule,
-        });
+        push_suggestion(&mut out, &original, field, best.value.clone(), best.start, best.end, best.confidence);
         if out.suggestions.len() >= 40 {
             break;
         }
     }
     out
+}
+
+fn push_suggestion(out: &mut RuleExtraction, original: &[char], field: String, value: Value, start: usize, end: usize, confidence: f64) {
+    let evidence = slice_chars(original, start, end);
+    if evidence.is_empty() {
+        return;
+    }
+    out.suggestions.push(FieldSuggestion { field, value, evidence, confidence, conflict: false, source: SuggestionSource::Rule });
+}
+
+/// How far up the education ladder a value sits; anything unrecognised ranks lowest.
+fn education_rank(value: &Value) -> usize {
+    const ORDER: &[&str] = &["secondary", "diploma", "bachelor", "master", "doctorate"];
+    match value {
+        Value::Text(text) => ORDER.iter().position(|level| *level == text).map_or(0, |i| i + 1),
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -1298,6 +1451,89 @@ mod tests {
         // owns the text even though no suggestion comes out of it.
         let got = fields("🌷توضیح بازنشسته: متن ساده");
         assert!(!got.contains_key("employment_status"), "{got:?}");
+    }
+
+    #[test]
+    fn a_labelled_choice_takes_an_option_or_the_longest_synonym_in_the_value() {
+        let got = fields("میزان پایبندی دینی: خیلی مذهبی");
+        assert_eq!(got["religiosity"], crate::profile::Value::Text("high".into()));
+
+        // «غیرمذهبی» contains «مذهبی»; the longer synonym is the one that counts.
+        let got = fields("میزان پایبندی دینی: غیرمذهبی");
+        assert_eq!(got["religiosity"], crate::profile::Value::Text("low".into()));
+
+        let got = fields("وضعیت تاهل: مطلقه");
+        assert_eq!(got["marital_status"], crate::profile::Value::Text("divorced".into()));
+
+        let got = fields("مصرف دخانیات: سیگاری نیست");
+        assert_eq!(got["smoking"], crate::profile::Value::Text("never".into()));
+
+        let got = fields("مصرف دخانیات: گاهی سیگار می‌کشد");
+        assert_eq!(got["smoking"], crate::profile::Value::Text("occasionally".into()));
+
+        // An option written exactly wins even when it is a single word.
+        let got = fields("Religious observance: moderate");
+        assert_eq!(got["religiosity"], crate::profile::Value::Text("moderate".into()));
+    }
+
+    #[test]
+    fn a_labelled_education_takes_the_highest_level_without_ambiguity() {
+        let reg = default_registry();
+        let out = extract_with_rules(&reg, "سطح تحصیلات: کارشناسی ارشد مهندسی", None, &Profile::new("x"));
+        assert!(!out.ambiguous.contains("education"), "{:?}", out.ambiguous);
+        assert_eq!(fields("سطح تحصیلات: کارشناسی ارشد مهندسی")["education"], crate::profile::Value::Text("master".into()));
+        assert_eq!(fields("Education: PhD in physics")["education"], crate::profile::Value::Text("doctorate".into()));
+        assert_eq!(fields("تحصیلات: دیپلم")["education"], crate::profile::Value::Text("diploma".into()));
+    }
+
+    #[test]
+    fn the_highest_education_keyword_wins_and_is_not_ambiguous() {
+        let reg = default_registry();
+        let out = extract_with_rules(&reg, "کارشناسی ارشد مهندسی، دانشگاه تهران", None, &Profile::new("x"));
+        assert!(!out.ambiguous.contains("education"), "{:?}", out.ambiguous);
+        let education = out.suggestions.iter().find(|s| s.field == "education").expect("education");
+        assert_eq!(education.value, crate::profile::Value::Text("master".into()));
+    }
+
+    #[test]
+    fn a_labelled_children_count_also_says_whether_there_are_children() {
+        let got = fields("تعداد فرزندان: ۲");
+        assert_eq!(got["children_count"], crate::profile::Value::Num(2.0));
+        assert_eq!(got["has_children"], crate::profile::Value::Bool(true));
+
+        let got = fields("تعداد فرزند: ۰");
+        assert_eq!(got["children_count"], crate::profile::Value::Num(0.0));
+        assert_eq!(got["has_children"], crate::profile::Value::Bool(false));
+    }
+
+    #[test]
+    fn labelled_age_height_and_weight_use_their_ranges() {
+        let got = fields("سن: ۳۷\nقد: ۱۷۲\nوزن: ۶۴");
+        assert_eq!(got["age"], crate::profile::Value::Num(37.0));
+        assert_eq!(got["height_cm"], crate::profile::Value::Num(172.0));
+        assert_eq!(got["weight_kg"], crate::profile::Value::Num(64.0));
+
+        let got = fields("قد: ۱.۷۲ متر");
+        assert_eq!(got["height_cm"], crate::profile::Value::Num(172.0));
+
+        assert!(!fields("سن: ۱۲۰").contains_key("age"));
+        assert!(!fields("قد: ۴۰").contains_key("height_cm"));
+        assert!(!fields("وزن: ۵۰۰").contains_key("weight_kg"));
+    }
+
+    #[test]
+    fn a_place_that_is_both_a_city_and_a_province_fills_both() {
+        let got = fields("شهر محل سکونت: تهران");
+        assert_eq!(got["city"], crate::profile::Value::Text("تهران".into()));
+        assert_eq!(got["province"], crate::profile::Value::Text("تهران".into()));
+
+        let got = fields("🌷 استان و شهر محل سکونت: گیلان، رشت");
+        assert_eq!(got["province"], crate::profile::Value::Text("گیلان".into()));
+        assert_eq!(got["city"], crate::profile::Value::Text("رشت".into()));
+
+        let got = fields("City: Tehran");
+        assert_eq!(got["city"], crate::profile::Value::Text("tehran".into()));
+        assert_eq!(got["province"], crate::profile::Value::Text("tehran".into()));
     }
 }
 
