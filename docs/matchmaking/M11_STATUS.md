@@ -138,5 +138,73 @@ finish, and always return something; the model is optional and is only asked abo
 8. Run `cargo test --lib ai::` outside the sandbox; expect no failures.
 
 ## Tests
-`matchmaking-core/tests/extract_rules.rs`, `matchmaking-core/tests/fixtures/extraction/` (30 samples),
+`matchmaking-core/tests/extract_rules.rs`, `matchmaking-core/tests/fixtures/extraction/` (52 samples),
 `frontend/src-tauri/src/ai/tests.rs`, `llama-helper/src/main.rs` (grammar invariants).
+
+## M11.1
+The M11.1 work is split into twelve vertical phases on `feat/m11-two-tier-extraction`: seven on the rule
+tier, then five on profile photos. Phases 1–6 are committed; this section covers phase 7, the full-sample
+fixture and the docs.
+
+### What changed in the rule tier (phases 1–6)
+- Number reading takes the first run of digits only, so «۲ خواهر و ۱ برادر» is one sibling line and sums to
+  3 instead of concatenating to 21; a siblings label sums the «N خواهر» and «M برادر» numbers.
+- Labels go through `clean_label`: emoji, variation selectors, ZWJ, bullets, `*`, `-` and leading numbering
+  are stripped, bracketed text and a trailing «خودم»/«شما»/«من» are dropped, ZWNJ folds to a space, ي/ك fold
+  and spaces collapse — after which the label must still match exactly. `LABEL_ALIASES` maps the English and
+  Persian spellings a form actually uses, and one alias may name several fields
+  («استان و شهر محل سکونت» fills both province and city).
+- `full_name` is read by the rules; `phone` and `telegram_username` are still skipped.
+- A labelled line with nothing after the colon takes the following lines up to the next labelled line,
+  capped at `MAX_VALUE_CHARS`. Bracketed asides, photo markers and partner blocks are ignored.
+- Line ownership records the label spans and the value each field owns; a pattern or keyword hit inside
+  another field's value or inside a label span is dropped, so «بازنشسته» on the father's line never becomes
+  the person's employment and «مذهبی» inside a label never becomes a value.
+- Labelled values become field values at confidence 0.95: exact option or synonym first, then the longest
+  synonym inside the value; education takes the highest level (also for keyword hits, so it is no longer
+  ambiguous); children count also suggests `has_children`; ranges apply to labelled ages, heights and
+  weights; a city that is also a province fills both, and «X، Y» is read as province then city.
+- Persian dates of birth are converted by the built-in `jalaali.rs` (no new dependency): `/`, `.` and `-`
+  separate the parts, a two-digit year means `13YY`, the part over 31 is the year and its position decides
+  the order, and month and day are checked against the month length including the leap Esfand. Persian
+  digits are folded before parsing, so `۱/۱/۶۸`, `۱۳۶۸/۱/۱` and `1368/1/1` all give `1989-03-21` at 0.95.
+  Gregorian dates keep their `YYYY-MM-DD` value.
+- `PARTNER_MARKERS` gained «همسرم» and «تمایل دارم», so «مشخصاتی که تمایل دارم همسرم داشته باشد» starts a
+  partner block rather than filling the person's own fields.
+
+### Phase 7: the full sample
+- `matchmaking-core/tests/fixtures/extraction/fa-form-full.json` is the anonymised 32-line intake form: an
+  emoji-decorated Persian questionnaire with a bracketed aside, a partner block and a photo marker.
+- It expects 22 values: `full_name`, `age` 37, `date_of_birth` `1989-03-21` from «۱/۱/۶۸», `education`
+  master (from a two-degree line), `occupation`, `height_cm` 165, `weight_kg` 64, `religiosity` moderate,
+  `marital_status` never_married from «ندارم», `children_count` 0 and `has_children` false,
+  `siblings_count` 2 from «۲ خواهر», father and mother occupation, `birthplace`, `family_origin`,
+  `health_notes`, `smoking` never from «خیر», `financial_situation`, `city` and `province` both Tehran from
+  the combined label, and `about` from the multiline psychological section.
+- It expects nothing else: no `gender` (left to the AI tier), no `employment_status` (the form does not
+  state one), and nothing from the partner block. The test also asserts the field set is exactly the
+  expected one, that every piece of evidence is an exact substring, and that no evidence comes from the
+  partner block.
+- `NEVER_SHARED` (`phone`, `telegram_username`, `full_name`, `date_of_birth`), `llm_eligible` and
+  `llm_targets` are unchanged: the rules read names and birth dates locally, and
+  `ai/tests.rs::names_and_birth_dates_are_read_locally_and_never_sent_to_a_model` pins that a model is never
+  asked for them, even when the matchmaker selects them.
+- `CLAUDE.md` records the label-cleaner/alias convention and the line-ownership rule next to the rest of the
+  rule-tier constraints.
+
+### Verified here
+- `cargo test -p matchmaking-core`: 167 passed across all suites, 24 of them in `tests/extract_rules.rs`.
+- `cargo test -p matchmaking-core --release --test extract_rules`: 24 passed. The 20 020-character entry
+  costs about 15 ms for a first call in a fresh process and about 5.5 ms once warm, against the 20 ms budget.
+  The check is flaky on a cold process with this machine under load: the first call occasionally lands at
+  20–25 ms, and HEAD does the same (25–63 ms observed), so this is measurement noise rather than a
+  regression; 20 consecutive warm runs passed.
+- Golden corpus: 52 fixtures, precision 1.000, recall 0.939 (108 of 115 expected values). The new fixture
+  adds no false positive, and the earlier aliases fixture still resolves.
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 377 passed. The 17 failures are the
+  loopback/network tests that cannot bind a socket in this sandbox (`PermissionDenied`), as before this work.
+
+### Still open
+- Phases 8–12 (photo storage, UI, Telegram intake and download, privacy check) are not started.
+- The manual checks in the plan — sending a two-photo album from Telegram and seeing it on the profile page
+  and in the inbox — need a real Telegram bot and a running app.

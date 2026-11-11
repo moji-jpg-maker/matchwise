@@ -310,6 +310,25 @@ async fn the_preview_reports_when_nothing_would_be_sent() {
     assert_eq!(service::preview_extraction(&pool, "p1", None, mode, matchmaking_core::Locale::En, Some(vec!["smoking".into()]), false).await.unwrap(), None);
 }
 
+#[tokio::test]
+async fn names_and_birth_dates_are_read_locally_and_never_sent_to_a_model() {
+    let pool = test_pool().await;
+    sara(&pool).await;
+    let reg = MmRepository::registry(&pool).await.unwrap();
+    let asked = Some(vec!["full_name".into(), "date_of_birth".into()]);
+    assert_eq!(
+        service::resolve_targets(&pool, &reg, asked.clone()).await.unwrap(),
+        vec!["full_name".to_string(), "date_of_birth".to_string()],
+        "the local rules may read a name and a birth date"
+    );
+    let mode = Mode { is_cloud: false, include_sensitive: true };
+    assert_eq!(
+        service::preview_extraction(&pool, "p1", None, mode, matchmaking_core::Locale::En, asked, false).await.unwrap(),
+        None,
+        "NEVER_SHARED fields are never model targets, so there is nothing to send even with a model available"
+    );
+}
+
 /// With the gate closed the panel still opens the preview: it must say why nothing would be sent, and never
 /// show a prompt or claim a call would happen.
 #[test]

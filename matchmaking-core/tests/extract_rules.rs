@@ -161,6 +161,24 @@ fn aliases_resolve_a_noisy_form() {
 }
 
 #[test]
+fn full_form_fills_every_labelled_field_and_nothing_from_the_partner_block() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extraction/fa-form-full.json");
+    let sample: Sample = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let found = run(&sample.text);
+    for (field, want) in &sample.expected {
+        let Some((v, _)) = found.get(field) else { panic!("{field} missing: {found:?}") };
+        let got = serde_json::to_value(v).unwrap();
+        assert!(got == *want || value_matches(want, &got), "{field}: {found:?}");
+    }
+    assert_eq!(found.len(), sample.expected.len(), "no extra or missing fields: {found:?}");
+    assert!(!found.contains_key("gender"), "gender is left to the AI tier: {found:?}");
+    assert!(!found.contains_key("employment_status"), "the form gives no employment status: {found:?}");
+    assert!(found.values().all(|(_, evidence)| sample.text.contains(evidence.as_str())), "evidence is always an exact substring");
+    let partner = "فردی مهربان، صادق، وفادار";
+    assert!(found.values().all(|(_, evidence)| !evidence.contains(partner)), "nothing comes from the partner block: {found:?}");
+}
+
+#[test]
 fn labelled_lines_for_each_custom_field_kind() {
     let mut reg = default_registry();
     let def = |key: &str, kind: FieldKind| FieldDef { key: key.into(), label: key.replace('_', " "), label_fa: None, kind, sensitive: false, required: false };

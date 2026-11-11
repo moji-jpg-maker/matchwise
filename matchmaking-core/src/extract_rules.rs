@@ -85,7 +85,8 @@ fn is_boundary(c: char) -> bool {
 const PARTNER_MARKERS: &[&str] = &[
     "looking for", "searching for", "seeking", "want a", "want an", "want to meet", "wants a", "wants an",
     "would like a", "hoping to meet", "partner should", "partner must", "must be a", "should be a",
-    "دنبال", "مایل به", "همسری", "می‌خواهد", "میخواهد", "همسر آینده", "طالب", "انتظار",
+    "دنبال", "مایل به", "همسری", "همسرم", "می‌خواهد", "میخواهد", "همسر آینده", "طالب", "انتظار",
+    "تمایل دارم",
 ];
 
 /// Where a clause that starts at `marker` begins: after the nearest coordinating conjunction or comma, so
@@ -656,7 +657,19 @@ fn value_from_label(def: &FieldDef, raw: &str) -> Option<Value> {
 /// is d/m/y). A date whose parts are all 31 or less names no year and is skipped. A four-digit year from
 /// 1900 on is Gregorian and passes through as `YYYY-MM-DD`.
 fn birth_date_in(value: &str) -> Option<String> {
-    let parts: Vec<i64> = value.split(['/', '.', '-']).map(str::trim).map(str::parse).collect::<Result<_, _>>().ok()?;
+    let parts: Vec<i64> = value
+        .chars()
+        .map(|c| match c {
+            '۰'..='۹' => char::from(b'0' + (c as u32 - '۰' as u32) as u8),
+            '٠'..='٩' => char::from(b'0' + (c as u32 - '٠' as u32) as u8),
+            other => other,
+        })
+        .collect::<String>()
+        .split(['/', '.', '-'])
+        .map(str::trim)
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
     if parts.len() != 3 {
         return None;
     }
@@ -768,7 +781,7 @@ fn highest_education(opts: &[String], value: &str) -> Option<String> {
 const SYNONYMS: &[(&str, &[&str])] = &[
     ("female", &["woman", "girl", "زن", "خانم", "دختر", "زنانه"]),
     ("male", &["man", "boy", "مرد", "آقا", "پسر", "مردانه"]),
-    ("never_married", &["single", "never married", "مجرد", "هرگز ازدواج نکرده", "بدون سابقه ازدواج"]),
+    ("never_married", &["single", "never married", "مجرد", "هرگز ازدواج نکرده", "بدون سابقه ازدواج", "ندارم", "سابقه ازدواج ندارم"]),
     ("divorced", &["divorced", "مطلقه", "جدا شده"]),
     ("widowed", &["widow", "widowed", "بیوه", "همسر فوت شده"]),
     ("separated", &["separated", "جدا زندگی می‌کند"]),
@@ -783,7 +796,7 @@ const SYNONYMS: &[(&str, &[&str])] = &[
     ("student", &["student", "دانشجو", "محصل"]),
     ("unemployed", &["unemployed", "بیکار"]),
     ("retired", &["retired", "بازنشسته"]),
-    ("never", &["never", "no", "هیچ", "هرگز", "اصلا", "نمی‌کشد", "نمی‌کشم", "سیگاری نیست", "سیگار نمی‌کشد"]),
+    ("never", &["never", "no", "هیچ", "هرگز", "اصلا", "نمی‌کشد", "نمی‌کشم", "سیگاری نیست", "سیگار نمی‌کشد", "خیر"]),
     ("occasionally", &["occasionally", "sometimes", "گاهی", "به ندرت", "کمی"]),
     ("regularly", &["regularly", "daily", "regular", "روزانه", "همیشه", "مستمر", "سیگاری"]),
     ("low", &["low", "کم", "ضعیف", "غیرمذهبی", "بدون اعتقادات"]),
