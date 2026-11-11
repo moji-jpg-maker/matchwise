@@ -28,8 +28,13 @@ finish, and always return something; the model is optional and is only asked abo
     (`0.75`). Labelled lines work for *any* registry field, including custom ones, by field kind.
   - Default-field patterns in English and Persian: age 16-100, height 120-230 cm (also metres), weight
     35-250 kg, gender, marital status, children and children count (number words one-ten and یک-ده),
-    education with longest-match-wins, employment, smoking, religiosity, ISO Gregorian dates of birth,
-    and city/province/birthplace.
+    education with longest-match-wins, employment, smoking, religiosity, dates of birth (Gregorian as typed,
+    Jalali converted to ISO Gregorian), and city/province/birthplace.
+  - Jalali dates of birth are converted by a built-in converter (`matchmaking-core/src/jalaali.rs`, no new
+    dependency). `/`, `.` and `-` separate the parts, a two-digit year means `13YY`, the part over 31 is the
+    year, and its position decides the order (`1368/1/1` is y/m/d, `1/1/1368` is d/m/y). A date whose parts
+    are all 31 or less is skipped; month and day are checked against the month length, including a 30-day leap
+    Esfand. A four-digit year of 1900 or later is Gregorian and keeps its `YYYY-MM-DD` value.
   - A partner-clause guard (looking for, seeking, wants a, دنبال, مایل به, همسری, می‌خواهد, ...) drops matches
     that describe the desired partner, so "looking for a woman" never sets the person's own gender. The
     clause starts after the nearest conjunction, so "41 years old and looking for a woman" keeps the age.
@@ -105,8 +110,8 @@ finish, and always return something; the model is optional and is only asked abo
 - The AI panel and the presets editor were type-checked, not opened. The dropdown, the checklist, the badges
   and the status line have not been exercised in a running app.
 - The 3 loopback HTTP tests, which need a normal machine (they pass outside this sandbox).
-- The rule corpus is 30 anonymised samples. Recall is 0.864: the rules deliberately leave Jalali dates of
-  birth and free-form occupation or lifestyle text to the model tier.
+- The rule corpus is 34 anonymised samples. Recall is 0.925 and precision is 1.000: the rules still leave
+  free-form occupation or lifestyle text to the model tier, but Jalali dates of birth are now read locally.
 
 ## Differences from the plan
 - The rule tier was made faster than the first draft without changing behaviour: the searched string is

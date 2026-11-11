@@ -13,6 +13,7 @@ pub mod lifecycle;
 pub mod locale;
 pub mod field;
 pub mod intake;
+pub mod jalaali;
 pub mod preferences;
 pub mod questionnaire;
 pub mod rule_validation;

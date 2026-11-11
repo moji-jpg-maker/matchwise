@@ -9,6 +9,7 @@
 
 use crate::ai::{FieldSuggestion, SuggestionSource, MAX_VALUE_CHARS};
 use crate::field::{FieldDef, FieldKind, FieldRegistry};
+use crate::jalaali;
 use crate::profile::{Profile, Value};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,7 +28,7 @@ pub struct RuleExtraction {
 
 /// Contact details the rule tier never fills, whatever the matchmaker asks for. Names are read: the rules run
 /// locally, and `full_name` stays out of introductions and model prompts through [`crate::sharing::NEVER_SHARED`].
-pub const RULES_SKIPPED: &[&str] = &["phone", "telegram_username", "date_of_birth"];
+pub const RULES_SKIPPED: &[&str] = &["phone", "telegram_username"];
 
 /// Whether the rule tier may read a field at all.
 pub fn rules_may_read(key: &str) -> bool {
@@ -138,7 +139,7 @@ struct Patterns {
     height_m: Vec<Regex>,
     weight: Vec<Regex>,
     children_count: Vec<Regex>,
-    birth_date: Regex,
+    date_parts: Regex,
     lives_in: Vec<Regex>,
     born_in: Vec<Regex>,
 }
@@ -169,7 +170,10 @@ fn patterns() -> &'static Patterns {
                 r(r"(?P<v>\d{1,2})[ \t]*(?:فرزند|بچه|children|kids)"),
                 r(r"(?:فرزند|بچه|children|kids)[ \t]*(?:دارد|has|:)?[ \t]*(?P<v>\d{1,2})"),
             ],
-            birth_date: r(r"\b(?P<v>\d{4}-\d{2}-\d{2})\b"),
+            // Separators are `/`, `.` and `-`, so both a Jalali and a Gregorian date are found here; whether
+            // the parts name a real date is decided in code.
+            // The leading guard keeps a five-digit run from being read as a four-digit year.
+            date_parts: r(r"(?:^|[^\d])(?P<v>\d{1,4}[/.\-]\d{1,2}[/.\-]\d{1,4})"),
             // These three classes are written unbounded and clipped in code: a `{1,40}` bound over a large
             // Unicode class costs ~12 ms to compile, and compilation happens on the first run of the process.
             lives_in: vec![r(r"(?:lives[ \t]+in|based[ \t]+in|living[ \t]+in)[ \t]+(?P<v>[\p{L}][\p{L} \-]*)"), r(r"(?:ساکن|سکونت[ \t]*در|زندگی[ \t]*در)[ \t]*(?P<v>[\p{L}][\p{L} \-]*)")],
@@ -637,11 +641,58 @@ fn value_from_label(def: &FieldDef, raw: &str) -> Option<Value> {
             if picked.is_empty() { None } else { Some(Value::List(picked)) }
         }
         FieldKind::Text => {
+            if def.key == "date_of_birth" {
+                return birth_date_in(v).map(Value::Text);
+            }
             let clipped: String = v.chars().take(MAX_VALUE_CHARS).collect();
             Some(Value::Text(clipped))
         }
         FieldKind::Records(_) => None,
     }
+}
+
+/// A date of birth written in a form, as ISO Gregorian. Jalali is the default: a two-digit year means the
+/// 1300s, the year is the part over 31, and its position decides the order (`1368/1/1` is y/m/d, `1/1/1368`
+/// is d/m/y). A date whose parts are all 31 or less names no year and is skipped. A four-digit year from
+/// 1900 on is Gregorian and passes through as `YYYY-MM-DD`.
+fn birth_date_in(value: &str) -> Option<String> {
+    let parts: Vec<i64> = value.split(['/', '.', '-']).map(str::trim).map(str::parse).collect::<Result<_, _>>().ok()?;
+    if parts.len() != 3 {
+        return None;
+    }
+    let mut years = parts.iter().enumerate().filter(|(_, n)| **n > 31);
+    let (year_at, raw_year) = years.next()?;
+    if years.next().is_some() {
+        return None;
+    }
+    let year = if *raw_year < 100 { 1300 + *raw_year } else { *raw_year };
+    let (month, day) = match year_at {
+        0 => (parts[1], parts[2]),
+        2 => (parts[0], parts[1]),
+        _ => return None,
+    };
+    if (1900..=2026).contains(&year) {
+        return gregorian_date(year, month, day);
+    }
+    // Jalali years outside this span cannot be a date of birth on a matchmaking form.
+    if !(1200..=1599).contains(&year) {
+        return None;
+    }
+    let (gy, gm, gd) = jalaali::to_gregorian(year as i32, month as u32, day as u32)?;
+    Some(format!("{gy:04}-{gm:02}-{gd:02}"))
+}
+
+/// A Gregorian `(year, month, day)` as `YYYY-MM-DD`, rejecting a day the month does not have.
+fn gregorian_date(year: i64, month: i64, day: i64) -> Option<String> {
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let lengths = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if day < 1 || day > lengths[month as usize - 1] {
+        return None;
+    }
+    Some(format!("{year:04}-{month:02}-{day:02}"))
 }
 
 /// The largest number a labelled value may hold. Everything else is a count from zero up.
@@ -1161,10 +1212,8 @@ fn patterns_scan(c: &mut Collector, text: &str, registry: &FieldRegistry, target
         }
     }
     if wanted(registry, targets, "date_of_birth") {
-        // Gregorian ISO only; a Jalali date is left for the model tier.
-        c.regex_all(text, &p.birth_date, "date_of_birth", CONFIDENCE_PATTERN, &|raw: &str| {
-            let year: i32 = raw.get(0..4)?.parse().ok()?;
-            if (1900..=2026).contains(&year) { Some(Value::Text(raw.to_string())) } else { None }
+        c.regex_all(text, &p.date_parts, "date_of_birth", CONFIDENCE_PATTERN, &|raw: &str| {
+            birth_date_in(raw).map(Value::Text)
         });
     }
     if wanted(registry, targets, "city") {

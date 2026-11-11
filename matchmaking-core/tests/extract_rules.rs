@@ -71,6 +71,33 @@ fn education_longest_match_wins() {
 }
 
 #[test]
+fn jalali_dates_of_birth_become_gregorian_iso() {
+    assert_eq!(value("تاریخ تولد: ۱۳۶۸/۱/۱", "date_of_birth"), txt("1989-03-21"));
+    assert_eq!(value("تاریخ تولد: ۱/۱/۱۳۶۸", "date_of_birth"), txt("1989-03-21"));
+    assert_eq!(value("تاریخ تولد: ۱۴۰۳/۱۲/۳۰", "date_of_birth"), txt("2025-03-20"));
+    assert_eq!(value("date of birth: 1399.12.30", "date_of_birth"), txt("2021-03-20"));
+    assert_eq!(value("تاریخ تولد: ۶۸-۱-۱", "date_of_birth"), txt("1989-03-21"));
+}
+
+#[test]
+fn a_date_with_no_year_part_and_an_impossible_date_are_skipped() {
+    // Every part is 31 or less, so the form names no year at all.
+    assert_eq!(value("تاریخ تولد: ۵/۱۰/۵", "date_of_birth"), None);
+    // 1402 is not a leap year, so its Esfand has 29 days.
+    assert_eq!(value("تاریخ تولد: ۱۴۰۲/۱۲/۳۰", "date_of_birth"), None);
+    assert_eq!(value("تاریخ تولد: ۱۴۰۲/۱۳/۱", "date_of_birth"), None);
+}
+
+#[test]
+fn gregorian_dates_of_birth_keep_their_behaviour() {
+    assert_eq!(value("Date of birth: 1992-04-18", "date_of_birth"), txt("1992-04-18"));
+    assert_eq!(value("birth date: 1992/04/18", "date_of_birth"), txt("1992-04-18"));
+    assert_eq!(value("born: 2024-02-29", "date_of_birth"), txt("2024-02-29"));
+    assert_eq!(value("born: 2023-02-29", "date_of_birth"), None);
+    assert_eq!(value("born: 1899-01-01", "date_of_birth"), None);
+}
+
+#[test]
 fn keywords_do_not_match_inside_longer_words() {
     assert_eq!(value("woman", "gender"), txt("female"));
     assert_eq!(value("human", "gender"), None);
