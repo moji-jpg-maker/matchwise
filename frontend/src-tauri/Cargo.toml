@@ -132,6 +132,7 @@ sysinfo = "0.32"
 lazy_static = { version = "1.4.0" }
 realfft = "3.4.0"
 regex = "1.11.0"
+infer = "0.15"
 ndarray = "0.16"
 bytes = { version = "1.9.0", features = ["serde"] }
 
@@ -208,7 +209,6 @@ futures-channel = "0.3.31"
 
 [dev-dependencies]
 tempfile = "3.3.0"
-infer = "0.15"
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 memory-stats = "1.0"
 strsim = "0.10.0"

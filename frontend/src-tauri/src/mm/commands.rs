@@ -297,12 +297,19 @@ pub async fn mm_set_profile_active(
 
 /// Permanently delete a profile.
 #[tauri::command]
-pub async fn mm_delete_profile(state: State<'_, AppState>, id: String, locale: Option<String>) -> Result<(), String> {
+pub async fn mm_delete_profile(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+    locale: Option<String>,
+) -> Result<(), String> {
     let pool = state.db_manager.pool();
     let n = MmRepository::delete_profile(pool, &id).await.map_err(err)?;
     if n == 0 {
         return Err(profile_not_found(locale_of(&locale)));
     }
+    // The rows are gone with the profile; the files are not, so remove the folder too.
+    super::photo_commands::delete_profile_photos(&app, pool, &id).await?;
     MmRepository::audit(pool, "delete", "profile", &id, None).await;
     Ok(())
 }

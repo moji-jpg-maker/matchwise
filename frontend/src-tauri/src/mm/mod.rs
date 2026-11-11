@@ -7,6 +7,8 @@ pub mod exposure_repo;
 pub mod intake_repo;
 pub mod match_commands;
 pub mod match_repo;
+pub mod photo_commands;
+pub mod photo_repo;
 pub mod ranking_commands;
 pub mod ranking_repo;
 pub mod repository;
@@ -20,5 +22,7 @@ mod export_tests;
 mod exposure_tests;
 #[cfg(test)]
 mod intake_tests;
+#[cfg(test)]
+mod photo_tests;
 #[cfg(test)]
 mod ranking_tests;

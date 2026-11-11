@@ -143,8 +143,8 @@ finish, and always return something; the model is optional and is only asked abo
 
 ## M11.1
 The M11.1 work is split into twelve vertical phases on `feat/m11-two-tier-extraction`: seven on the rule
-tier, then five on profile photos. Phases 1–6 are committed; this section covers phase 7, the full-sample
-fixture and the docs.
+tier, then five on profile photos. Phases 1–7 are committed; this section covers phase 8, photo storage and
+its commands.
 
 ### What changed in the rule tier (phases 1–6)
 - Number reading takes the first run of digits only, so «۲ خواهر و ۱ برادر» is one sibling line and sums to
@@ -192,6 +192,30 @@ fixture and the docs.
 - `CLAUDE.md` records the label-cleaner/alias convention and the line-ownership rule next to the rest of the
   rule-tier constraints.
 
+### Phase 8: photo storage and commands
+- Migration `20261111000000_add_profile_photos.sql` adds `mm_profile_photos`: a row describes one photo and
+  says who owns it, while the bytes stay on disk under `app_data_dir/mm_photos/<profile_id>/`. The table
+  cascades on profile delete and carries two uniqueness rules: `(profile_id, sha256)` keeps the same picture
+  once per person, and `(profile_id, position)` stops two photos sharing a slot, so display order does not
+  depend on `created_at`.
+- `photo_repo.rs` holds the storage rules: `infer` decides the format from the leading bytes, so a `.jpg`
+  that is not a JPEG is refused; only JPEG, PNG and WebP are accepted; the limits are 10 MB per file and ten
+  photos per profile, pending rows included. A file is written to a temporary name and renamed into place,
+  so an interrupted write cannot leave a truncated photo. Rejections are short codes (`unreadable`,
+  `too_large`, `not_image`, `duplicate`, `limit`) rather than messages, so the UI can translate them.
+- The three commands are `mm_profile_photos`, `mm_add_profile_photos` (several paths at once) and
+  `mm_delete_profile_photo`. Each checks that the profile exists first. The audit log records counts only —
+  `"2 photos"`, not a file name, path or hash, because a photo's name can be identifying.
+- `mm_delete_profile` now also removes the profile's photo folder. FK enforcement is off at runtime, as it is
+  for `mm_ai_log` and `mm_intake_notes`, so the photo rows are deleted explicitly rather than left to the
+  cascade.
+- Photos are stored exactly as received: no resizing, no re-encoding, no EXIF removal. Nothing here turns a
+  photo into a profile field.
+- `photo_tests.rs` covers format detection, a byte-for-byte copy, duplicates under another name or format,
+  non-images, empty and missing files, the 10 MB ceiling (and a file exactly at it), the ten-photo limit with
+  ordering and slot reuse after a delete, folder removal on profile delete, and a name that tries to escape
+  the photo folder.
+
 ### Verified here
 - `cargo test -p matchmaking-core`: 167 passed across all suites, 24 of them in `tests/extract_rules.rs`.
 - `cargo test -p matchmaking-core --release --test extract_rules`: 24 passed. The 20 020-character entry
@@ -201,10 +225,11 @@ fixture and the docs.
   regression; 20 consecutive warm runs passed.
 - Golden corpus: 52 fixtures, precision 1.000, recall 0.939 (108 of 115 expected values). The new fixture
   adds no false positive, and the earlier aliases fixture still resolves.
-- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 377 passed. The 17 failures are the
-  loopback/network tests that cannot bind a socket in this sandbox (`PermissionDenied`), as before this work.
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 386 passed, 9 of them in
+  `mm::photo_tests`. The 17 failures are the loopback/network tests that cannot bind a socket in this sandbox
+  (`PermissionDenied`), as before this work.
 
 ### Still open
-- Phases 8–12 (photo storage, UI, Telegram intake and download, privacy check) are not started.
+- Phases 9–12 (photo UI, Telegram intake and download, privacy check) are not started.
 - The manual checks in the plan — sending a two-photo album from Telegram and seeing it on the profile page
   and in the inbox — need a real Telegram bot and a running app.
