@@ -1,8 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 / 4.1–4.3 / 5.1–5.2 / 6.1–6.3 and phase 7 are built:
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **All eight phases are built:
 policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
-reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets, template introductions, template follow-ups, screened AI-written follow-ups, missing-info requests and inbound reply interpretation.** Nothing has been run with a real model.
+reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets, template introductions, template follow-ups, screened AI-written follow-ups, missing-info requests, inbound reply interpretation, outcomes and closing, and the L4 full-autonomy release.** L4 is opt-in and L0 remains the default, so upgraded installs keep their stored level. Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -76,8 +76,8 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
 
 ## Step 3.3: what shipped
 - RuleOverride is available as an individual step on the autonomy page. L1/L2/L3 default to Suggest;
-  custom Auto permits overrides. The L4 preset remains unreleased until phase 8, but its Auto modes for
-  built steps can be selected individually now.
+  custom Auto permits overrides. The L4 preset is released in phase 8; before that, its Auto modes for
+  built steps could already be selected individually.
 - `transition_match` accepts an optional `override_reason`, trimmed to at least three characters and bounded
   to 2,000 characters, including Persian. Excluded pairs can be recommended or approved only with both the
   destination step's permission and RuleOverride permission. Off denies either operation; Suggest proposes;
@@ -257,11 +257,29 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   and export; L1 proposals and approval; wrong-state, missing-outcome and out-of-scope denials; and `Stop` after
   contact. The protocol test covers the new statuses and outcome enum.
 
+## Phase 8: what shipped
+- L4 is released. `Level::is_released` and its check in `AutonomyPolicy::validate` are gone, so the preset saves and
+  loads. A core test asserts every step is built and that the L4 preset is Auto for every step, so no L4 step can
+  silently count as Off.
+- Storage round-trips the L4 preset and reports `matches_preset`; a fresh database and an upgraded one with no policy
+  row both load L0.
+- The autonomy page enables L4. Selecting it opens a confirmation dialog that says the agent will message candidates
+  and override rules without review; cancelling keeps the previous level. The L4 description in both languages now
+  mentions rule overrides.
+- The invariant test now uses the real L4 preset (not an L3-relabelled policy) and still denies the kill switch, a
+  closed AI gate, human-only actions, setting Interest and overwriting a person's value.
+- Full-flow scripted tests cover intake → extraction/acceptance → matches with analyses → Recommended → Reviewed →
+  Approved, then the template introduction, both candidates pressing yes to ContactExchanged, a feedback reply, the
+  agent-recorded outcome and a closed match. Every event carries the agent actor, and no NEVER_SHARED value or
+  identifier reaches the outbox.
+- The same flow at L1 produces proposals only: no status changes, no outbox rows and no accepted fields. A pause after
+  Approved leaves the durable work item untouched through one tick, and resuming continues the flow.
+
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
   On-demand runtime actions instead record their real `agent:<run_id>` actor.
-- L4 is unreleased until phase 8: `save_policy` rejects it and the UI disables it. A step that is not built always
-  counts as Off.
+- L4 is released: `save_policy` accepts it and the UI enables it behind a confirmation dialog. A step that is not
+  built would still always count as Off; today every step is built.
 - The rules-only tier is gated by the AI gate too, because a closed gate stops all agent actions.
 - `run_accept_all` in `ai/intake_commands.rs` is the manual, unthresholded path and is untouched.
 - All eighteen steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote,
@@ -274,19 +292,19 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   model work. Budget reservations are separate from retained AI prompts.
 
 ## Verified here
-- `cargo test -p matchmaking-core`: 200 passed, including the built-step policy matrix (now covering the outcome and
-  closing steps), invariant denials and actor-aware lifecycle checks.
-- `cargo test --lib autonomy_tests` in `src-tauri`: 14 passed.
+- `cargo test -p matchmaking-core`: 202 passed, including the built-step policy matrix, the L4 preset checks,
+  invariant denials and actor-aware lifecycle checks.
+- `cargo test --lib autonomy_tests` in `src-tauri`: 15 passed, including the L4 preset round-trip and the L0 default
+  for a database with no policy row.
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
   batch subjects, durable review windows and veto, invalid actions and configurable budget stops. A prompt regression test lives in
-  `ai/tests.rs`. All 67 agent tests pass, including recommendation/review, notes, transition undo, step 3.2
-  approval/rejection, rule override, migration, proposal, template follow-up, screened-message and phase 7
-  outcome/closing checks.
+  `ai/tests.rs`. All 72 agent tests pass, including recommendation/review, notes, transition undo, step 3.2
+  approval/rejection, rule override, migration, proposal, template follow-up, screened-message, phase 7
+  outcome/closing checks and the phase 8 invariant, L4 full-flow, L1 proposal-only and pause/resume checks.
 - `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib` (outside the sandbox, because the network tests
-  bind local sockets): 509 passed, 2 ignored; no real model was used.
+  bind local sockets): 515 passed, 2 ignored; no real model was used.
 
 ## Still open
-- Phase 8: the full autonomy release (L4) remains unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.
