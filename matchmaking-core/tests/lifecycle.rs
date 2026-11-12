@@ -118,3 +118,25 @@ fn refusals_follow_the_locale() {
     assert!(fa.contains("«بسته‌شده»") && fa.contains("پایان یافته"));
     assert_eq!(validate_transition(&finished, Approved, &TransitionRequest::default()).unwrap_err(), en);
 }
+
+#[test]
+fn agents_can_only_recommend_and_review_eligible_pairs_without_overrides() {
+    use matchmaking_core::autonomy::Actor;
+    let agent = Actor::agent_deterministic();
+    for (from, to) in [(Identified, Recommended), (Recommended, Reviewed)] {
+        assert!(validate_transition_by(agent, &ctx(from, true), to, &TransitionRequest::default()).is_ok());
+        assert!(validate_transition_by(agent, &ctx(from, false), to, &TransitionRequest::default()).is_err());
+        let req = TransitionRequest { override_reason: Some("Known family".into()), ..Default::default() };
+        assert!(validate_transition_by(agent, &ctx(from, false), to, &req).is_err());
+        assert!(validate_transition_by(agent, &ctx(from, true), to, &req).is_err());
+    }
+    for from in MatchStatus::PIPELINE.into_iter().chain([Rejected, Declined, Closed, Stopped]) {
+        for to in [Approved, Rejected, IntroductionProposed, BothInterested, ContactExchanged, Closed, Stopped] {
+            assert!(validate_transition_by(agent, &ctx(from, true), to, &TransitionRequest::default()).is_err());
+        }
+    }
+    assert!(validate_transition_by(agent, &ctx(Rejected, true), Reviewed, &TransitionRequest::default()).is_err());
+    let req = TransitionRequest { outcome: Some(Outcome::Married), ..Default::default() };
+    assert!(validate_transition_by(agent, &ctx(Identified, true), Recommended, &req).is_err());
+    assert!(validate_transition_by(Actor::Matchmaker, &ctx(Rejected, true), Reviewed, &TransitionRequest::default()).is_ok());
+}

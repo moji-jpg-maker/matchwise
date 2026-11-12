@@ -66,6 +66,9 @@ async fn policy_decision(
     if context.gate != AiGate::Open {
         return Err("AI gate is closed".into());
     }
+    if matches!(action.tool.as_str(), "transition_match" | "add_note") {
+        tools::check_match_action(pool, target, action, session.locale).await?;
+    }
     if tool.step == Some(Step::AcceptExtraction) {
         return tools::acceptance_decision(pool, target, action, &context, &policy).await;
     }

@@ -48,7 +48,7 @@ pub use scoring::{
 };
 pub use scoring_config::{validate_scoring_config, ScoringConfig};
 pub use lifecycle::{
-    apply_responses, can_record_outcome, can_record_responses, validate_text, validate_text_for, validate_transition, validate_transition_for, Interest, MatchStatus, Outcome,
+    apply_responses, can_record_outcome, can_record_responses, validate_text, validate_text_for, validate_transition, validate_transition_for, validate_transition_by, validate_transition_by_for, Interest, MatchStatus, Outcome,
     TransitionContext, TransitionPlan, TransitionRequest,
 };
 pub use sharing::{

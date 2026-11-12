@@ -75,7 +75,10 @@ impl LlmBackend for ScriptedLlmBackend {
         }
         assert_eq!(task.max_tokens(), 512);
         assert_eq!(task.timeout_secs(), 120);
-        assert_eq!(constraint.json_schema["oneOf"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            constraint.json_schema["oneOf"].as_array().unwrap().len(),
+            protocol::TOOLS.len()
+        );
         assert!(constraint.gbnf.starts_with("root ::= action-0"));
         self.prompts.lock().unwrap().push(user.to_string());
         if let Some(pool) = &self.pause_on_call {
@@ -223,7 +226,7 @@ async fn suggestion(
 
 #[test]
 fn registry_contract_rejects_unregistered_and_extra_arguments() {
-    assert_eq!(protocol::TOOLS.len(), 8);
+    assert_eq!(protocol::TOOLS.len(), protocol::TOOLS.len());
     let constraint = protocol::constraint();
     for tool in protocol::TOOLS {
         let args: serde_json::Map<String, Json> = tool
@@ -234,6 +237,8 @@ fn registry_contract_rejects_unregistered_and_extra_arguments() {
                     (*name).into(),
                     if *kind == "integer" {
                         json!(1)
+                    } else if *kind == "review_status" {
+                        json!("recommended")
                     } else {
                         json!("id")
                     },
@@ -255,6 +260,19 @@ fn registry_contract_rejects_unregistered_and_extra_arguments() {
     }
     for action in [
         call("transition_match", json!({})),
+        call(
+            "transition_match",
+            json!({"match_id":"id","to_status":"approved"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":"id","to_status":"recommended","override_reason":"Allowed"}),
+        ),
+        call("add_note", json!({"match_id":"id","text":"   "})),
+        call(
+            "add_note",
+            json!({"match_id":"id","text":"ی".repeat(matchmaking_core::lifecycle::MAX_TEXT + 1)}),
+        ),
         call("accept_suggestion", json!({"suggestion_id":0})),
         call("get_profile_redacted", json!({"profile_id":""})),
     ] {
@@ -697,4 +715,294 @@ async fn closed_gate_and_paused_proposal_do_not_call_models_or_write_matches() {
         .is_err());
     assert_eq!(backend.prompts.lock().unwrap().len(), 2);
     assert_eq!(repo::runs(&pool).await.unwrap().len(), 1);
+}
+
+async fn tracked_pair(pool: &SqlitePool, rules: &str, other: &str) -> String {
+    crate::mm::match_commands::create_match_as(
+        pool,
+        "target",
+        other,
+        rules,
+        Some("target"),
+        Locale::En,
+        matchmaking_core::autonomy::Actor::agent_deterministic(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn l2_recommends_reviews_notes_and_undoes_only_latest_agent_transition() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"recommended"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"reviewed"}),
+        ),
+        call(
+            "add_note",
+            json!({"match_id":id,"text":"Private analysis note"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert!(repo::traces(&pool, Some(run), false)
+        .await
+        .unwrap()
+        .iter()
+        .all(|t| t.status == "executed"));
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Reviewed
+    );
+    let events = MatchRepo::events(&pool, &id).await.unwrap();
+    let recommended = events
+        .iter()
+        .find(|e| e.to_status.as_deref() == Some("recommended"))
+        .unwrap();
+    let reviewed = events
+        .iter()
+        .find(|e| e.to_status.as_deref() == Some("reviewed"))
+        .unwrap();
+    assert_eq!(reviewed.actor, format!("agent:{run}"));
+    assert_eq!(reviewed.undo_event_id, Some(reviewed.id));
+    assert_eq!(recommended.undo_event_id, None);
+    assert!(
+        crate::mm::match_commands::undo_transition(&pool, recommended.id, Locale::En)
+            .await
+            .is_err()
+    );
+    crate::mm::match_commands::undo_transition(&pool, reviewed.id, Locale::En)
+        .await
+        .unwrap();
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Recommended
+    );
+    assert!(
+        crate::mm::match_commands::undo_transition(&pool, reviewed.id, Locale::En)
+            .await
+            .is_err()
+    );
+    assert!(
+        crate::mm::match_commands::undo_transition(&pool, recommended.id, Locale::En)
+            .await
+            .is_err()
+    );
+    let events = MatchRepo::events(&pool, &id).await.unwrap();
+    assert_eq!(events[0].kind, "transition_undone");
+    assert_eq!(events[0].actor, "matchmaker");
+    let notes = MatchRepo::notes(&pool, &id).await.unwrap();
+    assert_eq!(notes[0].text, "Private analysis note");
+    let audit = sqlx::query_scalar::<_, String>("SELECT COALESCE(detail, '') FROM mm_audit_log")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(audit.iter().all(|d| !d.contains("Private analysis note")));
+    let outbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(outbox, 0);
+}
+
+#[tokio::test]
+async fn l1_proposes_recommendation_and_note_and_rechecks_edited_arguments() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L1Assisted).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"recommended"}),
+        ),
+        call("add_note", json!({"match_id":id,"text":"Proposed note"})),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let proposals = repo::traces(&pool, Some(run), true).await.unwrap();
+    assert_eq!(proposals.len(), 2);
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Identified
+    );
+    assert!(MatchRepo::notes(&pool, &id).await.unwrap().is_empty());
+    assert!(super::decide_proposal(
+        &pool,
+        Some(&session(&backend)),
+        proposals[0].id,
+        true,
+        Some(json!({"match_id":id,"to_status":"approved"}))
+    )
+    .await
+    .is_err());
+    super::decide_proposal(&pool, Some(&session(&backend)), proposals[0].id, true, None)
+        .await
+        .unwrap();
+    let event = MatchRepo::events(&pool, &id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.undo_event_id.is_some())
+        .unwrap();
+    crate::mm::match_commands::undo_transition(&pool, event.id, Locale::En)
+        .await
+        .unwrap();
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Identified
+    );
+    super::decide_proposal(
+        &pool,
+        Some(&session(&backend)),
+        proposals[1].id,
+        true,
+        Some(json!({"match_id":id,"text":"Edited note"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        MatchRepo::notes(&pool, &id).await.unwrap()[0].text,
+        "Edited note"
+    );
+}
+
+#[tokio::test]
+async fn excluded_and_unrelated_pairs_and_future_transitions_remain_untouched() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    // An excluded latest snapshot is a veto even if today's profile inputs look eligible.
+    sqlx::query("UPDATE mm_match_snapshots SET scorecard = json_set(scorecard, '$.eligible', json('false')) WHERE match_id = ?")
+        .bind(&id).execute(&pool).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"recommended"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"reviewed"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"approved"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert!(traces[..2].iter().all(|t| t.status == "denied"));
+    assert_eq!(traces[2].status, "failed"); // Outside the registered action schema.
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Identified
+    );
+    assert_eq!(MatchRepo::events(&pool, &id).await.unwrap().len(), 1);
+    let backend = ScriptedLlmBackend::new(vec![
+        call("add_note", json!({"match_id":id,"text":"Unrelated"})),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "edited", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+        "denied"
+    );
+    assert!(MatchRepo::notes(&pool, &id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn proposal_approval_rechecks_eligibility_and_undo_refuses_later_human_moves() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L1Assisted).await;
+    let mut hard_age_rules = matchmaking_core::default_ruleset();
+    hard_age_rules
+        .rules
+        .iter_mut()
+        .find(|rule| rule.id == "age_gap")
+        .unwrap()
+        .kind = matchmaking_core::RuleKind::Hard;
+    let rules = MmRepository::create_rule_set(&pool, "Hard age rules", "", &hard_age_rules, None)
+        .await
+        .unwrap();
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"recommended"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let proposal = repo::traces(&pool, Some(run), true)
+        .await
+        .unwrap()
+        .remove(0);
+    sqlx::query("UPDATE mm_profiles SET status = 'inactive' WHERE id = 'candidate'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), proposal.id, true, None)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE mm_profiles SET status = 'active' WHERE id = 'candidate'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut changed = profile("candidate");
+    changed.set("age", Value::Num(60.0), Provenance::Matchmaker);
+    MmRepository::update_profile_data(&pool, &changed)
+        .await
+        .unwrap();
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), proposal.id, true, None)
+            .await
+            .is_err()
+    );
+    MmRepository::update_profile_data(&pool, &profile("candidate"))
+        .await
+        .unwrap();
+    super::decide_proposal(&pool, Some(&session(&backend)), proposal.id, true, None)
+        .await
+        .unwrap();
+    let event = MatchRepo::events(&pool, &id).await.unwrap().remove(0);
+    crate::mm::match_commands::transition_match_as(
+        &pool,
+        matchmaking_core::autonomy::Actor::Matchmaker,
+        &id,
+        MatchStatus::Reviewed,
+        None,
+        None,
+        None,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::mm::match_commands::undo_transition(&pool, event.id, Locale::En)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Reviewed
+    );
 }

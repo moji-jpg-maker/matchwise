@@ -86,8 +86,8 @@ fn built_step_follows_the_preset_mode() {
 }
 
 #[test]
-fn phase_two_steps_follow_each_mode_without_enabling_later_steps() {
-    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair] {
+fn built_steps_follow_each_mode_without_enabling_later_steps() {
+    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair, Step::AddNote, Step::Recommend] {
         assert!(step.is_built());
         let action = Action::Step(step);
         assert_eq!(decide(&action, &open(), &AutonomyPolicy::default()), denied(DenyReason::StepOff));
@@ -97,7 +97,7 @@ fn phase_two_steps_follow_each_mode_without_enabling_later_steps() {
         policy.steps.insert(step, StepMode::ReviewWindow { minutes: 60 });
         assert_eq!(decide(&action, &open(), &policy), Decision::Schedule { at: NOW + 3600 });
     }
-    for step in [Step::Approve, Step::Recommend, Step::RuleOverride, Step::SendMessage] {
+    for step in [Step::Approve, Step::RuleOverride, Step::SendMessage] {
         assert!(!step.is_built());
         assert_eq!(decide(&Action::Step(step), &open(), &all_auto()), denied(DenyReason::StepOff));
     }
@@ -134,6 +134,9 @@ fn kill_switch_and_gate_stop_everything() {
     }
 
     policy.paused = true;
+    for step in Step::ALL {
+        assert_eq!(decide(&Action::Step(step), &open(), &policy), denied(DenyReason::Paused));
+    }
     assert_eq!(decide(&action, &open(), &policy), denied(DenyReason::Paused));
     assert_eq!(decide(&action, &closed, &policy), denied(DenyReason::Paused));
 }
@@ -247,4 +250,11 @@ fn policy_json_matches_the_golden_fixture() {
     assert_eq!(serde_json::to_value(&policy).unwrap(), fixture);
     let back: AutonomyPolicy = serde_json::from_value(fixture).unwrap();
     assert_eq!(back, policy);
+}
+
+#[test]
+fn built_steps_match_the_frontend_contract_fixture() {
+    let built: Vec<_> = Step::ALL.into_iter().filter(|s| s.is_built()).collect();
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("fixtures/autonomy/built_steps.json")).unwrap();
+    assert_eq!(serde_json::to_value(built).unwrap(), fixture);
 }

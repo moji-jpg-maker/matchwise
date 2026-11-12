@@ -49,6 +49,8 @@ pub struct NoteRow {
 }
 
 pub struct EventRow {
+    pub id: i64,
+    pub undo_event_id: Option<i64>,
     pub at: String,
     pub actor: String,
     pub kind: String,
@@ -232,14 +234,44 @@ impl MatchRepo {
         let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
-        sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), override_reason = COALESCE(?, override_reason), updated_at = ? WHERE id = ?")
-            .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(override_reason).bind(&now).bind(id)
+        let updated = sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), override_reason = COALESCE(?, override_reason), updated_at = ? WHERE id = ? AND status = ?")
+            .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(override_reason).bind(&now).bind(id).bind(from.as_str())
             .execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'status_changed', ?, ?, ?)")
+        if updated.rows_affected() != 1 { return Err(bad("Match status changed")); }
+        let event = sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'status_changed', ?, ?, ?)")
             .bind(id).bind(&now).bind(&actor_text).bind(from.as_str()).bind(to.as_str()).bind(detail)
             .execute(&mut *tx).await?;
+        if actor.is_agent() && matches!((from, to),
+            (MatchStatus::Identified, MatchStatus::Recommended) | (MatchStatus::Recommended, MatchStatus::Reviewed)) {
+            sqlx::query("INSERT INTO mm_agent_transition_undo (event_id) VALUES (?)")
+                .bind(event.last_insert_rowid()).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Restore only the latest lifecycle event, atomically. A later move away and back still invalidates the receipt.
+    pub async fn undo_agent_transition(pool: &SqlitePool, event_id: i64) -> Result<String, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        let row = sqlx::query("SELECT e.match_id, e.from_status, e.to_status FROM mm_match_events e JOIN mm_agent_transition_undo u ON u.event_id = e.id JOIN mm_matches m ON m.id = e.match_id WHERE e.id = ? AND u.undone_at IS NULL AND m.status = e.to_status AND NOT EXISTS (SELECT 1 FROM mm_match_events later WHERE later.match_id = e.match_id AND later.id > e.id AND later.to_status IS NOT NULL)")
+            .bind(event_id).fetch_optional(&mut *tx).await?.ok_or_else(|| bad("Transition is no longer undoable"))?;
+        let id: String = row.get("match_id");
+        let from: String = row.get("from_status");
+        let to: String = row.get("to_status");
+        // The receipt table is only populated for these two transitions; also check on read.
+        if !matches!((from.as_str(), to.as_str()), ("identified", "recommended") | ("recommended", "reviewed")) {
+            return Err(bad("Transition is not undoable"));
+        }
+        let now = Utc::now().to_rfc3339();
+        let updated = sqlx::query("UPDATE mm_matches SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
+            .bind(&from).bind(&now).bind(&id).bind(&to).execute(&mut *tx).await?;
+        if updated.rows_affected() != 1 { return Err(bad("Match status changed")); }
+        sqlx::query("UPDATE mm_agent_transition_undo SET undone_at = ? WHERE event_id = ?")
+            .bind(&now).bind(event_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', 'transition_undone', ?, ?, ?)")
+            .bind(&id).bind(&now).bind(&to).bind(&from).bind(event_id.to_string()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(id)
     }
 
     /// Record what the two people said and any status change that follows, in one transaction.
@@ -325,10 +357,15 @@ impl MatchRepo {
     }
 
     pub async fn events(pool: &SqlitePool, id: &str) -> Result<Vec<EventRow>, sqlx::Error> {
-        let rows = sqlx::query("SELECT at, actor, kind, from_status, to_status, detail FROM mm_match_events WHERE match_id = ? ORDER BY id DESC").bind(id).fetch_all(pool).await?;
+        let rows = sqlx::query("SELECT e.id, e.at, e.actor, e.kind, e.from_status, e.to_status, e.detail,
+            CASE WHEN u.undone_at IS NULL AND m.status = e.to_status AND NOT EXISTS
+                (SELECT 1 FROM mm_match_events later WHERE later.match_id = e.match_id AND later.id > e.id AND later.to_status IS NOT NULL)
+                THEN u.event_id END AS undo_event_id
+            FROM mm_match_events e LEFT JOIN mm_agent_transition_undo u ON u.event_id = e.id
+            JOIN mm_matches m ON m.id = e.match_id WHERE e.match_id = ? ORDER BY e.id DESC").bind(id).fetch_all(pool).await?;
         Ok(rows
             .iter()
-            .map(|r| EventRow { at: r.get("at"), actor: r.get("actor"), kind: r.get("kind"), from_status: r.get("from_status"), to_status: r.get("to_status"), detail: r.get("detail") })
+            .map(|r| EventRow { id: r.get("id"), undo_event_id: r.get("undo_event_id"), at: r.get("at"), actor: r.get("actor"), kind: r.get("kind"), from_status: r.get("from_status"), to_status: r.get("to_status"), detail: r.get("detail") })
             .collect())
     }
 

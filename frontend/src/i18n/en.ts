@@ -539,6 +539,7 @@ export const en = {
       not_interested: 'Not interested',
     },
     event: {
+      transitionUndone: 'Undid transition: {from} → {to}',
       created: 'Tracked as {status}',
       automatic: ' (automatic)',
       responseRecorded: 'Interest recorded',

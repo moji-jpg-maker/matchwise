@@ -99,6 +99,8 @@ export function describeEvent(e: MatchEvent, t: Translate): string {
   switch (e.kind) {
     case 'created':
       return t('workflow.event.created', { status: statusText(t, e.to_status) });
+    case 'transition_undone':
+      return t('workflow.event.transitionUndone', { from: statusText(t, e.from_status), to: statusText(t, e.to_status) });
     case 'status_changed':
       return `${statusText(t, e.from_status)} → ${statusText(t, e.to_status)}${e.actor === 'system' ? t('workflow.event.automatic') : ''}`;
     case 'response_recorded':

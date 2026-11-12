@@ -5,7 +5,10 @@ use crate::ai::{
 };
 use crate::mm::{
     autonomy_repo::AutonomyRepo,
-    match_commands::{compute_scorecard, create_match_as},
+    match_commands::{
+        add_match_note_as, check_transition_as, compute_scorecard, create_match_as,
+        transition_match_as,
+    },
     match_repo::MatchRepo,
     repository::MmRepository,
     scoring_config_repo::ScoringConfigRepo,
@@ -15,7 +18,7 @@ use matchmaking_core::{
         acceptance_check, decide, Action as PolicyAction, Actor, AutonomyPolicy, Decision,
         DecisionContext, Step,
     },
-    Provenance, Value,
+    MatchStatus, Provenance, TransitionRequest, Value,
 };
 use serde_json::{json, Value as Json};
 use sqlx::SqlitePool;
@@ -131,6 +134,40 @@ async fn redacted_profile(
     Ok(json!({"profile_id":id,"fields":fields}))
 }
 
+/// Validate scope and lifecycle before a proposal is recorded, and before a tool executes.
+pub async fn check_match_action(
+    pool: &SqlitePool,
+    target: &str,
+    action: &Action,
+    locale: matchmaking_core::Locale,
+) -> Result<(), String> {
+    let id = action.string("match_id");
+    let pair = MatchRepo::get(pool, id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Match not found")?;
+    if pair.profile_a != target && pair.profile_b != target {
+        return Err("Match is outside target".into());
+    }
+    if action.tool == "transition_match" {
+        let to: MatchStatus = action.string("to_status").parse()?;
+        check_transition_as(
+            pool,
+            Actor::agent_deterministic(),
+            id,
+            to,
+            &TransitionRequest {
+                reason: None,
+                override_reason: None,
+                outcome: None,
+            },
+            locale,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 pub async fn execute(
     pool: &SqlitePool,
     session: &Session<'_>,
@@ -153,7 +190,7 @@ pub async fn execute(
                 .map_err(|error| error.to_string())?;
             Ok(
                 json!({"suggestions":suggestions.iter().take(100).map(|suggestion| json!({"suggestion_id":suggestion.id,"confidence":suggestion.confidence})).collect::<Vec<_>>(),
-                "matches":matches.iter().filter(|(pair, _)| pair.profile_a == target || pair.profile_b == target).take(100).map(|(pair, _)| json!({"match_id":pair.id})).collect::<Vec<_>>(),
+                "matches":matches.iter().filter(|(pair, _)| pair.profile_a == target || pair.profile_b == target).take(100).map(|(pair, card)| json!({"match_id":pair.id,"status":pair.status,"eligible":card.as_ref().and_then(|c| c["eligible"].as_bool()).unwrap_or(false)})).collect::<Vec<_>>(),
                 "rule_sets":rules.iter().map(|(rule, _)| json!({"rule_set_id":rule.id})).collect::<Vec<_>>()}),
             )
         }
@@ -270,6 +307,19 @@ pub async fn execute(
             )
             .await?;
             Ok(json!({"match_id":id}))
+        }
+        "transition_match" | "add_note" => {
+            action.validate()?;
+            check_match_action(pool, target, action, session.locale).await?;
+            let id = action.string("match_id");
+            if action.tool == "transition_match" {
+                let to: MatchStatus = action.string("to_status").parse()?;
+                transition_match_as(pool, actor, id, to, None, None, None, session.locale).await?;
+                Ok(json!({"match_id":id,"status":to}))
+            } else {
+                add_match_note_as(pool, actor, id, action.string("text"), session.locale).await?;
+                Ok(json!({"match_id":id,"note_added":true}))
+            }
         }
         "analyse_pair" => {
             let id = action.string("match_id");

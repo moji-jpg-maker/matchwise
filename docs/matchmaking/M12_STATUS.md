@@ -1,7 +1,7 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 are built:
-policy-checked extraction acceptance and an on-demand read/analysis agent.** Nothing has been run with a real model.
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and step 3.1 are built:
+policy-checked extraction acceptance, an on-demand read/analysis agent, and eligible-pair recommendation/review.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -24,7 +24,7 @@ policy-checked extraction acceptance and an on-demand read/analysis agent.** Not
 
 ## Phase 2: what shipped
 - `src-tauri/src/agent/`: one validated JSON action per turn, with GBNF and JSON Schema generated from the same
-  eight-tool registry and passed through `complete_structured`. `TaskProfile::Agent` uses 512 output tokens and a
+  tool registry and passed through `complete_structured`. `TaskProfile::Agent` uses 512 output tokens and a
   120-second timeout. Runs stop at `finish`, 20 turns, a closed gate, a configuration change or the kill switch.
 - Tools: `list_work`, `get_profile_redacted`, `run_extraction`, `accept_suggestion`, `find_matches`, `create_match`,
   `analyse_pair`, `finish`. Profile observations use the existing redactor and sensitive-field gate; observations
@@ -39,6 +39,24 @@ policy-checked extraction acceptance and an on-demand read/analysis agent.** Not
 - UI: Run now on saved active profiles and imported intake batches; run history, expandable traces and editable
   approvals inbox on `app/autonomy`. English and Persian. Batches execute sequentially, one subject per run.
 
+## Step 3.1: what shipped
+- `transition_match` accepts only `recommended` or `reviewed`; `add_note` adds a private match note. Both
+  appear in the generated action grammar/schema, existing run traces and approvals inbox. Recommend and AddNote
+  are enabled on the autonomy page: L2 executes them, L1 proposes them.
+- Core `validate_transition_by` restricts agent transitions to eligible Identified → Recommended and
+  Recommended → Reviewed. Agents cannot supply overrides, attach outcomes or reconsider rejections.
+- The tools reuse the human lifecycle, repository, audit and notification services. Each request must involve the
+  run's target. Recommendation/review checks the saved scorecard and re-scores current active profiles with the
+  match's recorded rules/config, including current preferences. Proposal approval repeats these checks.
+- Match timeline events carry AI badges and an Undo button for the latest agent recommendation/review.
+  `agent_undo_transition` atomically restores the prior status and records a matchmaker undo event/audit row.
+  Undo is refused after any later lifecycle event, including moving away and back; notes do not block it.
+  A consumed undo cannot expose earlier transitions for cascading undo. No notification is sent for these internal moves.
+- Migration `20261112020000_add_agent_transition_undo.sql` stores one-use transition undo receipts.
+  Free-text notes stay in match notes and agent traces, outside `mm_audit_log`. English and Persian timeline strings ship.
+- Scripted tests cover L2 recommendation/review/notes, L1 proposals and edited approval, excluded/unrelated pairs,
+  stale profiles at approval, actor attribution, no outbox writes and undo after later human changes.
+
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
   On-demand runtime actions instead record their real `agent:<run_id>` actor.
@@ -46,22 +64,23 @@ policy-checked extraction acceptance and an on-demand read/analysis agent.** Not
   counts as Off.
 - The rules-only tier is gated by the AI gate too, because a closed gate stops all agent actions.
 - `run_accept_all` in `ai/intake_commands.rs` is the manual, unthresholded path and is untouched.
-- Only five steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch and AnalysePair.
+- Seven steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote and Recommend.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
 - Runtime/model access is serialized. There is no background scheduler or review-window executor: a ReviewWindow
   action is explicitly denied as unavailable, never executed early. Hourly/message budgets belong to later phases.
 
 ## Verified here
-- `cargo test -p matchmaking-core`: passes, including the phase-2 policy matrix and invariant denials.
+- `cargo test -p matchmaking-core`: 188 passed, including the built-step policy matrix, invariant denials
+  and actor-aware lifecycle checks.
 - `cargo test --lib autonomy_tests` in `src-tauri`: 14 passed.
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
   batch subjects, unavailable review windows, invalid actions and the 20-turn stop. A prompt regression test lives in
-  `ai/tests.rs`.
-- `cargo test -p matchwise --lib`: 444 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
+  `ai/tests.rs`. All 14 agent tests pass, including step 3.1 recommendation/review, notes and transition undo.
+- `cargo test -p matchwise --lib`: 448 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
   so its local HTTP fixture servers could bind sockets; no real model was used.
 
 ## Still open
-- Phases 3–8. No lifecycle transition tools, scheduler or agent messages to candidates.
+- Steps 3.2–8: approval/rejection, overrides, scheduler and agent messages to candidates remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.

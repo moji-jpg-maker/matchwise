@@ -39,6 +39,8 @@ function same(label, actual, expected) {
 }
 
 const fixtureSteps = Object.keys(fixture.steps);
+const coreBuiltSteps = JSON.parse(fs.readFileSync(path.join(root, '..', 'matchmaking-core', 'tests', 'fixtures', 'autonomy', 'built_steps.json'), 'utf8'));
+same('BUILT_AUTONOMY_STEPS', builtSteps, coreBuiltSteps);
 same('AutonomyStep', unionSteps, fixtureSteps);
 same('AUTONOMY_STEPS', listedSteps, fixtureSteps);
 same('AutonomyLevel', unionLevels, [fixture.level, ...unionLevels]);

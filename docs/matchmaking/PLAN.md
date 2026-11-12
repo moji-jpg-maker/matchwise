@@ -44,7 +44,7 @@ Same feature set as before, ordered so something works end to end early.
   action records its actor. Eight vertical phases, each releasable alone, L0 staying the default: (1) policy and
   autonomous extraction acceptance, (2) agent runtime with read and analysis tools, (3) recommend, approve, reject and
   rule override, (4) background scheduler, review windows and budgets, (5) template introductions and reminders,
-  (6) AI-written messages and inbound replies, (7) outcomes and closing, (8) full autonomy release (L4). *(phases 1–2
+  (6) AI-written messages and inbound replies, (7) outcomes and closing, (8) full autonomy release (L4). *(phases 1–2 and step 3.1 (eligible-pair recommendation/review, private notes and undo)
   written and tested; nothing run with a real model: see `M12_STATUS.md`)*
 - **M9 Windows distribution** `[NEW]` -- a production Windows installer: sign and bundle the sidecar binaries per
   target, complete the Windows signing step that the inherited config already points at, and ship NSIS plus MSI

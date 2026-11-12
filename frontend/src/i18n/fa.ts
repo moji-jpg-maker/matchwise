@@ -541,6 +541,7 @@ export const fa: DeepString<Catalog> = {
       not_interested: 'بی‌علاقه',
     },
     event: {
+      transitionUndone: 'تغییر وضعیت بازگردانی شد: {from} ← {to}',
       created: 'ثبت‌شده به‌عنوان {status}',
       automatic: ' (خودکار)',
       responseRecorded: 'علاقه ثبت شد',

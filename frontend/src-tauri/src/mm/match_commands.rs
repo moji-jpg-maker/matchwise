@@ -3,10 +3,11 @@ use super::repository::MmRepository;
 use super::scoring_config_repo::ScoringConfigRepo;
 use crate::state::AppState;
 use matchmaking_core::{
-    apply_responses, can_record_outcome, can_record_responses, score_pair, validate_text_for, validate_transition_for, Interest, MatchStatus,
+    apply_responses, can_record_outcome, can_record_responses, score_pair, validate_text_for, validate_transition_by_for, Interest, MatchStatus,
     Outcome, RuleSet, ScoringConfig, TransitionContext, TransitionRequest,
     describe_preference_for, localize_scorecard_json, FindingSource, Locale,
 };
+use matchmaking_core::autonomy::Actor;
 use serde::Serialize;
 use serde_json::Value as Json;
 use sqlx::SqlitePool;
@@ -37,6 +38,8 @@ pub struct NoteView {
 
 #[derive(Serialize)]
 pub struct EventView {
+    pub id: i64,
+    pub undo_event_id: Option<i64>,
     pub at: String,
     pub actor: String,
     pub kind: String,
@@ -157,7 +160,7 @@ async fn detail(pool: &SqlitePool, id: &str, locale: Locale) -> Result<MatchDeta
         notes: notes.into_iter().map(|n| NoteView { id: n.id, text: n.text, created_at: n.created_at }).collect(),
         events: events
             .into_iter()
-            .map(|e| EventView { at: e.at, actor: e.actor, kind: e.kind, from_status: e.from_status, to_status: e.to_status, detail: e.detail })
+            .map(|e| EventView { id: e.id, undo_event_id: e.undo_event_id, at: e.at, actor: e.actor, kind: e.kind, from_status: e.from_status, to_status: e.to_status, detail: e.detail })
             .collect(),
         rule_set_name,
         scoring_config_id: config_id,
@@ -379,17 +382,18 @@ pub async fn mm_transition_match(
     locale: Option<String>,
 ) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    let m = require_match(pool, &id, locale_of(&locale)).await?;
-    let snap = MatchRepo::latest_snapshot(pool, &id).await.map_err(err)?;
-    let ctx = TransitionContext {
-        current: m.status,
-        eligible: eligible_of(&snap.map(|s| s.scorecard)),
-        a: m.a_response,
-        b: m.b_response,
-        outcome: m.outcome,
-    };
+    transition_match_as(pool, Actor::Matchmaker, &id, to_status, reason, override_reason, outcome, locale_of(&locale)).await?;
+    detail(pool, &id, locale_of(&locale)).await
+}
+
+/// Use the same lifecycle and notification path for human and agent transitions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn transition_match_as(
+    pool: &SqlitePool, actor: Actor, id: &str, to: MatchStatus,
+    reason: Option<String>, override_reason: Option<String>, outcome: Option<Outcome>, locale: Locale,
+) -> Result<(), String> {
     let req = TransitionRequest { reason, override_reason, outcome };
-    let plan = validate_transition_for(&ctx, to_status, &req, locale_of(&locale))?;
+    let (m, plan) = check_transition_as(pool, actor, id, to, &req, locale).await?;
     let override_text = if plan.override_used { req.override_reason.as_ref().map(|s| s.trim().to_string()) } else { None };
     let detail_text = match (&plan.reason, &override_text) {
         (Some(r), Some(o)) => Some(format!("{r}\nOverride: {o}")),
@@ -397,11 +401,55 @@ pub async fn mm_transition_match(
         (None, Some(o)) => Some(format!("Override: {o}")),
         (None, None) => None,
     };
-    MatchRepo::record_transition(pool, &id, m.status, to_status, plan.outcome, override_text.as_deref(), detail_text.as_deref()).await.map_err(err)?;
-    // The global audit log keeps the move, never the free text.
-    MmRepository::audit(pool, "match_transition", "match", &id, Some(&format!("{} -> {}{}", m.status.as_str(), to_status.as_str(), if plan.override_used { " (override)" } else { "" }))).await;
-    crate::telegram::notify::after_status_change(pool, &id, m.status, to_status).await;
-    detail(pool, &id, locale_of(&locale)).await
+    MatchRepo::record_transition_as(pool, actor, id, m.status, to, plan.outcome, override_text.as_deref(), detail_text.as_deref()).await.map_err(err)?;
+    MmRepository::audit_as(pool, actor, "match_transition", "match", id, Some(&format!("{} -> {}{}", m.status.as_str(), to.as_str(), if plan.override_used { " (override)" } else { "" }))).await;
+    crate::telegram::notify::after_status_change(pool, id, m.status, to).await;
+    Ok(())
+}
+
+/// Also called before proposing, and again before execution. Agents require a current eligible score
+/// under the match's recorded rule/config versions, as well as an eligible stored snapshot.
+pub(crate) async fn check_transition_as(
+    pool: &SqlitePool, actor: Actor, id: &str, to: MatchStatus, req: &TransitionRequest, locale: Locale,
+) -> Result<(MatchRow, matchmaking_core::TransitionPlan), String> {
+    let m = require_match(pool, id, locale).await?;
+    let snap = MatchRepo::latest_snapshot(pool, id).await.map_err(err)?;
+    let mut eligible = eligible_of(&snap.map(|s| s.scorecard));
+    if actor.is_agent() {
+        for profile_id in [&m.profile_a, &m.profile_b] {
+            let profile = MmRepository::get_profile(pool, profile_id).await.map_err(err)?.ok_or("Profile not found")?;
+            if profile.status != "active" {
+                return Err(locale.pick("Profile inactive", "پرونده غیرفعال است").into());
+            }
+        }
+        let (_, set, _) = MmRepository::get_rule_set(pool, &m.rule_set_id, Some(m.rule_set_version)).await.map_err(err)?.ok_or("Rule set not found")?;
+        let config = match (&m.scoring_config_id, m.scoring_config_version) {
+            (Some(id), Some(version)) => ScoringConfigRepo::get(pool, id, Some(version)).await.map_err(err)?.ok_or("Scoring config not found")?.1,
+            _ => ScoringConfigRepo::effective_for_rule_set(pool, &m.rule_set_id).await.map_err(err)?.definition,
+        };
+        eligible &= compute_scorecard(pool, &set, &config, &m.profile_a, &m.profile_b, &m.weight_overrides).await?.eligible;
+    }
+    let ctx = TransitionContext { current: m.status, eligible, a: m.a_response, b: m.b_response, outcome: m.outcome };
+    let plan = validate_transition_by_for(actor, &ctx, to, req, locale)?;
+    Ok((m, plan))
+}
+
+/// Human undo is a status-only restoration of the last agent recommendation/review.
+#[tauri::command]
+pub async fn agent_undo_transition(state: State<'_, AppState>, event_id: i64, locale: Option<String>) -> Result<MatchDetail, String> {
+    let pool = state.db_manager.pool();
+    let language = locale_of(&locale);
+    let id = undo_transition(pool, event_id, language).await?;
+    detail(pool, &id, language).await
+}
+
+pub(crate) async fn undo_transition(pool: &SqlitePool, event_id: i64, locale: Locale) -> Result<String, String> {
+    let id = MatchRepo::undo_agent_transition(pool, event_id).await.map_err(|_| locale.pick(
+        "This transition cannot be undone: it was already undone or the match has changed since.",
+        "این تغییر وضعیت قابل بازگردانی نیست: قبلاً بازگردانی شده یا وضعیت تطبیق پس از آن تغییر کرده است.",
+    ).to_string())?;
+    MmRepository::audit_as(pool, Actor::Matchmaker, "agent_transition_undone", "match", &id, Some(&event_id.to_string())).await;
+    Ok(id)
 }
 
 /// Record one person's answer and let it move the match. Used by the app and by the Telegram bot, so both
@@ -475,15 +523,20 @@ pub async fn mm_set_match_hold(state: State<'_, AppState>, id: String, reason: O
 #[tauri::command]
 pub async fn mm_add_match_note(state: State<'_, AppState>, id: String, text: String, locale: Option<String>) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
-    require_match(pool, &id, locale_of(&locale)).await?;
+    add_match_note_as(pool, Actor::Matchmaker, &id, &text, locale_of(&locale)).await?;
+    detail(pool, &id, locale_of(&locale)).await
+}
+
+pub(crate) async fn add_match_note_as(pool: &SqlitePool, actor: Actor, id: &str, text: &str, locale: Locale) -> Result<(), String> {
+    require_match(pool, id, locale).await?;
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Err(locale_of(&locale).pick("A note cannot be empty", "یادداشت نمی‌تواند خالی باشد").into());
+        return Err(locale.pick("A note cannot be empty", "یادداشت نمی‌تواند خالی باشد").into());
     }
-    validate_text_for(locale_of(&locale).pick("The note", "یادداشت"), &Some(text.clone()), locale_of(&locale))?;
-    MatchRepo::add_note(pool, &id, &text).await.map_err(err)?;
-    MmRepository::audit(pool, "match_note", "match", &id, None).await;
-    detail(pool, &id, locale_of(&locale)).await
+    validate_text_for(locale.pick("The note", "یادداشت"), &Some(text.clone()), locale)?;
+    MatchRepo::add_note_as(pool, actor, id, &text).await.map_err(err)?;
+    MmRepository::audit_as(pool, actor, "match_note", "match", id, None).await;
+    Ok(())
 }
 
 /// Hide a match from the default lists (it is kept, and can be shown again).

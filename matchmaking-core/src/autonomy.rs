@@ -108,7 +108,7 @@ impl Step {
 
     /// Built in this release: extraction acceptance and the phase 2 analysis tools.
     pub fn is_built(self) -> bool {
-        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair)
+        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend)
     }
 
     /// Reaches a candidate (a Telegram message). These get a review window at L3.

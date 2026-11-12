@@ -367,11 +367,15 @@ export function MatchWorkflowPanel({ detail: d, dims, onChange }: Props) {
       <div className="bg-white rounded-lg border p-4">
         <div className="font-medium text-sm mb-2">{t('matchPanel.history')}</div>
         <ul className="space-y-2">
-          {d.events.map((e, i) => (
-            <li key={i} className="text-sm flex gap-3">
+          {d.events.map((e) => (
+            <li key={e.id} className="text-sm flex gap-3">
               <span className="w-40 shrink-0 text-xs text-gray-400">{fmt.dateTime(e.at)}</span>
               <div>
-                <div>{describeEvent(e, t)}</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span>{describeEvent(e, t)}</span>
+                  {e.actor.startsWith('agent:') && <span className="rounded bg-violet-100 px-1.5 text-xs text-violet-800">{t('autonomy.aiBadge')}</span>}
+                  {e.undo_event_id != null && <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(() => invoke<MatchDetail>('agent_undo_transition', { eventId: e.undo_event_id, locale }), apply)}>{t('autonomy.undo')}</Button>}
+                </div>
                 {eventText(e) && <div className="text-xs text-gray-600 whitespace-pre-line">{eventText(e)}</div>}
               </div>
             </li>

@@ -795,6 +795,7 @@ pub fn run() {
             mm::autonomy_commands::agent_save_policy,
             mm::autonomy_commands::agent_set_paused,
             mm::autonomy_commands::agent_undo,
+            mm::match_commands::agent_undo_transition,
             telegram::commands::tg_get_status,
             telegram::commands::tg_save_token,
             telegram::commands::tg_clear_token,
