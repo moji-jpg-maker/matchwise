@@ -322,3 +322,29 @@ fn rule_override_presets_remain_suggest_until_l4() {
         assert_eq!(decide(&Action::Step(Step::RuleOverride), &open(), &AutonomyPolicy::preset(level)), expected);
     }
 }
+
+#[test]
+fn budget_defaults_upgrade_and_boundaries() {
+    let budgets = Budgets::default();
+    assert_eq!((budgets.model_calls_per_hour, budgets.steps_per_run,
+        budgets.open_introductions_per_profile, budgets.messages_per_candidate_per_day), (120, 20, 1, 3));
+    assert!(budgets.model_call_allowed(119));
+    assert!(!budgets.model_call_allowed(120));
+    assert!(budgets.step_allowed(19));
+    assert!(!budgets.step_allowed(20));
+    assert!(budgets.introduction_allowed(0, 0));
+    assert!(!budgets.introduction_allowed(1, 0));
+    assert!(!budgets.introduction_allowed(0, 1));
+    assert!(budgets.message_allowed(2));
+    assert!(!budgets.message_allowed(3));
+    let mut old = serde_json::to_value(AutonomyPolicy::default()).unwrap();
+    old.as_object_mut().unwrap().remove("budgets");
+    assert_eq!(serde_json::from_value::<AutonomyPolicy>(old).unwrap().budgets, budgets);
+    let disabled: Budgets = serde_json::from_value(serde_json::json!({"steps_per_run":0})).unwrap();
+    assert!(!disabled.step_allowed(0));
+    assert_eq!(disabled.model_calls_per_hour, 120);
+    for bad in [serde_json::json!({"steps_per_run":-1}), serde_json::json!({"steps_per_run":1.5}),
+        serde_json::json!({"steps_per_run":4294967296u64}), serde_json::json!({"step_per_run":2})] {
+        assert!(serde_json::from_value::<Budgets>(bad).is_err());
+    }
+}

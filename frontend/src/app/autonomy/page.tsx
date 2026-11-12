@@ -207,6 +207,26 @@ export default function AutonomyPage() {
         <p className="text-xs text-gray-500">{t('autonomy.thresholdHelp')}</p>
       </div>
 
+      <div className="bg-white rounded-lg border p-4 space-y-3">
+        <div className="text-sm font-medium">{t('autonomy.budgetsTitle')}</div>
+        {(['model_calls_per_hour', 'steps_per_run', 'open_introductions_per_profile', 'messages_per_candidate_per_day'] as const).map((key) => (
+          <label key={key} className="flex items-center justify-between gap-4 text-sm">
+            <span>{t(`autonomy.budget.${key}`)}</span>
+            <Input
+              type="number"
+              min={0}
+              max={4294967295}
+              step={1}
+              className="w-28"
+              value={policy.budgets[key]}
+              onChange={(event) => setPolicy({ ...policy, budgets: { ...policy.budgets, [key]: Math.min(4294967295, Math.max(0, Math.floor(Number(event.target.value) || 0))) } })}
+            />
+          </label>
+        ))}
+        <p className="text-xs text-gray-500">{t('autonomy.budgetsHelp')}</p>
+        <p className="text-xs text-gray-500">{t('autonomy.candidateBudgetsHelp')}</p>
+      </div>
+
       <p className="text-xs text-gray-500">{t('autonomy.humanOnly')}</p>
       <Button onClick={() => void save()} disabled={saving}>{t('autonomy.save')}</Button>
       <AgentRuns />

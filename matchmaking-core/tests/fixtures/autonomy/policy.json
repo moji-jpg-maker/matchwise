@@ -18,9 +18,31 @@
     "record_outcome": "auto",
     "close": "auto",
     "stop": "auto",
-    "send_introduction": { "review_window": { "minutes": 60 } },
-    "send_follow_up": { "review_window": { "minutes": 60 } },
-    "send_message": { "review_window": { "minutes": 60 } },
-    "request_info": { "review_window": { "minutes": 60 } }
+    "send_introduction": {
+      "review_window": {
+        "minutes": 60
+      }
+    },
+    "send_follow_up": {
+      "review_window": {
+        "minutes": 60
+      }
+    },
+    "send_message": {
+      "review_window": {
+        "minutes": 60
+      }
+    },
+    "request_info": {
+      "review_window": {
+        "minutes": 60
+      }
+    }
+  },
+  "budgets": {
+    "model_calls_per_hour": 120,
+    "steps_per_run": 20,
+    "open_introductions_per_profile": 1,
+    "messages_per_candidate_per_day": 3
   }
 }

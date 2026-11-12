@@ -893,7 +893,7 @@ export interface AgentRun {
   id: number;
   profile_id: string;
   batch_id: string | null;
-  status: 'running' | 'finished' | 'failed' | 'stopped' | 'step_limit';
+  status: 'running' | 'finished' | 'failed' | 'stopped' | 'step_limit' | 'model_call_limit';
   actor: string;
   created_at: string;
   finished_at: string | null;
@@ -908,7 +908,7 @@ export interface AgentTrace {
   action: { tool: AgentTool; args: Record<string, unknown> };
   scheduled_at: number | null;
   due_at: number | null;
-  status: 'executing' | 'executed' | 'proposed' | 'scheduled' | 'vetoed' | 'denied' | 'failed' | 'rejected';
+  status: 'executing' | 'executed' | 'proposed' | 'scheduled' | 'vetoed' | 'denied' | 'failed' | 'rejected' | 'model_call_limit';
   observation: unknown;
   actor: string;
   decided_by: string | null;
@@ -970,11 +970,19 @@ export type AutonomyStepMode = 'off' | 'suggest' | 'auto' | { review_window: { m
 
 export const AUTONOMY_MODE_NAMES = ['off', 'suggest', 'review_window', 'auto'] as const;
 
+export interface AutonomyBudgets {
+  model_calls_per_hour: number;
+  steps_per_run: number;
+  open_introductions_per_profile: number;
+  messages_per_candidate_per_day: number;
+}
+
 export interface AutonomyPolicy {
   version: number;
   level: AutonomyLevel;
   paused: boolean;
   min_confidence: number;
+  budgets: AutonomyBudgets;
   steps: Record<AutonomyStep, AutonomyStepMode>;
 }
 

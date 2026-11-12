@@ -51,9 +51,10 @@ async fn ask<T>(
     ids: (Option<&str>, Option<&str>),
     system: &str,
     user: &str,
+    actor: matchmaking_core::autonomy::Actor,
     parse: impl Fn(&str) -> Result<T, String>,
 ) -> Result<T, String> {
-    ask_with(pool, s, kind, ids, system, user, TaskProfile::for_kind(kind), None, parse).await
+    ask_with(pool, s, kind, ids, system, user, TaskProfile::for_kind(kind), None, actor, parse).await
 }
 
 /// [`ask`] with an explicit task profile and, optionally, an output constraint. When the backend enforces the
@@ -68,6 +69,7 @@ async fn ask_with<T>(
     user: &str,
     task: TaskProfile,
     constraint: Option<&ExtractionConstraint>,
+    actor: matchmaking_core::autonomy::Actor,
     parse: impl Fn(&str) -> Result<T, String>,
 ) -> Result<T, String> {
     let _guard = lock().lock().await;
@@ -78,6 +80,9 @@ async fn ask_with<T>(
     for attempt in 0..attempts {
         if s.agent_config.is_some() {
             crate::agent::ensure_open(pool, s).await?;
+        }
+        if let matchmaking_core::autonomy::Actor::Agent { run_id } = actor {
+            crate::agent::budgets::reserve_model_call(pool, run_id, kind).await?;
         }
         let result = match constraint {
             Some(constraint) => s.backend.complete_structured(task, system, &prompt, constraint).await,
@@ -311,7 +316,7 @@ pub async fn extract_profile_as(
             let constraint = output_constraint(&reg, &fields, with_preferences);
             let task = TaskProfile::SlimExtraction { fields: fields.len().min(u16::MAX as usize) as u16, with_preferences };
             let llm_started = std::time::Instant::now();
-            let outcome = ask_with(pool, s, "extract", (Some(profile_id), None), &system, &user, task, Some(&constraint), |raw_reply| {
+            let outcome = ask_with(pool, s, "extract", (Some(profile_id), None), &system, &user, task, Some(&constraint), actor, |raw_reply| {
                 parse_slim_extraction(raw_reply, &reg, &text, &profile, s.mode.include_sensitive, &fields)
             })
             .await;
@@ -339,6 +344,7 @@ pub async fn extract_profile_as(
                     view.llm_status = "ok".into();
                 }
                 Err(e) => {
+                    if actor.is_agent() && e == crate::agent::budgets::MODEL_CALL_LIMIT { return Err(e); }
                     view.llm_status = "failed".into();
                     view.llm_error = Some(e);
                 }
@@ -469,7 +475,7 @@ pub async fn analyse_pair(pool: &SqlitePool, s: &Session<'_>, match_id: &str) ->
 pub async fn analyse_pair_as(pool: &SqlitePool, s: &Session<'_>, match_id: &str, actor: matchmaking_core::autonomy::Actor) -> Result<PairView, String> {
     let i = pair_input(pool, match_id, s.mode.include_sensitive, s.locale).await?;
     let facts = i.facts.clone();
-    let analysis: PairAnalysis = ask(pool, s, "pair", (Some(&i.a), Some(&i.b)), &i.system, &i.user, |raw| parse_pair_analysis(raw, &facts)).await?;
+    let analysis: PairAnalysis = ask(pool, s, "pair", (Some(&i.a), Some(&i.b)), &i.system, &i.user, actor, |raw| parse_pair_analysis(raw, &facts)).await?;
     if matches!(actor, matchmaking_core::autonomy::Actor::Agent { .. }) {
         crate::agent::ensure_open(pool, s).await?;
     }

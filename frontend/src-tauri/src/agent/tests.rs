@@ -32,6 +32,8 @@ struct ScriptedLlmBackend {
     pause_on_call: Option<SqlitePool>,
     change_config_on_call: Option<SqlitePool>,
     stall_on_call: bool,
+    invalid_nested_reply: bool,
+    nested_calls: Mutex<usize>,
 }
 
 impl ScriptedLlmBackend {
@@ -42,6 +44,8 @@ impl ScriptedLlmBackend {
             pause_on_call: None,
             change_config_on_call: None,
             stall_on_call: false,
+            invalid_nested_reply: false,
+            nested_calls: Mutex::new(0),
         }
     }
 }
@@ -59,6 +63,10 @@ impl LlmBackend for ScriptedLlmBackend {
         _: &str,
         _: bool,
     ) -> Result<String, AiError> {
+        *self.nested_calls.lock().unwrap() += 1;
+        if self.invalid_nested_reply {
+            return Ok("invalid JSON".into());
+        }
         match task {
             TaskProfile::PairAnalysis => Ok(json!({"why_it_may_work":[],"potential_challenges":[],"important_differences":[],"questions_to_discuss":[],"missing_information":[],"overall_assessment":{"text":"More information would help.","refs":[]}}).to_string()),
             _ => Ok(json!({"fields":{}}).to_string()),
@@ -2370,4 +2378,308 @@ async fn extraction_review_rechecks_person_ownership_and_retains_undo() {
             assert_eq!(actions.len(), 1);
         }
     }
+}
+
+// Step 4.3: resource admission uses persisted current policy at every boundary.
+#[tokio::test]
+async fn configured_step_budget_stops_runs_and_zero_makes_no_request() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L2Supervised).await;
+    for limit in [2, 0] {
+        let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+        policy.budgets.steps_per_run = limit;
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let backend = ScriptedLlmBackend::new(vec![call("list_work", json!({})); 3]);
+        let run = super::run(&pool, &session(&backend), "target", None)
+            .await
+            .unwrap();
+        assert_eq!(repo::runs(&pool).await.unwrap()[0].status, "step_limit");
+        assert_eq!(
+            repo::traces(&pool, Some(run), false).await.unwrap().len(),
+            limit as usize
+        );
+        assert_eq!(backend.prompts.lock().unwrap().len(), limit as usize);
+    }
+}
+
+#[tokio::test]
+async fn model_budget_is_shared_across_runs_and_has_a_rolling_window() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L2Supervised).await;
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy.budgets.model_calls_per_hour = 1;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![finish(), finish()]);
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    super::run(&pool, &session(&backend), "candidate", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::runs(&pool).await.unwrap()[0].status,
+        "model_call_limit"
+    );
+    assert_eq!(backend.prompts.lock().unwrap().len(), 1);
+    // A persisted request from the preceding hour no longer consumes a slot.
+    sqlx::query("UPDATE mm_agent_model_calls SET started_at = ?")
+        .bind(chrono::Utc::now().timestamp() - 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+    super::run(&pool, &session(&backend), "candidate", None)
+        .await
+        .unwrap();
+    assert_eq!(repo::runs(&pool).await.unwrap()[0].status, "finished");
+    assert_eq!(backend.prompts.lock().unwrap().len(), 2);
+    // Reducing the live policy to zero also prevents a fresh run.
+    policy.budgets.model_calls_per_hour = 0;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::runs(&pool).await.unwrap()[0].status,
+        "model_call_limit"
+    );
+    assert_eq!(backend.prompts.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn nested_analysis_and_approved_proposals_cannot_bypass_model_budget() {
+    let _serial = serial().await;
+    for level in [Level::L2Supervised, Level::L1Assisted] {
+        let (pool, rules) = setup(level).await;
+        let pair = tracked_pair(&pool, &rules, "candidate").await;
+        let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+        policy.budgets.model_calls_per_hour = 1;
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let backend = ScriptedLlmBackend::new(vec![
+            call("analyse_pair", json!({"match_id":pair})),
+            finish(),
+        ]);
+        let run = super::run(&pool, &session(&backend), "target", None)
+            .await
+            .unwrap();
+        if level == Level::L1Assisted {
+            let proposal = repo::traces(&pool, Some(run), true)
+                .await
+                .unwrap()
+                .remove(0);
+            super::decide_proposal(&pool, Some(&session(&backend)), proposal.id, true, None)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            repo::runs(&pool).await.unwrap()[0].status,
+            "model_call_limit"
+        );
+        let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+        assert_eq!(traces[0].status, "model_call_limit");
+        assert_eq!(traces[0].observation["budget"], "model_calls_per_hour");
+        assert!(crate::ai::service::latest_pair_analysis(&pool, &pair)
+            .await
+            .unwrap()
+            .is_none());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_agent_model_calls")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        // Human analysis is available even when the agent has exhausted its quota.
+        crate::ai::service::analyse_pair(&pool, &session(&backend), &pair)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_agent_model_calls")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[tokio::test]
+async fn introduction_cap_checks_both_profiles_and_releases_terminal_matches() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L3Delegated).await;
+    let pair = tracked_pair(&pool, &rules, "candidate").await;
+    assert!(
+        super::budgets::introduction_allowed(&pool, "target", "edited")
+            .await
+            .unwrap()
+    );
+    // Existing human introductions count too; candidate tools are still unbuilt.
+    for status in [
+        "introduction_proposed",
+        "both_interested",
+        "contact_exchanged",
+        "conversation",
+        "meeting",
+        "feedback",
+    ] {
+        sqlx::query("UPDATE mm_matches SET status = ? WHERE id = ?")
+            .bind(status)
+            .bind(&pair)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            !super::budgets::introduction_allowed(&pool, "target", "edited")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !super::budgets::introduction_allowed(&pool, "edited", "candidate")
+                .await
+                .unwrap()
+        );
+    }
+    for status in ["closed", "declined", "stopped", "rejected"] {
+        sqlx::query("UPDATE mm_matches SET status = ? WHERE id = ?")
+            .bind(status)
+            .bind(&pair)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            super::budgets::introduction_allowed(&pool, "target", "candidate")
+                .await
+                .unwrap()
+        );
+    }
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy.budgets.open_introductions_per_profile = 0;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert!(
+        !super::budgets::introduction_allowed(&pool, "target", "candidate")
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn model_reservations_are_atomic_and_survive_invalid_replies() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L2Supervised).await;
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy.budgets.model_calls_per_hour = 1;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![json!({"bad":"action"})]);
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(repo::runs(&pool).await.unwrap()[0].status, "failed");
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::runs(&pool).await.unwrap()[0].status,
+        "model_call_limit"
+    );
+    sqlx::query("UPDATE mm_agent_model_calls SET started_at = 0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id = repo::start(&pool, "target", None).await.unwrap();
+    let (a, b) = tokio::join!(
+        super::budgets::reserve_model_call(&pool, id, "agent"),
+        super::budgets::reserve_model_call(&pool, id, "agent")
+    );
+    assert_ne!(a.is_ok(), b.is_ok());
+}
+
+#[tokio::test]
+async fn extraction_and_analysis_retries_share_the_hourly_budget() {
+    let _serial = serial().await;
+    for extraction in [true, false] {
+        let (pool, rules) = setup(Level::L2Supervised).await;
+        let pair = tracked_pair(&pool, &rules, "candidate").await;
+        let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+        policy.budgets.model_calls_per_hour = 2;
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let action = if extraction {
+            IntakeRepo::insert_profile_with_note(
+                &pool,
+                &profile("intake"),
+                "batch",
+                "Occupation: Nurse",
+                "entry",
+            )
+            .await
+            .unwrap();
+            call("run_extraction", json!({}))
+        } else {
+            call("analyse_pair", json!({"match_id":pair}))
+        };
+        let mut backend = ScriptedLlmBackend::new(vec![action, finish()]);
+        backend.invalid_nested_reply = true;
+        let run = super::run(
+            &pool,
+            &session(&backend),
+            if extraction { "intake" } else { "target" },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repo::runs(&pool).await.unwrap()[0].status,
+            "model_call_limit"
+        );
+        assert_eq!(
+            repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+            "model_call_limit"
+        );
+        assert_eq!(*backend.nested_calls.lock().unwrap(), 1);
+        assert_eq!(backend.prompts.lock().unwrap().len(), 1);
+        let kinds: Vec<String> =
+            sqlx::query_scalar("SELECT kind FROM mm_agent_model_calls ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            kinds,
+            ["agent", if extraction { "extract" } else { "pair" }]
+        );
+    }
+}
+
+#[tokio::test]
+async fn scheduled_analysis_rechecks_the_current_hourly_budget() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let pair = tracked_pair(&pool, &rules, "candidate").await;
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy.budgets.model_calls_per_hour = 2;
+    policy
+        .steps
+        .insert(Step::AnalysePair, StepMode::ReviewWindow { minutes: 1 });
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call("analyse_pair", json!({"match_id":pair})),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let trace = repo::traces(&pool, Some(run), true)
+        .await
+        .unwrap()
+        .remove(0);
+    expire_review(&pool, trace.id).await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    assert!(super::process_due(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap());
+    assert_eq!(
+        repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+        "model_call_limit"
+    );
+    assert_eq!(
+        repo::runs(&pool).await.unwrap()[0].status,
+        "model_call_limit"
+    );
+    assert_eq!(*backend.nested_calls.lock().unwrap(), 0);
+    assert!(!super::process_due(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap());
 }

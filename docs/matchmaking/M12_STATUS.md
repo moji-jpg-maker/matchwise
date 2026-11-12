@@ -1,8 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.2 are built:
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 are built:
 policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
-reasoned rejection, policy-controlled rule overrides, background scheduling, review windows and veto.** Nothing has been run with a real model.
+reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto and configurable budgets.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -26,7 +26,7 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
 ## Phase 2: what shipped
 - `src-tauri/src/agent/`: one validated JSON action per turn, with GBNF and JSON Schema generated from the same
   tool registry and passed through `complete_structured`. `TaskProfile::Agent` uses 512 output tokens and a
-  120-second timeout. Runs stop at `finish`, 20 turns, a closed gate, a configuration change or the kill switch.
+  120-second timeout. Runs stop at `finish`, the configured step limit (default 20), a closed gate, a configuration change or the kill switch.
 - Tools: `list_work`, `get_profile_redacted`, `run_extraction`, `accept_suggestion`, `find_matches`, `create_match`,
   `analyse_pair`, `finish`. Profile observations use the existing redactor and sensitive-field gate; observations
   are explicitly untrusted data. Tool errors returned to the model contain no raw profile text.
@@ -136,6 +136,29 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   paused veto, closed gates and resume, changed policies/windows, stale eligibility, independent override permissions,
   and suggestion ownership and undo receipts. No real model was used.
 
+## Step 4.3: what shipped
+- Policy budgets default to 120 agent model calls per rolling hour, 20 turns per run, one open introduction per
+  profile and three messages per candidate per day. Older policy JSON gets these defaults without changing its
+  level, step modes or pause state. Each setting accepts nonnegative integers; zero disables the corresponding work.
+- The autonomy page edits all four limits through the existing versioned policy command, with English and Persian
+  labels. Changing a preset preserves the chosen budgets. Run history and tool traces identify hourly budget stops;
+  step-budget stops use the configured limit rather than a fixed 20-turn message.
+- Migration `20261112060000_add_agent_budgets.sql` adds durable, text-free model-request reservations linked to runs.
+  An atomic conditional insert admits each request against organization-wide usage in the preceding hour. Agent
+  turns, extraction, pair analysis and parsing retries share the same quota. Failed or cancelled requests consume
+  their reserved slots; restarting the app or purging stored prompts cannot reset usage. Human requests are excluded.
+- Current limits are checked before each turn and each nested model request, including proposal approval and due
+  review-window execution. Reaching the hourly quota stops the run and records `model_call_limit`; delayed actions
+  that exhaust it are finalized once with the same trace status. Step limits are rechecked after waiting for the model lock.
+- The introduction admission guard checks both participants and counts existing human and agent introductions in
+  IntroductionProposed, BothInterested, ContactExchanged, Conversation, Meeting and Feedback. Terminal matches
+  release their slots. Introduction tools remain unavailable until step 5.1, when this guard must be called under the
+  runtime lock through the validated introduction transition. The daily message predicate and setting are reserved
+  for enforcement from step 5.1; existing human Telegram flows are unchanged.
+- Tests cover upgrade/default and invalid policy values, quota boundaries, configured/zero run limits, shared hourly
+  usage and expiry, atomic reservations, nested analysis/extraction retries, proposal approvals, due actions and
+  introduction slot release. No real model was used.
+
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
   On-demand runtime actions instead record their real `agent:<run_id>` actor.
@@ -147,21 +170,21 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   Approve, Reject and RuleOverride.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
 - Runtime/model access and due execution are serialized. Veto uses an atomic status check and does not wait for
-  model work. Hourly/message budgets belong to later phases.
+  model work. Budget reservations are separate from retained AI prompts.
 
 ## Verified here
-- `cargo test -p matchmaking-core`: 193 passed, including the built-step policy matrix, invariant denials
+- `cargo test -p matchmaking-core`: 194 passed, including the built-step policy matrix, invariant denials
   and actor-aware lifecycle checks.
 - `cargo test --lib autonomy_tests` in `src-tauri`: 14 passed.
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
-  batch subjects, durable review windows and veto, invalid actions and the 20-turn stop. A prompt regression test lives in
-  `ai/tests.rs`. All 37 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
+  batch subjects, durable review windows and veto, invalid actions and configurable budget stops. A prompt regression test lives in
+  `ai/tests.rs`. All 44 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
   approval/rejection, rule override, migration and proposal checks.
-- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 471 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 478 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
   so its local HTTP fixture servers could bind sockets; no real model was used.
 
 ## Still open
-- Steps 4.3–8: budgets and agent messages to candidates remain unavailable.
+- Steps 5.1–8: candidate-facing agent tools, introduction/message budget integration, outcomes and the full autonomy release remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.

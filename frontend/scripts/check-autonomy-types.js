@@ -60,11 +60,18 @@ for (const mode of modes) {
 for (const step of builtSteps) {
   if (!fixtureSteps.includes(step)) problems.push(`BUILT_AUTONOMY_STEPS: unknown step ${step}`);
 }
-for (const key of ['version', 'level', 'paused', 'min_confidence', 'steps']) {
+for (const key of ['version', 'level', 'paused', 'min_confidence', 'budgets', 'steps']) {
   if (!(key in fixture)) problems.push(`fixture lost the ${key} key`);
   if (!new RegExp(`\\b${key}:`).test(block(/export interface AutonomyPolicy \{([^}]*)\}/, 'AutonomyPolicy'))) {
     problems.push(`AutonomyPolicy: missing ${key}`);
   }
+}
+
+const budgetBlock = block(/export interface AutonomyBudgets \{([^}]*)\}/, 'AutonomyBudgets');
+const budgetKeys = [...budgetBlock.matchAll(/(\w+): number;/g)].map((match) => match[1]);
+same('AutonomyBudgets', budgetKeys, Object.keys(fixture.budgets));
+if (Object.values(fixture.budgets).some((value) => !Number.isInteger(value) || value < 0)) {
+  problems.push('budget fixture values must be nonnegative integers');
 }
 
 if (problems.length) {

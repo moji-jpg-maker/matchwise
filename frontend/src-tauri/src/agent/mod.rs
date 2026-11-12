@@ -1,3 +1,4 @@
+pub(crate) mod budgets;
 pub mod commands;
 pub mod protocol;
 pub mod repo;
@@ -128,9 +129,16 @@ async fn perform(
     };
     let (status, observation) = match result {
         Ok(observation) => ("executed", observation),
+        Err(error) if error == budgets::MODEL_CALL_LIMIT => (
+            budgets::MODEL_CALL_LIMIT,
+            json!({"budget":"model_calls_per_hour"}),
+        ),
         Err(_) => ("failed", json!({"error":"tool_failed"})),
     };
     repo::update(pool, trace_id, status, &observation).await?;
+    if status == budgets::MODEL_CALL_LIMIT {
+        repo::finish(pool, run_id, status).await?;
+    }
     MmRepository::audit_as(
         pool,
         Actor::Agent { run_id },
@@ -231,9 +239,15 @@ async fn run_loop(
 ) -> Result<&'static str, String> {
     let mut history = Vec::new();
     let constraint = protocol::constraint();
-    for turn in 0..20 {
+    for turn in 0usize.. {
         if cancel.is_cancelled() || ensure_open(pool, session).await.is_err() {
             return Ok("stopped");
+        }
+        let policy = AutonomyRepo::load_policy(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !policy.budgets.step_allowed(turn as u64) {
+            return Ok("step_limit");
         }
         let user = json!({"target_profile_id":target,"untrusted_observations":history}).to_string();
         let completion = async {
@@ -241,18 +255,26 @@ async fn run_loop(
             if ensure_open(pool, session).await.is_err() {
                 return None;
             }
-            Some(
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(TaskProfile::Agent.timeout_secs()),
-                    session.backend.complete_structured(
-                        TaskProfile::Agent,
-                        &protocol::system_prompt(),
-                        &user,
-                        &constraint,
-                    ),
-                )
-                .await,
+            let policy = match AutonomyRepo::load_policy(pool).await {
+                Ok(policy) => policy,
+                Err(error) => return Some(Err(error.to_string())),
+            };
+            if !policy.budgets.step_allowed(turn as u64) {
+                return Some(Err("step_limit".into()));
+            }
+            if let Err(error) = budgets::reserve_model_call(pool, run_id, "agent").await {
+                return Some(Err(error));
+            }
+            Some(Ok(tokio::time::timeout(
+                std::time::Duration::from_secs(TaskProfile::Agent.timeout_secs()),
+                session.backend.complete_structured(
+                    TaskProfile::Agent,
+                    &protocol::system_prompt(),
+                    &user,
+                    &constraint,
+                ),
             )
+            .await))
         };
         tokio::pin!(completion);
         let mut policy_tick = tokio::time::interval(scheduler::TICK);
@@ -269,7 +291,10 @@ async fn run_loop(
             _ = cancel.cancelled() => return Ok("stopped"),
             _ = policy_closed => return Ok("stopped"),
             reply = &mut completion => match reply {
-                Some(reply) => reply,
+                Some(Ok(reply)) => reply,
+                Some(Err(error)) if error == budgets::MODEL_CALL_LIMIT => return Ok(budgets::MODEL_CALL_LIMIT),
+                Some(Err(error)) if error == "step_limit" => return Ok("step_limit"),
+                Some(Err(error)) => return Err(error),
                 None => return Ok("stopped"),
             }
         };
@@ -347,6 +372,9 @@ async fn run_loop(
         } else {
             json!({"status":status,"result":observation})
         };
+        if observation["status"] == budgets::MODEL_CALL_LIMIT {
+            return Ok(budgets::MODEL_CALL_LIMIT);
+        }
         if action.tool == "finish" && status == "executing" {
             return Ok("finished");
         }
@@ -355,7 +383,7 @@ async fn run_loop(
             return Ok("stopped");
         }
     }
-    Ok("step_limit")
+    unreachable!("unbounded turn iterator")
 }
 
 pub async fn decide_proposal(

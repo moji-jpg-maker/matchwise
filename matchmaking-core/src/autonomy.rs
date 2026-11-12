@@ -181,6 +181,38 @@ impl Level {
     }
 }
 
+/// Resource limits apply to agent work only. Missing fields in an upgraded policy
+/// take the same defaults as a new installation. Zero deliberately disables work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Budgets {
+    pub model_calls_per_hour: u32,
+    pub steps_per_run: u32,
+    pub open_introductions_per_profile: u32,
+    pub messages_per_candidate_per_day: u32,
+}
+
+impl Default for Budgets {
+    fn default() -> Self {
+        Self { model_calls_per_hour: 120, steps_per_run: 20,
+            open_introductions_per_profile: 1, messages_per_candidate_per_day: 3 }
+    }
+}
+
+impl Budgets {
+    /// Usage is measured before the next operation, so equality exhausts a limit.
+    pub fn model_call_allowed(&self, used: u64) -> bool { used < u64::from(self.model_calls_per_hour) }
+    pub fn step_allowed(&self, used: u64) -> bool { used < u64::from(self.steps_per_run) }
+    pub fn introduction_allowed(&self, a_open: u64, b_open: u64) -> bool {
+        a_open < u64::from(self.open_introductions_per_profile)
+            && b_open < u64::from(self.open_introductions_per_profile)
+    }
+    /// Reserved for candidate-facing tools from step 5.1 onward.
+    pub fn message_allowed(&self, used_today: u64) -> bool {
+        used_today < u64::from(self.messages_per_candidate_per_day)
+    }
+}
+
 /// The stored autonomy setting. `level` is the preset it started from; `steps` holds every step explicitly, so an
 /// individual override is just a different entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,6 +223,8 @@ pub struct AutonomyPolicy {
     pub paused: bool,
     /// Lowest confidence at which `AcceptExtraction` accepts a field.
     pub min_confidence: f64,
+    #[serde(default)]
+    pub budgets: Budgets,
     pub steps: BTreeMap<Step, StepMode>,
 }
 
@@ -207,6 +241,7 @@ impl AutonomyPolicy {
             level,
             paused: false,
             min_confidence: DEFAULT_MIN_CONFIDENCE,
+            budgets: Budgets::default(),
             steps: Step::ALL.iter().map(|step| (*step, level.mode_for(*step))).collect(),
         }
     }
