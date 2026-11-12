@@ -252,13 +252,27 @@ pub async fn mm_create_match(
     locale: Option<String>,
 ) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();
+    let id = create_match_as(pool, &profile_a, &profile_b, &rule_set_id, source_profile.as_deref(), locale_of(&locale), matchmaking_core::autonomy::Actor::Matchmaker).await?;
+    detail(pool, &id, locale_of(&locale)).await
+}
+
+pub(crate) async fn create_match_as(
+    pool: &SqlitePool,
+    profile_a: &str,
+    profile_b: &str,
+    rule_set_id: &str,
+    source_profile: Option<&str>,
+    language: Locale,
+    actor: matchmaking_core::autonomy::Actor,
+) -> Result<String, String> {
+    let locale = Some(language.code().to_string());
     if profile_a == profile_b {
         return Err(locale_of(&locale).pick("A match needs two different people", "تطبیق به دو نفر متفاوت نیاز دارد").into());
     }
     if let Some(existing) = MatchRepo::find_by_pair(pool, &profile_a, &profile_b).await.map_err(err)? {
-        return detail(pool, &existing.id, locale_of(&locale)).await;
+        return Ok(existing.id);
     }
-    for id in [&profile_a, &profile_b] {
+    for id in [profile_a, profile_b] {
         let p = MmRepository::get_profile(pool, id).await.map_err(err)?.ok_or(locale_of(&locale).pick("Profile not found", "پروفایل پیدا نشد"))?;
         if p.status != "active" {
             return Err(locale_of(&locale).pick("Deactivated profiles cannot be matched", "پروفایل‌های غیرفعال را نمی‌توان تطبیق داد").into());
@@ -268,12 +282,13 @@ pub async fn mm_create_match(
     let config = ScoringConfigRepo::effective_for_rule_set(pool, &rule_set_id).await.map_err(err)?;
     let (a, b) = super::match_repo::pair_key(&profile_a, &profile_b);
     let card = scorecard_json(pool, &set, &config.definition, &a, &b, &BTreeMap::new()).await?;
-    let status = if eligible_of(&Some(card.clone())) { MatchStatus::Recommended } else { MatchStatus::Identified };
-    let id = MatchRepo::create(
+    let status = if !matches!(actor, matchmaking_core::autonomy::Actor::Agent { .. }) && eligible_of(&Some(card.clone())) { MatchStatus::Recommended } else { MatchStatus::Identified };
+    let id = MatchRepo::create_as(
         pool,
+        actor,
         &a,
         &b,
-        source_profile.as_deref(),
+        source_profile,
         &rule_set_id,
         set.version,
         config.id.as_deref(),
@@ -283,8 +298,8 @@ pub async fn mm_create_match(
     )
     .await
     .map_err(err)?;
-    MmRepository::audit(pool, "create_match", "match", &id, Some(status.as_str())).await;
-    detail(pool, &id, locale_of(&locale)).await
+    MmRepository::audit_as(pool, actor, "create_match", "match", &id, Some(status.as_str())).await;
+    Ok(id)
 }
 
 #[derive(Serialize)]

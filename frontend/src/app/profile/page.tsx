@@ -16,6 +16,7 @@ import { MatchesPanel } from '@/components/matchmaking/MatchesPanel';
 import { TelegramPanel } from '@/components/matchmaking/TelegramPanel';
 import { PhotosPanel } from '@/components/matchmaking/PhotosPanel';
 import { AiPanel } from '@/components/matchmaking/AiPanel';
+import { AgentRunButton } from '@/components/matchmaking/AgentRunButton';
 import { QuestionnairePanel } from '@/components/matchmaking/QuestionnairePanel';
 import { useI18n } from '@/i18n';
 import type { MessageKey } from '@/i18n/types';
@@ -212,6 +213,7 @@ function ProfileEditor() {
             {profile.status === 'deactivated' && <span className="text-xs px-2 py-0.5 rounded bg-gray-200">{t('profiles.deactivated')}</span>}
           </div>
           <div className="flex items-center gap-2">
+            <AgentRunButton profileId={id} disabled={dirty || saving || profile.status !== 'active'} onComplete={() => void load()} />
             <Button variant="outline" onClick={() => goTo(`/matches?profile=${encodeURIComponent(id)}`)}>{t('profile.trackedMatches')}</Button>
             <Button onClick={save} disabled={!dirty || saving}>{saving ? t('profile.saving') : t('profile.saveChanges')}</Button>
           </div>

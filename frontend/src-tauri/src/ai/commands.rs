@@ -249,7 +249,7 @@ pub async fn ai_extract_profile(
     let gate = prepare_for(pool, locale).await;
     let (view, reason) = match gate {
         Ok((config, mode, backend)) => {
-            let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale };
+            let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale, agent_config: None };
             (service::extract_profile(pool, Some(&s), &profile_id, extra_text.as_deref(), fields, with_preferences).await?, None)
         }
         Err(reason) => (service::extract_profile(pool, None, &profile_id, extra_text.as_deref(), fields, with_preferences).await?, Some(reason)),
@@ -363,7 +363,7 @@ pub async fn ai_analyse_match(state: State<'_, AppState>, match_id: String, loca
     let pool = state.db_manager.pool();
     let locale = locale_of(locale);
     let (config, mode, backend) = prepare_for(pool, locale).await?;
-    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale };
+    let s = Session { backend: backend.as_ref(), provider: config.provider, model: config.model, mode, locale, agent_config: None };
     service::analyse_pair(pool, &s, &match_id).await
 }
 

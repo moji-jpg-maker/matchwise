@@ -7,6 +7,7 @@ import { ArrowLeft, FileUp, ImagePlus, ListOrdered, CheckCheck, Loader2 } from '
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { AgentRunButton } from '@/components/matchmaking/AgentRunButton';
 import { AddPhotosResult, ExtractionPresetsView, IntakeAcceptReport, IntakeBatchReport } from '@/types/matchmaking';
 import { useI18n } from '@/i18n';
 import type { Translate } from '@/lib/conditions';
@@ -245,6 +246,7 @@ export default function IntakePage() {
 
           <div className="flex flex-wrap gap-2">
             <Button onClick={run} disabled={busy}>{busy ? t('intake.working') : t('intake.create')}</Button>
+            {batchId && report?.parsed && <AgentRunButton batchId={batchId} disabled={busy} />}
             {report?.target_profile_id && (
               <Button variant="outline" onClick={() => router.push(`/profile?id=${encodeURIComponent(report.target_profile_id!)}`)}>
                 <ListOrdered className="w-4 h-4 me-1" /> {t('intake.showRanked')}

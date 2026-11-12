@@ -1,5 +1,5 @@
-//! Orchestration: gate -> build a redacted prompt -> ask the model -> validate -> store. Nothing here applies a
-//! model's output to a profile, a score or a match: the matchmaker decides (see `decide_suggestion`).
+//! Orchestration: gate -> redacted prompt -> model -> validation -> stored suggestions or analysis.
+//! Suggestions are applied only by a matchmaker or a policy-checked agent tool.
 
 use super::backend::LlmBackend;
 use super::repo::{self, SuggestionRow};
@@ -29,7 +29,7 @@ fn hash(s: &str) -> String {
 }
 
 /// One model request at a time: a local model on a laptop should not be asked three things at once.
-fn lock() -> &'static tokio::sync::Mutex<()> {
+pub(crate) fn lock() -> &'static tokio::sync::Mutex<()> {
     static L: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     L.get_or_init(|| tokio::sync::Mutex::new(()))
 }
@@ -40,6 +40,7 @@ pub struct Session<'a> {
     pub model: String,
     pub mode: Mode,
     pub locale: Locale,
+    pub agent_config: Option<super::settings::AiConfig>,
 }
 
 /// Ask the model, check the answer with `parse`, and on unreadable output ask once more. Every attempt is logged.
@@ -75,6 +76,9 @@ async fn ask_with<T>(
     let mut last_err = String::new();
     let attempts = if constraint.is_some() && s.backend.enforces_constraint() { 1 } else { 2 };
     for attempt in 0..attempts {
+        if s.agent_config.is_some() {
+            crate::agent::ensure_open(pool, s).await?;
+        }
         let result = match constraint {
             Some(constraint) => s.backend.complete_structured(task, system, &prompt, constraint).await,
             None => s.backend.complete_for(task, system, &prompt, true).await,
@@ -245,6 +249,18 @@ pub async fn extract_profile(
     targets: Option<Vec<String>>,
     with_preferences: bool,
 ) -> Result<ExtractionView, String> {
+    extract_profile_as(pool, session, profile_id, extra, targets, with_preferences, matchmaking_core::autonomy::Actor::Matchmaker).await
+}
+
+pub async fn extract_profile_as(
+    pool: &SqlitePool,
+    session: Option<&Session<'_>>,
+    profile_id: &str,
+    extra: Option<&str>,
+    targets: Option<Vec<String>>,
+    with_preferences: bool,
+    actor: matchmaking_core::autonomy::Actor,
+) -> Result<ExtractionView, String> {
     let locale = session.map_or(Locale::En, |s| s.locale);
     let (reg, profile, extra) = load_for_extraction(pool, profile_id, extra, locale).await?;
     let raw = raw_text_for_rules(&profile, &reg, extra.as_deref());
@@ -299,6 +315,9 @@ pub async fn extract_profile(
                 parse_slim_extraction(raw_reply, &reg, &text, &profile, s.mode.include_sensitive, &fields)
             })
             .await;
+            if matches!(actor, matchmaking_core::autonomy::Actor::Agent { .. }) {
+                crate::agent::ensure_open(pool, s).await?;
+            }
             view.timings.llm_ms = llm_started.elapsed().as_millis() as u64;
             match outcome {
                 Ok(ex) => {
@@ -327,8 +346,10 @@ pub async fn extract_profile(
         }
     }
 
-    MmRepository::audit(pool, "ai_extract", "profile", profile_id, Some(if session.is_none() { "rules" } else if is_cloud { "cloud" } else { "local" })).await;
-    crate::mm::autonomy::settle_extraction(pool, profile_id, run_id, &rules.ambiguous).await?;
+    MmRepository::audit_as(pool, actor, "ai_extract", "profile", profile_id, Some(if session.is_none() { "rules" } else if is_cloud { "cloud" } else { "local" })).await;
+    if !matches!(actor, matchmaking_core::autonomy::Actor::Agent { .. }) {
+        crate::mm::autonomy::settle_extraction(pool, profile_id, run_id, &rules.ambiguous).await?;
+    }
     view.suggestions = repo::suggestions_for_run(pool, run_id).await.map_err(err)?;
     Ok(view)
 }
@@ -442,12 +463,19 @@ pub async fn preview_pair(pool: &SqlitePool, match_id: &str, mode: Mode, locale:
 }
 
 pub async fn analyse_pair(pool: &SqlitePool, s: &Session<'_>, match_id: &str) -> Result<PairView, String> {
+    analyse_pair_as(pool, s, match_id, matchmaking_core::autonomy::Actor::Matchmaker).await
+}
+
+pub async fn analyse_pair_as(pool: &SqlitePool, s: &Session<'_>, match_id: &str, actor: matchmaking_core::autonomy::Actor) -> Result<PairView, String> {
     let i = pair_input(pool, match_id, s.mode.include_sensitive, s.locale).await?;
     let facts = i.facts.clone();
     let analysis: PairAnalysis = ask(pool, s, "pair", (Some(&i.a), Some(&i.b)), &i.system, &i.user, |raw| parse_pair_analysis(raw, &facts)).await?;
+    if matches!(actor, matchmaking_core::autonomy::Actor::Agent { .. }) {
+        crate::agent::ensure_open(pool, s).await?;
+    }
     let result = json!({"facts": i.facts, "analysis": analysis, "include_sensitive": s.mode.include_sensitive});
     let run_id = repo::insert_run(pool, None, Some(match_id), "pair", &s.provider, &s.model, s.mode.is_cloud, &i.input_hash, Some(i.rule_set_version), &result).await.map_err(err)?;
-    MmRepository::audit(pool, "ai_pair_analysis", "match", match_id, Some(if s.mode.is_cloud { "cloud" } else { "local" })).await;
+    MmRepository::audit_as(pool, actor, "ai_pair_analysis", "match", match_id, Some(if s.mode.is_cloud { "cloud" } else { "local" })).await;
     Ok(PairView { run_id, model: s.model.clone(), is_cloud: s.mode.is_cloud, created_at: chrono::Utc::now().to_rfc3339(), stale: false, facts: i.facts, analysis })
 }
 

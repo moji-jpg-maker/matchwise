@@ -106,9 +106,9 @@ impl Step {
         Step::RequestInfo,
     ];
 
-    /// Built in this release. Only `AcceptExtraction` exists in phase 1; each later phase flips its steps here.
+    /// Built in this release: extraction acceptance and the phase 2 analysis tools.
     pub fn is_built(self) -> bool {
-        matches!(self, Step::AcceptExtraction)
+        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair)
     }
 
     /// Reaches a candidate (a Telegram message). These get a review window at L3.

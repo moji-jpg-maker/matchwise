@@ -138,6 +138,7 @@ pub(crate) async fn run_batch(
             model: config.model.clone(),
             mode: *mode,
             locale: matchmaking_core::Locale::En,
+            agent_config: None,
         }),
         Err(_) => None,
     };

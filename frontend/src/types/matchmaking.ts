@@ -884,6 +884,30 @@ export interface IntakeAcceptReport {
   fields: string[];
 }
 
+export interface AgentRun {
+  id: number;
+  profile_id: string;
+  batch_id: string | null;
+  status: 'running' | 'finished' | 'failed' | 'stopped' | 'step_limit';
+  actor: string;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export type AgentTool = 'list_work' | 'get_profile_redacted' | 'run_extraction' | 'accept_suggestion' | 'find_matches' | 'create_match' | 'analyse_pair' | 'finish';
+
+export interface AgentTrace {
+  id: number;
+  run_id: number;
+  turn: number;
+  action: { tool: AgentTool; args: Record<string, unknown> };
+  status: 'executing' | 'executed' | 'proposed' | 'denied' | 'failed' | 'rejected';
+  observation: unknown;
+  actor: string;
+  decided_by: string | null;
+  created_at: string;
+}
+
 export type AutonomyStep =
   | 'run_extraction'
   | 'accept_extraction'
@@ -926,7 +950,7 @@ export const AUTONOMY_STEPS: AutonomyStep[] = [
 ];
 
 /** Steps built in this release; the rest stay Off and are disabled in the UI. */
-export const BUILT_AUTONOMY_STEPS: AutonomyStep[] = ['accept_extraction'];
+export const BUILT_AUTONOMY_STEPS: AutonomyStep[] = ['run_extraction', 'accept_extraction', 'find_matches', 'create_match', 'analyse_pair'];
 
 export type AutonomyLevel = 'l0_manual' | 'l1_assisted' | 'l2_supervised' | 'l3_delegated' | 'l4_autonomous';
 

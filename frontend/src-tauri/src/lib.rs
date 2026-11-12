@@ -42,6 +42,7 @@ pub mod console_utils;
 pub mod database;
 pub mod notifications;
 pub mod ai;
+pub mod agent;
 pub mod mm;
 pub mod questionnaires;
 pub mod telegram;
@@ -786,6 +787,11 @@ pub fn run() {
             mm::exposure_commands::mm_ranking_readiness,
             mm::ranking_commands::mm_ranking_comparison,
             mm::autonomy_commands::agent_get_policy,
+            agent::commands::agent_run_now,
+            agent::commands::agent_runs,
+            agent::commands::agent_run_detail,
+            agent::commands::agent_proposals,
+            agent::commands::agent_decide_proposal,
             mm::autonomy_commands::agent_save_policy,
             mm::autonomy_commands::agent_set_paused,
             mm::autonomy_commands::agent_undo,

@@ -226,7 +226,7 @@ impl HttpBackend {
                 text_of(r.pointer("/message/content"), "message")
             }
             Kind::OpenAiCompatible => {
-                let mut body = json!({"model": self.model, "messages": messages, "temperature": temperature});
+                let mut body = json!({"model": self.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens});
                 if let Some(schema) = schema {
                     body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": "profile_fields", "strict": true, "schema": schema}});
                 } else if json_mode {

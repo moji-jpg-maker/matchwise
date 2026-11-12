@@ -18,6 +18,7 @@ import {
   UNRELEASED_AUTONOMY_LEVELS,
 } from '@/types/matchmaking';
 import { useI18n } from '@/i18n';
+import { AgentRuns } from '@/components/matchmaking/AgentRuns';
 
 const DEFAULT_REVIEW_MINUTES = 60;
 
@@ -207,6 +208,7 @@ export default function AutonomyPage() {
 
       <p className="text-xs text-gray-500">{t('autonomy.humanOnly')}</p>
       <Button onClick={() => void save()} disabled={saving}>{t('autonomy.save')}</Button>
+      <AgentRuns />
     </div>
   );
 }

@@ -86,6 +86,24 @@ fn built_step_follows_the_preset_mode() {
 }
 
 #[test]
+fn phase_two_steps_follow_each_mode_without_enabling_later_steps() {
+    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair] {
+        assert!(step.is_built());
+        let action = Action::Step(step);
+        assert_eq!(decide(&action, &open(), &AutonomyPolicy::default()), denied(DenyReason::StepOff));
+        assert_eq!(decide(&action, &open(), &AutonomyPolicy::preset(Level::L1Assisted)), Decision::Propose);
+        let mut policy = AutonomyPolicy::preset(Level::L2Supervised);
+        assert_eq!(decide(&action, &open(), &policy), Decision::Execute);
+        policy.steps.insert(step, StepMode::ReviewWindow { minutes: 60 });
+        assert_eq!(decide(&action, &open(), &policy), Decision::Schedule { at: NOW + 3600 });
+    }
+    for step in [Step::Approve, Step::Recommend, Step::RuleOverride, Step::SendMessage] {
+        assert!(!step.is_built());
+        assert_eq!(decide(&Action::Step(step), &open(), &all_auto()), denied(DenyReason::StepOff));
+    }
+}
+
+#[test]
 fn individual_override_wins_over_the_preset() {
     let action = apply("city", Provenance::AiInferred);
     let mut policy = AutonomyPolicy::preset(Level::L2Supervised);

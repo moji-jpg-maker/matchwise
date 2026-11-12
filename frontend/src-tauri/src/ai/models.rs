@@ -99,6 +99,7 @@ pub fn model_file_state(app_data_dir: &Path, def: &MmModelDef) -> ModelFile {
 /// stay inside the given facts, and neither wants a long reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskProfile {
+    Agent,
     /// Reading free text into suggested profile fields: longer output, strict JSON.
     Extraction,
     /// The slim, constrained extraction over a known number of fields: the reply is as short as the fields allow.
@@ -111,6 +112,7 @@ impl TaskProfile {
     /// The `kind` strings the service logs calls under. Anything else (a connection test) gets the pair profile.
     pub fn for_kind(kind: &str) -> TaskProfile {
         match kind {
+            "agent" => TaskProfile::Agent,
             "extract" | "intake" | "intake_batch" => TaskProfile::Extraction,
             _ => TaskProfile::PairAnalysis,
         }
@@ -118,6 +120,7 @@ impl TaskProfile {
 
     pub fn temperature(self) -> f32 {
         match self {
+            TaskProfile::Agent => 0.1,
             TaskProfile::Extraction | TaskProfile::SlimExtraction { .. } => 0.1,
             TaskProfile::PairAnalysis => 0.2,
         }
@@ -125,6 +128,7 @@ impl TaskProfile {
 
     pub fn max_tokens(self) -> i32 {
         match self {
+            TaskProfile::Agent => 512,
             TaskProfile::Extraction => 3072,
             TaskProfile::SlimExtraction { with_preferences: true, .. } => 2048,
             TaskProfile::SlimExtraction { fields, .. } => (96 * fields as i32 + 128).min(1024),
@@ -134,6 +138,7 @@ impl TaskProfile {
 
     pub fn timeout_secs(self) -> u64 {
         match self {
+            TaskProfile::Agent => 120,
             TaskProfile::Extraction | TaskProfile::SlimExtraction { .. } => 180,
             TaskProfile::PairAnalysis => 300,
         }
