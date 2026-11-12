@@ -5,6 +5,7 @@
 
 pub mod ai;
 pub mod autonomy;
+pub mod outbound;
 pub mod defaults;
 pub mod matching;
 pub mod expr;

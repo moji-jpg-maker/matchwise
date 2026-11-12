@@ -96,6 +96,9 @@ async fn policy_decision_review(
     if action.tool == "send_follow_up" {
         tools::check_follow_up_action(pool, target, action).await?;
     }
+    if action.tool == "send_message" {
+        crate::telegram::agent_message::check(pool, target, action.string("profile_id"), action.string("match_id"), action.string("text")).await?;
+    }
     if step == Some(Step::AcceptExtraction) {
         return tools::acceptance_decision(pool, target, action, &context, &policy).await;
     }

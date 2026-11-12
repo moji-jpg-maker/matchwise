@@ -1781,3 +1781,53 @@ async fn agent_profile_follow_up_delivery_rechecks_gate_pause_and_profile_need()
         1
     );
 }
+
+#[tokio::test]
+async fn screened_messages_deliver_escaped_and_block_private_or_stale_content() {
+    use crate::ai::settings::{save_config, AiConfig};
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{Actor, AutonomyPolicy, Step, StepMode};
+    for locale in [Locale::En, Locale::Fa] {
+        let pool = test_pool().await;
+        for (profile, chat) in [("pa", 100), ("pb", 200)] {
+            make_profile(&pool, profile, &[("full_name", txt("Sara Private")), ("health_notes", txt("PrivateHealth"))]).await;
+            link(&pool, profile, chat).await;
+            sqlx::query("UPDATE mm_telegram_links SET username='private_handle' WHERE profile_id=?").bind(profile).execute(&pool).await.unwrap();
+            repo::set_language(&pool, profile, locale).await.unwrap();
+        }
+        save_config(&pool, &AiConfig { provider: "ollama".into(), model: "scripted".into(), base_url: "http://localhost:11434".into(), local_include_sensitive: false }).await.unwrap();
+        let mut policy = AutonomyPolicy::default();
+        policy.steps.insert(Step::SendMessage, StepMode::Auto);
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let id = new_match(&pool, "pa", "pb").await;
+        propose(&pool, &id).await;
+        let api = MockApi::default();
+        flush_outbox(&pool, &api).await.unwrap();
+        api.sent.lock().unwrap().clear();
+        let actor = Actor::Agent { run_id: 61 };
+        for blocked in ["۰۹۱۲۱۲۳۴۵۶۷", "a@example.com", "@candidate", "https://example.org", "Sara Private", "PrivateHealth", "private_handle", "۲۰۰", "70", "Your score is high", &id] {
+            assert!(super::agent_message::queue(&pool, actor, "pa", "pb", &id, blocked).await.is_err(), "{blocked}");
+        }
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox WHERE kind='agent_message'").fetch_one(&pool).await.unwrap(), 0);
+        let text = match locale { Locale::En => "How was your conversation? <hello> & welcome", Locale::Fa => "گفتگوی شما چطور بود؟ <سلام> & خوش آمدید" };
+        super::agent_message::queue(&pool, actor, "pa", "pb", &id, text).await.unwrap();
+        let message = outbox(&pool, "pb").await.pop().unwrap();
+        assert_eq!(message.text, super::render::agent_message_text(locale, text));
+        assert!(message.text.contains("&lt;") && message.text.contains("&amp;"));
+        assert!(message.keyboard.is_none());
+        assert_eq!(message.actor, "agent:61");
+        policy.paused = true;
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 0);
+        policy.paused = false;
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 1);
+        assert_eq!(api.sent.lock().unwrap()[0].1, message.text);
+        super::agent_message::queue(&pool, actor, "pa", "pb", &id, "How did your conversation go?").await.unwrap();
+        make_profile(&pool, "unrelated", &[("health_notes", txt("conversation"))]).await;
+        assert_eq!(flush_outbox(&pool, &api).await.unwrap().cancelled, 1);
+        assert_eq!(api.sent.lock().unwrap().len(), 1);
+        assert_eq!(MatchRepo::get(&pool, &id).await.unwrap().unwrap().status, MatchStatus::IntroductionProposed);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_audit_log WHERE action='send_message' AND (actor!='agent:61' OR detail IS NOT NULL)").fetch_one(&pool).await.unwrap(), 0);
+    }
+}

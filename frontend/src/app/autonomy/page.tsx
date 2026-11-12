@@ -226,6 +226,7 @@ export default function AutonomyPage() {
         <p className="text-xs text-gray-500">{t('autonomy.budgetsHelp')}</p>
         <p className="text-xs text-gray-500">{t('autonomy.candidateBudgetsHelp')}</p>
         <p className="text-xs text-gray-500">{t('autonomy.followUpsHelp')}</p>
+        <p className="text-xs text-gray-500">{t('autonomy.messagesHelp')}</p>
       </div>
 
       <p className="text-xs text-gray-500">{t('autonomy.humanOnly')}</p>

@@ -350,6 +350,11 @@ pub async fn execute(
                 (action.tool == "resend_interest_buttons").then(|| action.string("profile_id")), session.locale).await?;
             Ok(json!({"match_id":id,"queued":queued}))
         }
+        "send_message" => {
+            action.validate()?;
+            crate::telegram::agent_message::queue(pool, actor, target, action.string("profile_id"), action.string("match_id"), action.string("text")).await?;
+            Ok(json!({"profile_id":action.string("profile_id"),"queued":1}))
+        }
         "send_follow_up" => {
             check_follow_up_action(pool, target, action).await?;
             crate::telegram::follow_up::queue(pool, actor, target, action.string("profile_id"),

@@ -133,7 +133,11 @@ pub async fn flush_outbox(pool: &SqlitePool, api: &dyn TelegramApi) -> Result<Fl
                 Some(id) => crate::mm::match_repo::MatchRepo::get(pool, id).await.map_err(err)?,
                 None => None,
             };
-            let waiting = if matches!(row.kind.as_str(), "profile_reminder" | "intro_reminder") {
+            let waiting = if row.kind == "agent_message" {
+                if let Some(id) = row.match_id.as_deref() {
+                    super::agent_message::delivery_allowed(pool, &row.profile_id, id, &row.text).await?
+                } else { false }
+            } else if matches!(row.kind.as_str(), "profile_reminder" | "intro_reminder") {
                 super::follow_up::still_eligible(pool, &row.profile_id, row.match_id.as_deref()).await?
             } else { current.is_some_and(|m| !m.hidden && m.hold_reason.is_none()
                 && m.status == matchmaking_core::MatchStatus::IntroductionProposed

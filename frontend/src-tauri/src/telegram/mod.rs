@@ -5,6 +5,7 @@
 //! Telegram passes through Telegram's servers. The bot therefore never displays stored sensitive fields, shares
 //! contact details, or reveals scores, rules or other people's data beyond a matchmaker-approved introduction card.
 pub mod api;
+pub(crate) mod agent_message;
 pub mod commands;
 pub mod engine;
 pub(crate) mod follow_up;

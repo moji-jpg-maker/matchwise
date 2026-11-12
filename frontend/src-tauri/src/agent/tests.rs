@@ -3247,6 +3247,62 @@ async fn age_follow_ups(pool: &SqlitePool) {
 }
 
 #[tokio::test]
+async fn screened_messages_scripted_policy_privacy_scope_and_budget() {
+    let _serial = serial().await;
+    for level in [Level::L1Assisted, Level::L3Delegated, Level::L2Supervised] {
+        let (pool, rules) = setup(level).await;
+        let id = due_follow_up_pair(&pool, &rules).await;
+        if level == Level::L2Supervised {
+            let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+            policy.steps.insert(Step::SendMessage, StepMode::Auto);
+            policy.budgets.messages_per_candidate_per_day = 1;
+            AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        }
+        let backend = ScriptedLlmBackend::new(vec![
+            call("send_message", json!({"profile_id":"candidate","match_id":id,"text":"How did your conversation go?"})),
+            call("send_message", json!({"profile_id":"candidate","match_id":id,"text":"Call ۰۹۱۲۱۲۳۴۵۶۷"})),
+            call("send_message", json!({"profile_id":"edited","match_id":id,"text":"How are you?"})),
+            call("send_message", json!({"profile_id":"candidate","match_id":id,"text":"How are you?"})),
+            finish(),
+        ]);
+        let run = super::run(&pool, &session(&backend), "target", None).await.unwrap();
+        let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+        assert_eq!(traces[0].status, match level { Level::L1Assisted => "proposed", Level::L3Delegated => "scheduled", _ => "executed" });
+        assert_eq!(traces[1].status, "denied");
+        assert_eq!(traces[2].status, "denied");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_outbox WHERE kind='agent_message'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(count, if level == Level::L2Supervised { 1 } else { 0 });
+        if level == Level::L2Supervised {
+            assert_eq!(traces[3].status, "message_limit");
+            let audit: Option<String> = sqlx::query_scalar("SELECT detail FROM mm_audit_log WHERE action='send_message'").fetch_one(&pool).await.unwrap();
+            assert!(audit.is_none());
+        } else if level == Level::L1Assisted {
+            let mut edited = traces[0].action.clone();
+            edited.args["text"] = json!("@private");
+            assert!(super::decide_proposal(&pool, Some(&session(&backend)), traces[0].id, true, Some(edited.args)).await.is_err());
+            super::decide_proposal(&pool, Some(&session(&backend)), traces[0].id, true, Some(json!({"profile_id":"candidate","match_id":id,"text":"گفتگوی شما چطور پیش رفت؟"}))).await.unwrap();
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox WHERE kind='agent_message'").fetch_one(&pool).await.unwrap(), 1);
+        } else if level == Level::L3Delegated {
+            expire_review(&pool, traces[0].id).await;
+            super::process_due(&pool, &session(&backend), &tokio_util::sync::CancellationToken::new()).await.unwrap();
+            assert_eq!(repo::traces(&pool, Some(run), false).await.unwrap()[0].status, "executed");
+        }
+        pool.close().await;
+    }
+}
+
+#[test]
+fn screened_message_protocol_limits() {
+    let constraint = protocol::constraint();
+    assert!(constraint.gbnf.contains("send_message"));
+    for length in [600, 601] {
+        let action: Action = serde_json::from_value(call("send_message", json!({"profile_id":"p","match_id":"m","text":"ش".repeat(length)}))).unwrap();
+        assert_eq!(action.validate().is_ok(), length == 600);
+    }
+}
+
+#[tokio::test]
 async fn template_follow_up_scripted_proposals_review_window_and_auto_caps() {
     let _serial = serial().await;
     for level in [Level::L1Assisted, Level::L3Delegated, Level::L2Supervised] {

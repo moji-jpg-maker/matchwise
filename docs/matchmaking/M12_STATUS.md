@@ -1,8 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 / 5.1–5.2 are built:
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 / 5.1–5.2 / 6.1 are built:
 policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
-reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets, template introductions and template follow-ups.** Nothing has been run with a real model.
+reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets, template introductions, template follow-ups and screened AI-written follow-ups.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -210,6 +210,20 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   fixtures cover both languages, delivered templates/buttons, candidate yes/decline, closed gates, pause and stale need.
   No real model was used.
 
+## Step 6.1: what shipped
+- The pure core outbound screen rejects contacts (including Persian/Arabic digits), URLs, handles, score language,
+  stored private values and rule names, and messages over 600 Unicode characters. Matching normalizes case,
+  Persian letter/digit variants and separators; private-value matching is intentionally conservative.
+- `send_message(match_id, profile_id, text)` is policy-checked SendMessage, restricted to linked, consenting active
+  participants of the target's existing nonterminal introduction. Hidden/held matches cannot receive follow-ups.
+  L1/L2 propose, L3 schedules a review window, and a custom Auto step queues immediately. Later steps remain Off.
+- Admission rechecks current registry sensitivity (including nested fields), NEVER_SHARED values, identifiers,
+  stored score values and versioned rule names. Escaped `render::agent_message_text` uses the existing outbox;
+  delivery screens again against current data and cancels stale/unsafe content. No Interest or lifecycle change occurs.
+- The shared rolling daily message budget, outbox insertion and text-free agent audit commit atomically. Existing
+  run traces, edited approvals, review windows, veto, pause and AI gate apply. English/Persian settings help and
+  run-log labels ship. No new inbound interpretation, missing-info tool or real-model run is included.
+
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
   On-demand runtime actions instead record their real `agent:<run_id>` actor.
@@ -217,25 +231,25 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   counts as Off.
 - The rules-only tier is gated by the AI gate too, because a closed gate stops all agent actions.
 - `run_accept_all` in `ai/intake_commands.rs` is the manual, unthresholded path and is untouched.
-- Twelve steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
-  Approve, Reject, RuleOverride, SendIntroduction and SendFollowUp.
+- Thirteen steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
+  Approve, Reject, RuleOverride, SendIntroduction, SendFollowUp and SendMessage.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
 - Runtime/model access and due execution are serialized. Veto uses an atomic status check and does not wait for
   model work. Budget reservations are separate from retained AI prompts.
 
 ## Verified here
-- `cargo test -p matchmaking-core`: 195 passed, including the built-step policy matrix, invariant denials
+- `cargo test -p matchmaking-core`: 197 passed, including the built-step policy matrix, invariant denials
   and actor-aware lifecycle checks.
 - `cargo test --lib autonomy_tests` in `src-tauri`: 14 passed.
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
   batch subjects, durable review windows and veto, invalid actions and configurable budget stops. A prompt regression test lives in
-  `ai/tests.rs`. All 55 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
-  approval/rejection, rule override, migration, proposal and template follow-up checks.
-- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 493 passed, 2 ignored; no real model was used.
+  `ai/tests.rs`. All 57 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
+  approval/rejection, rule override, migration, proposal, template follow-up and screened-message checks.
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 496 passed, 2 ignored; no real model was used.
 
 ## Still open
-- Steps 6.1–8: screened AI-written messages, missing-info requests, inbound reply interpretation,
+- Steps 6.2–8: missing-info requests, inbound reply interpretation,
   outcomes and the full autonomy release remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.

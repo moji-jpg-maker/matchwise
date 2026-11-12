@@ -10,5 +10,6 @@
   "reject",
   "rule_override",
   "send_introduction",
-  "send_follow_up"
+  "send_follow_up",
+  "send_message"
 ]

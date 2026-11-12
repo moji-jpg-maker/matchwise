@@ -108,7 +108,7 @@ impl Step {
 
     /// Built through step 5.2: internal decisions, template introductions and reminders.
     pub fn is_built(self) -> bool {
-        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride | Step::SendIntroduction | Step::SendFollowUp)
+        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride | Step::SendIntroduction | Step::SendFollowUp | Step::SendMessage)
     }
 
     /// Reaches a candidate (a Telegram message). These get a review window at L3.

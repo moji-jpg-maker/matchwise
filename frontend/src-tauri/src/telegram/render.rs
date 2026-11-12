@@ -6,6 +6,10 @@ pub fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+pub fn agent_message_text(locale: Locale, text: &str) -> String {
+    user_text(locale, text)
+}
+
 /// Escapes user text and, in right-to-left languages, isolates it so Latin names and numbers keep their place in the sentence.
 pub fn user_text(locale: Locale, s: &str) -> String {
     let escaped = esc(s);
