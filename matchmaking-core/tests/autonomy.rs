@@ -69,6 +69,21 @@ fn unbuilt_steps_always_count_as_off() {
 }
 
 #[test]
+fn every_step_is_built() {
+    for step in Step::ALL {
+        assert!(step.is_built(), "{step:?}");
+    }
+}
+
+#[test]
+fn l4_preset_is_auto_for_every_step() {
+    let policy = AutonomyPolicy::preset(Level::L4Autonomous);
+    for step in Step::ALL {
+        assert_eq!(policy.mode_of(step), StepMode::Auto, "{step:?}");
+    }
+}
+
+#[test]
 fn default_is_l0_and_does_nothing() {
     let policy = AutonomyPolicy::default();
     assert_eq!(policy.level, Level::L0Manual);
@@ -238,7 +253,7 @@ fn decisions_serialize_with_a_tag() {
 #[test]
 fn validation_rejects_bad_policies() {
     assert!(AutonomyPolicy::preset(Level::L2Supervised).validate().is_ok());
-    assert!(AutonomyPolicy::preset(Level::L4Autonomous).validate().is_err());
+    assert!(AutonomyPolicy::preset(Level::L4Autonomous).validate().is_ok());
 
     let mut policy = AutonomyPolicy::default();
     policy.min_confidence = 1.5;

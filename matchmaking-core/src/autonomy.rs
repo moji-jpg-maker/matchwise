@@ -158,11 +158,6 @@ pub enum Level {
 impl Level {
     pub const ALL: [Level; 5] = [Level::L0Manual, Level::L1Assisted, Level::L2Supervised, Level::L3Delegated, Level::L4Autonomous];
 
-    /// L4 is enabled in phase 8, once every step exists.
-    pub fn is_released(self) -> bool {
-        self != Level::L4Autonomous
-    }
-
     pub fn mode_for(self, step: Step) -> StepMode {
         match self {
             Level::L0Manual => StepMode::Off,
@@ -264,9 +259,6 @@ impl AutonomyPolicy {
 
     /// Check a policy before it is stored.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.level.is_released() {
-            return Err("This autonomy level is not available yet".into());
-        }
         if !self.min_confidence.is_finite() || !(0.0..=1.0).contains(&self.min_confidence) {
             return Err("The confidence threshold must be between 0 and 1".into());
         }

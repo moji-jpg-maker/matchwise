@@ -215,9 +215,28 @@ async fn the_policy_defaults_to_l0_and_is_versioned_and_validated() {
     assert_eq!((saved.policy.version, saved.custom), (2, true));
     assert_eq!(AutonomyRepo::load_policy(&pool).await.unwrap(), saved.policy);
 
-    assert!(save_policy(&pool, &AutonomyPolicy::preset(Level::L4Autonomous)).await.is_err(), "L4 is not released");
-    assert_eq!(AutonomyRepo::load_policy(&pool).await.unwrap().version, 2);
-    assert_eq!(audit_actors(&pool, "agent_policy_saved").await.len(), 2);
+    let saved = save_policy(&pool, &AutonomyPolicy::preset(Level::L4Autonomous)).await.unwrap();
+    assert_eq!(saved.policy.level, Level::L4Autonomous);
+    assert!(!saved.custom);
+    let loaded = AutonomyRepo::load_policy(&pool).await.unwrap();
+    assert_eq!(loaded, saved.policy);
+    assert!(loaded.matches_preset(), "the L4 preset round-trips as a preset");
+    assert_eq!(loaded.version, 3);
+    assert_eq!(audit_actors(&pool, "agent_policy_saved").await.len(), 3);
+}
+
+#[tokio::test]
+async fn a_database_without_a_policy_row_loads_l0() {
+    let fresh = test_pool().await;
+    let view = get_policy(&fresh, None).await.unwrap();
+    assert_eq!((view.policy.level, view.policy.version, view.custom), (Level::L0Manual, 1, false));
+    assert!(view.policy.matches_preset());
+
+    let upgraded = test_pool().await;
+    sqlx::query("DELETE FROM mm_agent_policy").execute(&upgraded).await.unwrap();
+    let policy = AutonomyRepo::load_policy(&upgraded).await.unwrap();
+    assert_eq!((policy.level, policy.version, policy.paused), (Level::L0Manual, 1, false));
+    assert!(policy.matches_preset());
 }
 
 #[tokio::test]

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -15,7 +16,6 @@ import {
   AutonomyStepMode,
   BUILT_AUTONOMY_STEPS,
   PolicyView,
-  UNRELEASED_AUTONOMY_LEVELS,
 } from '@/types/matchmaking';
 import { useI18n } from '@/i18n';
 import { AgentRuns } from '@/components/matchmaking/AgentRuns';
@@ -57,6 +57,7 @@ export default function AutonomyPage() {
   const [policy, setPolicy] = useState<AutonomyPolicy | null>(null);
   const [custom, setCustom] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pendingLevel, setPendingLevel] = useState<AutonomyLevel | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -75,6 +76,19 @@ export default function AutonomyPage() {
   const chooseLevel = (level: AutonomyLevel) => {
     setPolicy({ ...policy, level, steps: presetSteps(level) });
     setCustom(false);
+  };
+
+  const selectLevel = (level: AutonomyLevel) => {
+    if (level === 'l4_autonomous' && policy.level !== level) {
+      setPendingLevel(level);
+      return;
+    }
+    chooseLevel(level);
+  };
+
+  const confirmLevel = () => {
+    if (pendingLevel) chooseLevel(pendingLevel);
+    setPendingLevel(null);
   };
 
   const setMode = (step: AutonomyStep, name: ModeName) => {
@@ -129,26 +143,21 @@ export default function AutonomyPage() {
           {t('autonomy.preset')}
           {custom && <span className="ms-2 text-xs font-normal text-amber-600">{t('autonomy.custom')}</span>}
         </div>
-        {AUTONOMY_LEVELS.map((level) => {
-          const unreleased = UNRELEASED_AUTONOMY_LEVELS.includes(level);
-          return (
-            <label key={level} className={`p-4 flex items-start gap-3 ${unreleased ? 'opacity-50' : 'cursor-pointer'}`}>
-              <input
-                type="radio"
-                name="autonomy-level"
-                className="mt-1"
-                checked={policy.level === level}
-                disabled={unreleased}
-                onChange={() => chooseLevel(level)}
-              />
-              <span>
-                <span className="text-sm font-medium">{t(`autonomy.level.${level}`)}</span>
-                {unreleased && <span className="ms-2 text-xs text-gray-500">{t('autonomy.unreleased')}</span>}
-                <span className="block text-xs text-gray-500">{t(`autonomy.levelDesc.${level}`)}</span>
-              </span>
-            </label>
-          );
-        })}
+        {AUTONOMY_LEVELS.map((level) => (
+          <label key={level} className="p-4 flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="autonomy-level"
+              className="mt-1"
+              checked={policy.level === level}
+              onChange={() => selectLevel(level)}
+            />
+            <span>
+              <span className="text-sm font-medium">{t(`autonomy.level.${level}`)}</span>
+              <span className="block text-xs text-gray-500">{t(`autonomy.levelDesc.${level}`)}</span>
+            </span>
+          </label>
+        ))}
       </div>
 
       <div className="bg-white rounded-lg border divide-y">
@@ -233,6 +242,19 @@ export default function AutonomyPage() {
       <p className="text-xs text-gray-500">{t('autonomy.humanOnly')}</p>
       <Button onClick={() => void save()} disabled={saving}>{t('autonomy.save')}</Button>
       <AgentRuns />
+
+      <Dialog open={pendingLevel !== null} onOpenChange={(open) => { if (!open) setPendingLevel(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('autonomy.l4ConfirmTitle')}</DialogTitle>
+            <DialogDescription>{t('autonomy.l4ConfirmBody')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingLevel(null)}>{t('common.cancel')}</Button>
+            <Button variant="destructive" onClick={confirmLevel}>{t('autonomy.l4ConfirmAccept')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

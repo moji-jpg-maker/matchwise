@@ -120,6 +120,31 @@ impl LlmBackend for ScriptedLlmBackend {
                 .unwrap();
             action = call("analyse_pair", json!({"match_id":match_id}));
         }
+        if action == json!("accept_extracted") {
+            let input: Json = serde_json::from_str(user).unwrap();
+            let suggestion_id = input["untrusted_observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|entry| {
+                    entry["observation"]["result"]["suggestion_ids"]
+                        .as_array()
+                        .and_then(|ids| ids.first())
+                        .and_then(Json::as_i64)
+                })
+                .unwrap();
+            action = call("accept_suggestion", json!({"suggestion_id":suggestion_id}));
+        }
+        if action["args"]["match_id"] == json!("created") {
+            let input: Json = serde_json::from_str(user).unwrap();
+            let match_id = input["untrusted_observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|entry| entry["observation"]["result"]["match_id"].as_str())
+                .unwrap();
+            action["args"]["match_id"] = json!(match_id);
+        }
         Ok(action.to_string())
     }
 }
@@ -737,6 +762,90 @@ async fn closed_gate_and_paused_proposal_do_not_call_models_or_write_matches() {
     assert_eq!(repo::runs(&pool).await.unwrap().len(), 1);
 }
 
+#[tokio::test]
+async fn the_real_l4_preset_keeps_every_invariant() {
+    let _serial = serial().await;
+
+    // The kill switch stops the run before any model call.
+    let (pool, rules) = setup(Level::L4Autonomous).await;
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    assert_eq!(policy.level, Level::L4Autonomous);
+    policy.paused = true;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![call(
+        "create_match",
+        json!({"profile_id":"candidate","rule_set_id":rules}),
+    )]);
+    assert!(super::run(&pool, &session(&backend), "target", None)
+        .await
+        .is_err());
+    assert!(backend.prompts.lock().unwrap().is_empty());
+    assert!(MatchRepo::list(&pool).await.unwrap().is_empty());
+
+    // A closed AI gate does the same.
+    let (pool, rules) = setup(Level::L4Autonomous).await;
+    let mut closed = config();
+    closed.provider = "none".into();
+    settings::save_config(&pool, &closed).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![call(
+        "create_match",
+        json!({"profile_id":"candidate","rule_set_id":rules}),
+    )]);
+    assert!(super::run(&pool, &session(&backend), "target", None)
+        .await
+        .is_err());
+    assert!(backend.prompts.lock().unwrap().is_empty());
+    assert!(MatchRepo::list(&pool).await.unwrap().is_empty());
+
+    // Human-only actions are not tools, and Interest is never an agent decision.
+    let (pool, rules) = setup(Level::L4Autonomous).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    for tool in ["save_config", "set_consent", "save_rule_set", "set_interest"] {
+        let backend = ScriptedLlmBackend::new(vec![call(tool, json!({"value":true}))]);
+        let run = super::run(&pool, &session(&backend), "target", None)
+            .await
+            .unwrap();
+        let trace = repo::traces(&pool, Some(run), false)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(trace.status, "failed", "{tool}");
+    }
+    assert_eq!(settings::load_config(&pool).await.unwrap(), config());
+    let pair = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(
+        (pair.a_response, pair.b_response),
+        (Interest::Unknown, Interest::Unknown)
+    );
+
+    // A person's own value is never overwritten, even at L4.
+    let (pool, _) = setup(Level::L4Autonomous).await;
+    let suggestion_id = suggestion(&pool, "target", "city", 0.99, false, false).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call("accept_suggestion", json!({"suggestion_id":suggestion_id})),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+        "denied"
+    );
+    let stored = MmRepository::get_profile(&pool, "target")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (stored.profile.fields["city"].value.clone(), stored.profile.fields["city"].source),
+        (Value::Text("Shiraz".into()), Provenance::Matchmaker)
+    );
+    assert!(AutonomyRepo::active_actions(&pool, "target")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 async fn tracked_pair(pool: &SqlitePool, rules: &str, other: &str) -> String {
     crate::mm::match_commands::create_match_as(
         pool,
@@ -1351,11 +1460,7 @@ async fn exclude_snapshot(pool: &SqlitePool, id: &str) {
 #[tokio::test]
 async fn custom_all_auto_overrides_exclusions_and_undo_restores_attribution() {
     let _serial = serial().await;
-    let (pool, rules) = setup(Level::L3Delegated).await;
-    let mut policy = AutonomyPolicy::preset(Level::L4Autonomous);
-    // The full L4 preset remains unreleased until phase 8; its built steps can be customized now.
-    policy.level = Level::L3Delegated;
-    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let (pool, rules) = setup(Level::L4Autonomous).await;
     let id = tracked_pair(&pool, &rules, "candidate").await;
     exclude_snapshot(&pool, &id).await;
     let backend = ScriptedLlmBackend::new(vec![
@@ -3802,6 +3907,544 @@ async fn follow_up_migration_preserves_budget_and_backfills_reminder_caps() {
             .unwrap(),
         0
     );
+}
+
+// Step 8.7: one unattended L4 run from an intake batch through an approved pair.
+#[tokio::test]
+async fn l4_intake_batch_runs_extraction_acceptance_analysis_and_approval() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L4Autonomous).await;
+    IntakeRepo::insert_profile_with_note(
+        &pool,
+        &profile("intake"),
+        "batch",
+        "Smoking: never",
+        "entry",
+    )
+    .await
+    .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call("run_extraction", json!({})),
+        json!("accept_extracted"),
+        call("find_matches", json!({"rule_set_id":rules})),
+        call(
+            "create_match",
+            json!({"profile_id":"candidate","rule_set_id":rules}),
+        ),
+        json!("analyse_created"),
+        call(
+            "transition_match",
+            json!({"match_id":"created","to_status":"recommended"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":"created","to_status":"reviewed"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":"created","to_status":"approved"}),
+        ),
+        finish(),
+    ]);
+    let runs = super::run_batch(&pool, &session(&backend), "batch")
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    let run = runs[0];
+    assert_eq!(repo::runs(&pool).await.unwrap()[0].status, "finished");
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert!(traces.iter().all(|trace| trace.status == "executed"));
+
+    let stored = MmRepository::get_profile(&pool, "intake")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.profile.fields["smoking"].source,
+        Provenance::RuleExtracted
+    );
+    assert_eq!(
+        AutonomyRepo::active_actions(&pool, "intake")
+            .await
+            .unwrap()[0]
+            .run_id,
+        Some(run)
+    );
+
+    let matches = MatchRepo::list(&pool).await.unwrap();
+    assert_eq!(matches.len(), 1);
+    let id = matches[0].0.id.clone();
+    assert_eq!(matches[0].0.status, MatchStatus::Approved);
+    assert!(ai_repo::latest_match_run(&pool, &id)
+        .await
+        .unwrap()
+        .is_some());
+
+    let events = MatchRepo::events(&pool, &id).await.unwrap();
+    assert!(!events.is_empty());
+    let actors = events
+        .iter()
+        .map(|event| event.actor.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        actors.iter().all(|actor| actor == &format!("agent:{run}")),
+        "{actors:?}"
+    );
+}
+
+async fn telegram_say(pool: &SqlitePool, chat: i64, text: &str) {
+    let update: crate::telegram::types::Update = serde_json::from_value(json!({
+        "update_id": 1,
+        "message": {
+            "message_id": 10,
+            "from": {"id": chat, "is_bot": false, "username": "u"},
+            "chat": {"id": chat, "type": "private"},
+            "text": text
+        }
+    }))
+    .unwrap();
+    crate::telegram::engine::handle_update(pool, update)
+        .await
+        .unwrap();
+}
+
+async fn telegram_press(pool: &SqlitePool, chat: i64, data: &str) {
+    let update: crate::telegram::types::Update = serde_json::from_value(json!({
+        "update_id": 2,
+        "callback_query": {
+            "id": "cb1",
+            "from": {"id": chat, "is_bot": false},
+            "data": data,
+            "message": {"message_id": 77, "chat": {"id": chat, "type": "private"}, "text": "x"}
+        }
+    }))
+    .unwrap();
+    crate::telegram::engine::handle_update(pool, update)
+        .await
+        .unwrap();
+}
+
+// Step 8.8: the rest of the L4 flow, from an approved pair through the template
+// introduction, both candidate answers, a feedback reply and an agent-run close.
+#[tokio::test]
+async fn l4_full_flow_introduces_messages_and_closes_with_agent_outcome() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L4Autonomous).await;
+
+    // Nothing in this test's private values may reach a candidate.
+    for (id, name, phone, username, birth) in [
+        (
+            "target",
+            "Sara Karimi",
+            "+989123456789",
+            "sara_private",
+            "1994-05-17",
+        ),
+        (
+            "candidate",
+            "Ali Rezaei",
+            "+989987654321",
+            "ali_private",
+            "1992-08-02",
+        ),
+    ] {
+        let mut profile = MmRepository::get_profile(&pool, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .profile;
+        profile.set(
+            "full_name",
+            Value::Text(name.into()),
+            Provenance::Matchmaker,
+        );
+        profile.set("phone", Value::Text(phone.into()), Provenance::Matchmaker);
+        profile.set(
+            "telegram_username",
+            Value::Text(username.into()),
+            Provenance::Matchmaker,
+        );
+        profile.set(
+            "date_of_birth",
+            Value::Text(birth.into()),
+            Provenance::Matchmaker,
+        );
+        MmRepository::update_profile_data(&pool, &profile)
+            .await
+            .unwrap();
+    }
+
+    // The pair is Approved and both people are linked with consent.
+    let id = introduction_pair(&pool, &rules, "candidate").await;
+    let intro_backend = ScriptedLlmBackend::new(vec![
+        call("propose_introduction", json!({"match_id":id})),
+        finish(),
+    ]);
+    let intro_run = super::run(&pool, &session(&intro_backend), "target", None)
+        .await
+        .unwrap();
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::IntroductionProposed);
+    let messages: Vec<(String, String)> =
+        sqlx::query_as("SELECT text, actor FROM mm_outbox WHERE kind='introduction' ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(messages
+        .iter()
+        .all(|(_, actor)| actor == &format!("agent:{intro_run}")));
+
+    // Both candidates answer with the real Telegram buttons.
+    telegram_press(&pool, 100, &format!("intro:y:{id}")).await;
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::IntroductionProposed
+    );
+    telegram_press(&pool, 200, &format!("intro:y:{id}")).await;
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::ContactExchanged);
+    assert_eq!(
+        (m.a_response, m.b_response),
+        (Interest::Interested, Interest::Interested)
+    );
+
+    // A free-text feedback reply is queued as untrusted input, never as Interest.
+    telegram_say(&pool, 200, "We met for coffee and want to keep talking").await;
+    let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_agent_inbound")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(queued, 1);
+
+    // The matchmaker's notes advance the pair; closing is still a separate agent decision.
+    for status in [
+        MatchStatus::Conversation,
+        MatchStatus::Meeting,
+        MatchStatus::Feedback,
+    ] {
+        crate::mm::match_commands::transition_match_as(
+            &pool,
+            matchmaking_core::autonomy::Actor::Matchmaker,
+            &id,
+            status,
+            None,
+            None,
+            None,
+            Locale::En,
+        )
+        .await
+        .unwrap();
+    }
+    let close_backend = ScriptedLlmBackend::new(vec![
+        call(
+            "record_outcome",
+            json!({"match_id":id,"outcome":"first_meeting"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"closed"}),
+        ),
+        finish(),
+    ]);
+    let close_run = super::run(&pool, &session(&close_backend), "candidate", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(close_run), false).await.unwrap();
+    assert!(traces.iter().all(|trace| trace.status == "executed"));
+
+    // The reply reached the model as quoted, untrusted data.
+    let prompt = close_backend.prompts.lock().unwrap()[0].clone();
+    assert!(prompt.contains("\"untrusted\":true"), "{prompt}");
+    assert!(
+        prompt.contains("We met for coffee and want to keep talking"),
+        "{prompt}"
+    );
+
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Closed);
+    assert_eq!(m.outcome, Some(Outcome::FirstMeeting));
+    assert_eq!(m.outcome_by, Some(format!("agent:{close_run}")));
+    let events = MatchRepo::events(&pool, &id).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "outcome_recorded" && event.actor == format!("agent:{close_run}")
+    }));
+    assert!(events.iter().any(|event| {
+        event.kind == "status_changed"
+            && event.to_status.as_deref() == Some("closed")
+            && event.actor == format!("agent:{close_run}")
+    }));
+
+    // The export carries the actor so ranking can filter or weight an agent label.
+    let doc = crate::mm::export_commands::build_export(&pool)
+        .await
+        .unwrap();
+    let row = doc.csv.lines().nth(1).unwrap();
+    assert!(row.contains("first_meeting"), "{row}");
+    assert!(row.contains(&format!("agent:{close_run}")), "{row}");
+
+    // No NEVER_SHARED value, profile identifier or score/rule text reached the outbox.
+    let outbox: Vec<String> = sqlx::query_scalar("SELECT text FROM mm_outbox")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(!outbox.is_empty());
+    for text in &outbox {
+        for secret in [
+            "Sara Karimi",
+            "Ali Rezaei",
+            "+989123456789",
+            "+989987654321",
+            "sara_private",
+            "ali_private",
+            "1994-05-17",
+            "1992-08-02",
+            "target",
+            "candidate",
+            "ranking_score",
+            "Test rules",
+        ] {
+            assert!(!text.contains(secret), "{secret} leaked: {text}");
+        }
+    }
+    // Free text stays out of the audit log.
+    let audit: Vec<String> = sqlx::query_scalar("SELECT COALESCE(detail, '') FROM mm_audit_log")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(audit
+        .iter()
+        .all(|detail| !detail.contains("We met for coffee")));
+}
+
+// Step 8.9: the same flow at L1 only proposes. Nothing is created, accepted,
+// moved or messaged, because every mutating step is Suggest.
+#[tokio::test]
+async fn l1_full_flow_only_proposes_and_changes_nothing() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L1Assisted).await;
+
+    // One subject per stage of the flow, each in a state where the tool is
+    // valid, so a proposal is the only reason nothing executes.
+    IntakeRepo::insert_profile_with_note(
+        &pool,
+        &profile("intake"),
+        "batch",
+        "Smoking: never",
+        "entry",
+    )
+    .await
+    .unwrap();
+    let suggestion_id = suggestion(&pool, "target", "smoking", 0.99, false, false).await;
+    let tracked = tracked_pair(&pool, &rules, "candidate").await;
+    let approved = introduction_pair(&pool, &rules, "edited").await;
+    MmRepository::insert_profile(&pool, &profile("feedback-peer"))
+        .await
+        .unwrap();
+    let feedback = tracked_pair(&pool, &rules, "feedback-peer").await;
+    sqlx::query(
+        "UPDATE mm_matches SET status='feedback', outcome='continued', outcome_by='matchmaker' WHERE id=?",
+    )
+    .bind(&feedback)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let backend = ScriptedLlmBackend::new(vec![
+        call("run_extraction", json!({})),
+        call("accept_suggestion", json!({"suggestion_id":suggestion_id})),
+        call("find_matches", json!({"rule_set_id":rules})),
+        call(
+            "create_match",
+            json!({"profile_id":"candidate","rule_set_id":rules}),
+        ),
+        call("analyse_pair", json!({"match_id":tracked})),
+        call(
+            "transition_match",
+            json!({"match_id":tracked,"to_status":"recommended"}),
+        ),
+        call("propose_introduction", json!({"match_id":approved})),
+        call(
+            "record_outcome",
+            json!({"match_id":feedback,"outcome":"first_meeting"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":feedback,"to_status":"closed"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert_eq!(traces.len(), 10);
+    assert!(
+        traces
+            .iter()
+            .filter(|trace| trace.action.tool != "finish")
+            .all(|trace| trace.status == "proposed"),
+        "{:?}",
+        traces
+            .iter()
+            .map(|trace| (&trace.action.tool, &trace.status))
+            .collect::<Vec<_>>()
+    );
+
+    // No status changes and no new match.
+    let matches = MatchRepo::list(&pool).await.unwrap();
+    assert_eq!(matches.len(), 3);
+    assert_eq!(
+        MatchRepo::get(&pool, &tracked)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        MatchStatus::Identified
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &approved)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        MatchStatus::Approved
+    );
+    let settled = MatchRepo::get(&pool, &feedback).await.unwrap().unwrap();
+    assert_eq!(settled.status, MatchStatus::Feedback);
+    assert_eq!(settled.outcome, Some(Outcome::Continued));
+    assert_eq!(settled.outcome_by.as_deref(), Some("matchmaker"));
+
+    // No accepted fields, no analysis and no outbox rows.
+    assert_eq!(
+        ai_repo::get_suggestion(&pool, suggestion_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "pending"
+    );
+    let stored = MmRepository::get_profile(&pool, "target")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!stored.profile.fields.contains_key("smoking"));
+    assert!(ai_repo::latest_match_run(&pool, &tracked)
+        .await
+        .unwrap()
+        .is_none());
+    let outbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(outbox, 0);
+}
+
+// Step 8.9: at L4 the flow pauses after Approved. One tick executes nothing,
+// and resuming continues from the durable work item.
+#[tokio::test]
+async fn l4_pause_after_approval_holds_the_flow_until_resume() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L4Autonomous).await;
+    IntakeRepo::insert_profile_with_note(
+        &pool,
+        &profile("intake"),
+        "batch",
+        "Smoking: never",
+        "entry",
+    )
+    .await
+    .unwrap();
+    // Both sides of the future introduction are linked and consented.
+    for (id, chat) in [("intake", 300), ("candidate", 200)] {
+        crate::telegram::repo::create_link(&pool, id, chat, chat, None, Locale::En)
+            .await
+            .unwrap();
+        crate::telegram::repo::set_consent(&pool, id).await.unwrap();
+    }
+    super::scheduler::enqueue_batch(&pool, "batch")
+        .await
+        .unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    let first = ScriptedLlmBackend::new(vec![
+        call("run_extraction", json!({})),
+        json!("accept_extracted"),
+        call("find_matches", json!({"rule_set_id":rules})),
+        call(
+            "create_match",
+            json!({"profile_id":"candidate","rule_set_id":rules}),
+        ),
+        json!("analyse_created"),
+        call(
+            "transition_match",
+            json!({"match_id":"created","to_status":"recommended"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":"created","to_status":"reviewed"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":"created","to_status":"approved"}),
+        ),
+        finish(),
+    ]);
+    {
+        let _guard = super::runtime_lock().lock().await;
+        super::scheduler::process_next(&pool, &session(&first), &cancel)
+            .await
+            .unwrap();
+    }
+    let matches = MatchRepo::list(&pool).await.unwrap();
+    assert_eq!(matches.len(), 1);
+    let id = matches[0].0.id.clone();
+    assert_eq!(matches[0].0.status, MatchStatus::Approved);
+    let runs_before = repo::runs(&pool).await.unwrap().len();
+    assert_eq!(runs_before, 1);
+    // The Approved transition re-queued durable work, so a later tick can resume.
+    assert!(!queued(&pool).await.is_empty());
+
+    // Pause after Approved: a full tick must not run or message anyone.
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy.paused = true;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    super::scheduler::tick_once(&pool, &cancel).await.unwrap();
+    assert_eq!(repo::runs(&pool).await.unwrap().len(), runs_before);
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Approved
+    );
+    let outbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(outbox, 0);
+    assert!(!queued(&pool).await.is_empty());
+
+    // Resume: the next tick continues the same flow from the queued work.
+    policy.paused = false;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let continuation = ScriptedLlmBackend::new(vec![
+        call("propose_introduction", json!({"match_id":id})),
+        finish(),
+    ]);
+    {
+        let _guard = super::runtime_lock().lock().await;
+        super::scheduler::process_next(&pool, &session(&continuation), &cancel)
+            .await
+            .unwrap();
+    }
+    assert_eq!(repo::runs(&pool).await.unwrap().len(), runs_before + 1);
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::IntroductionProposed
+    );
+    let outbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(outbox, 2);
 }
 
 async fn pair_at(pool: &SqlitePool, rules: &str, status: MatchStatus) -> String {

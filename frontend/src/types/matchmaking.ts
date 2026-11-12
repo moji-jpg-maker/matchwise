@@ -963,9 +963,6 @@ export type AutonomyLevel = 'l0_manual' | 'l1_assisted' | 'l2_supervised' | 'l3_
 
 export const AUTONOMY_LEVELS: AutonomyLevel[] = ['l0_manual', 'l1_assisted', 'l2_supervised', 'l3_delegated', 'l4_autonomous'];
 
-/** Not released until every step exists (M12 phase 8). */
-export const UNRELEASED_AUTONOMY_LEVELS: AutonomyLevel[] = ['l4_autonomous'];
-
 export type AutonomyStepMode = 'off' | 'suggest' | 'auto' | { review_window: { minutes: number } };
 
 export const AUTONOMY_MODE_NAMES = ['off', 'suggest', 'review_window', 'auto'] as const;
