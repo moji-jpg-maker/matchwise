@@ -1437,6 +1437,8 @@ fn agent_prompt_limits_actions_and_labels_observations_untrusted() {
     assert!(prompt.contains("Never change settings, consent, rules or Interest"));
     assert!(prompt.contains("Contact candidates only through template tools or screened send_message follow-ups"));
     assert!(prompt.contains("Use send_follow_up only for due follow_ups returned by list_work"));
+    assert!(prompt.contains("Use get_profile_redacted requestable_fields to request_info"));
+    assert!(prompt.contains("Candidate answers become extraction suggestions, never Interest"));
     assert!(prompt.contains("Proposed actions have NOT executed"));
     assert!(prompt.contains("approve eligible pairs or reject pairs with a nonempty reason"));
     assert!(prompt.contains("separate RuleOverride permission"));

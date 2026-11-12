@@ -212,18 +212,77 @@ pub(crate) async fn queue(
     match_id: &str,
     text: &str,
 ) -> Result<(), String> {
+    queue_message(pool, actor, target, recipient, Some(match_id), text, None).await
+}
+
+pub(crate) async fn info_field_on(
+    connection: &mut SqliteConnection,
+    target: &str,
+    field: &str,
+) -> Result<FieldDef, String> {
+    if matchmaking_core::ai::never_for_ai(field) || NEVER_SHARED.contains(&field) {
+        return Err("Field is not available to the agent".into());
+    }
+    let definition: Option<String> = sqlx::query_scalar("SELECT definition FROM mm_field_definitions WHERE org_id=? AND key=?")
+        .bind(ORG).bind(field).fetch_optional(&mut *connection).await.map_err(err)?;
+    let definition: FieldDef = serde_json::from_str(&definition.ok_or("Unknown field")?).map_err(err)?;
+    if definition.sensitive || matches!(definition.kind, FieldKind::Records(_)) {
+        return Err("Field is not available for an information request".into());
+    }
+    let data: Option<String> = sqlx::query_scalar("SELECT data FROM mm_profiles WHERE id=? AND org_id=? AND status='active'")
+        .bind(target).bind(ORG).fetch_optional(&mut *connection).await.map_err(err)?;
+    let fields: std::collections::BTreeMap<String, matchmaking_core::profile::Entry> =
+        serde_json::from_str(&data.ok_or("Profile unavailable")?).map_err(err)?;
+    if fields.contains_key(field) {
+        return Err("Field is not missing".into());
+    }
+    Ok(definition)
+}
+
+pub(crate) async fn check_info(pool: &SqlitePool, target: &str, field: &str, text: &str) -> Result<(), String> {
+    let link = notify::reachable_link(pool, target).await?.ok_or("Recipient unreachable")?;
+    if repo::get_state(pool, link.chat_id).await.map_err(err)?.is_some() {
+        return Err("Candidate already has an active question".into());
+    }
+    let mut connection = pool.acquire().await.map_err(err)?;
+    info_field_on(&mut connection, target, field).await?;
+    screen_on(&mut connection, text).await
+}
+
+pub(crate) async fn queue_info(pool: &SqlitePool, actor: Actor, target: &str, field: &str, text: &str) -> Result<(), String> {
+    queue_message(pool, actor, target, target, None, text, Some(field)).await
+}
+
+async fn queue_message(
+    pool: &SqlitePool,
+    actor: Actor,
+    target: &str,
+    recipient: &str,
+    match_id: Option<&str>,
+    text: &str,
+    field: Option<&str>,
+) -> Result<(), String> {
     if !actor.is_agent() {
         return Err("Agent actor required".into());
     }
-    check(pool, target, recipient, match_id, text).await?;
+    if let Some(field) = field {
+        check_info(pool, target, field, text).await?;
+    } else {
+        check(pool, target, recipient, match_id.ok_or("Match required")?, text).await?;
+    }
     let policy = AutonomyRepo::load_policy(pool).await.map_err(err)?;
     let link = notify::reachable_link(pool, recipient)
         .await?
         .ok_or("Recipient unreachable")?;
     let mut transaction = pool.begin().await.map_err(err)?;
-    let admitted = sqlx::query("UPDATE mm_matches SET updated_at=updated_at WHERE id=? AND org_id=? AND hidden=0 AND hold_reason IS NULL AND status IN ('introduction_proposed','both_interested','contact_exchanged','conversation','meeting','feedback') AND (profile_a=? OR profile_b=?) AND (profile_a=? OR profile_b=?) AND NOT EXISTS (SELECT 1 FROM mm_profiles WHERE id IN (mm_matches.profile_a,mm_matches.profile_b) AND status!='active')")
+    let admitted = if field.is_some() {
+        sqlx::query("UPDATE mm_profiles SET updated_at=updated_at WHERE id=? AND org_id=? AND status='active'")
+            .bind(target).bind(ORG).execute(&mut *transaction).await.map_err(err)?
+    } else {
+        sqlx::query("UPDATE mm_matches SET updated_at=updated_at WHERE id=? AND org_id=? AND hidden=0 AND hold_reason IS NULL AND status IN ('introduction_proposed','both_interested','contact_exchanged','conversation','meeting','feedback') AND (profile_a=? OR profile_b=?) AND (profile_a=? OR profile_b=?) AND NOT EXISTS (SELECT 1 FROM mm_profiles WHERE id IN (mm_matches.profile_a,mm_matches.profile_b) AND status!='active')")
         .bind(match_id).bind(ORG).bind(target).bind(target).bind(recipient).bind(recipient)
-        .execute(&mut *transaction).await.map_err(err)?;
+        .execute(&mut *transaction).await.map_err(err)?
+    };
     if admitted.rows_affected() != 1 {
         return Err("Follow-up changed".into());
     }
@@ -233,6 +292,9 @@ pub(crate) async fn queue(
         return Err("Recipient unreachable".into());
     }
     screen_on(&mut transaction, text).await?;
+    if let Some(field) = field {
+        info_field_on(&mut transaction, target, field).await?;
+    }
     let now = chrono::Utc::now();
     let used: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM mm_agent_messages WHERE profile_id=? AND reserved_at>?",
@@ -255,20 +317,46 @@ pub(crate) async fn queue(
     .execute(&mut *transaction)
     .await
     .map_err(err)?;
-    repo::enqueue_on_as(
+    let outbox_id = repo::enqueue_on_as(
         &mut transaction,
         actor,
         recipient,
-        "agent_message",
+        if field.is_some() { "request_info" } else { "agent_message" },
         &render::agent_message_text(link.locale, text),
         None,
-        Some(match_id),
+        match_id,
     )
     .await
     .map_err(err)?;
-    sqlx::query("INSERT INTO mm_audit_log(org_id,actor,action,entity,entity_id,detail,at) VALUES (?,?,'send_message','profile',?,NULL,?)")
-        .bind(ORG).bind(actor.as_text()).bind(recipient).bind(now.to_rfc3339()).execute(&mut *transaction).await.map_err(err)?;
+    if let Some(field) = field {
+        let state = serde_json::json!({"flow":"request_info","field":field,"outbox_id":outbox_id,"profile_id":target,"linked_at":link.linked_at});
+        sqlx::query("INSERT INTO mm_telegram_state(chat_id,state,updated_at) VALUES (?,?,?)")
+            .bind(link.chat_id).bind(state.to_string()).bind(now.to_rfc3339()).execute(&mut *transaction).await.map_err(err)?;
+    }
+    sqlx::query("INSERT INTO mm_audit_log(org_id,actor,action,entity,entity_id,detail,at) VALUES (?,?,?,'profile',?,NULL,?)")
+        .bind(ORG).bind(actor.as_text()).bind(if field.is_some() { "request_info" } else { "send_message" }).bind(recipient).bind(now.to_rfc3339()).execute(&mut *transaction).await.map_err(err)?;
     transaction.commit().await.map_err(err)?;
+    Ok(())
+}
+
+pub(crate) async fn info_delivery_allowed(pool: &SqlitePool, recipient: &str, outbox_id: i64, rendered: &str) -> Result<bool, String> {
+    let Some(link) = notify::reachable_link(pool, recipient).await? else { return Ok(false) };
+    let Some(state) = repo::get_state(pool, link.chat_id).await.map_err(err)? else { return Ok(false) };
+    if state["flow"] != "request_info" || state["outbox_id"].as_i64() != Some(outbox_id)
+        || state["profile_id"] != recipient || state["linked_at"] != link.linked_at {
+        return Ok(false);
+    }
+    let mut connection = pool.acquire().await.map_err(err)?;
+    if info_field_on(&mut connection, recipient, state["field"].as_str().unwrap_or("")).await.is_err() {
+        return Ok(false);
+    }
+    let text = rendered.trim_matches(['\u{2068}', '\u{2069}']).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+    Ok(screen_on(&mut connection, &text).await.is_ok())
+}
+
+pub(crate) async fn clear_info(pool: &SqlitePool, outbox_id: i64) -> Result<(), String> {
+    sqlx::query("DELETE FROM mm_telegram_state WHERE json_extract(state,'$.flow')='request_info' AND json_extract(state,'$.outbox_id')=?")
+        .bind(outbox_id).execute(pool).await.map_err(err)?;
     Ok(())
 }
 

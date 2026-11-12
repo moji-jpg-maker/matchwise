@@ -444,7 +444,7 @@ pub struct MessageRow {
     pub is_read: bool,
 }
 
-pub async fn add_message(pool: &SqlitePool, profile_id: &str, direction: &str, text: &str, match_id: Option<&str>) -> Result<(), sqlx::Error> {
+pub async fn add_message<'connection>(pool: impl sqlx::Executor<'connection, Database = sqlx::Sqlite>, profile_id: &str, direction: &str, text: &str, match_id: Option<&str>) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT INTO mm_telegram_messages (profile_id, direction, text, match_id, created_at, is_read) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(profile_id).bind(direction).bind(text).bind(match_id).bind(now_str()).bind(direction == "out")
         .execute(pool).await?;

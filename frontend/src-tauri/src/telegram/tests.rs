@@ -1831,3 +1831,90 @@ async fn screened_messages_deliver_escaped_and_block_private_or_stale_content() 
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_audit_log WHERE action='send_message' AND (actor!='agent:61' OR detail IS NOT NULL)").fetch_one(&pool).await.unwrap(), 0);
     }
 }
+
+#[tokio::test]
+async fn request_info_delivers_escaped_and_answers_follow_extraction_policy() {
+    use crate::ai::settings::{save_config, AiConfig};
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{Actor, AutonomyPolicy, Step, StepMode};
+    for locale in [Locale::En, Locale::Fa] {
+        for accept in [StepMode::Suggest, StepMode::Auto] {
+            let pool = test_pool().await;
+            MmRepository::registry(&pool).await.unwrap();
+            make_profile(&pool, "candidate", &[]).await;
+            link(&pool, "candidate", 100).await;
+            sqlx::query("UPDATE mm_telegram_links SET username=NULL WHERE profile_id='candidate'").execute(&pool).await.unwrap();
+            repo::set_language(&pool, "candidate", locale).await.unwrap();
+            save_config(&pool, &AiConfig { provider: "ollama".into(), model: "scripted".into(), base_url: "http://localhost:11434".into(), local_include_sensitive: false }).await.unwrap();
+            let mut policy = AutonomyPolicy::default();
+            policy.steps.insert(Step::RequestInfo, StepMode::Auto);
+            policy.steps.insert(Step::AcceptExtraction, accept);
+            AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+            let question = locale.pick("What is your occupation? <answer> & /cancel", "شغل شما چیست؟ <پاسخ> & /cancel");
+            super::agent_message::queue_info(&pool, Actor::Agent { run_id: 62 }, "candidate", "occupation", question).await.unwrap();
+            assert!(super::agent_message::queue_info(&pool, Actor::Agent { run_id: 62 }, "candidate", "city", "Where do you live?").await.is_err());
+            say(&pool, 100, "Before delivery").await;
+            assert!(crate::ai::repo::pending_suggestions(&pool, "candidate").await.unwrap().is_empty());
+            let message = outbox(&pool, "candidate").await.pop().unwrap();
+            assert_eq!(message.text, super::render::agent_message_text(locale, question));
+            assert!(message.text.contains("&lt;") && message.text.contains("&amp;"));
+            assert_eq!(message.actor, "agent:62");
+            assert!(message.match_id.is_none() && message.keyboard.is_none());
+            let api = MockApi::default();
+            assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 1);
+            let answer = locale.pick("Engineer", "مهندس");
+            assert!(!say(&pool, 100, answer).await.is_empty());
+            assert!(repo::get_state(&pool, 100).await.unwrap().is_none());
+            let suggestion = crate::ai::repo::latest_profile_run(&pool, "candidate").await.unwrap().unwrap();
+            let suggestions = crate::ai::repo::suggestions_for_run(&pool, suggestion.id).await.unwrap();
+            assert_eq!(suggestions.len(), 1);
+            assert_eq!(suggestions[0].field, "occupation");
+            let profile = MmRepository::get_profile(&pool, "candidate").await.unwrap().unwrap().profile;
+            if accept == StepMode::Auto {
+                assert_eq!(suggestions[0].status, "accepted");
+                assert_eq!(profile.get("occupation"), Some(&txt(answer)));
+                assert_eq!(profile.fields["occupation"].source, Provenance::RuleExtracted);
+            } else {
+                assert_eq!(suggestions[0].status, "pending");
+                assert!(profile.get("occupation").is_none());
+            }
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_audit_log WHERE action IN ('request_info','request_info_answer') AND detail IS NOT NULL").fetch_one(&pool).await.unwrap(), 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn request_info_cancellation_validation_and_budget() {
+    use crate::ai::settings::{save_config, AiConfig};
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{Actor, AutonomyPolicy};
+    let pool = test_pool().await;
+    MmRepository::registry(&pool).await.unwrap();
+    make_profile(&pool, "candidate", &[]).await;
+    link(&pool, "candidate", 100).await;
+    sqlx::query("UPDATE mm_telegram_links SET username=NULL").execute(&pool).await.unwrap();
+    save_config(&pool, &AiConfig { provider: "ollama".into(), model: "scripted".into(), base_url: "http://localhost:11434".into(), local_include_sensitive: false }).await.unwrap();
+    let actor = Actor::Agent { run_id: 62 };
+    super::agent_message::queue_info(&pool, actor, "candidate", "age", "How old are you?").await.unwrap();
+    say(&pool, 100, "/cancel").await;
+    let api = MockApi::default();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().cancelled, 1);
+    assert!(api.sent.lock().unwrap().is_empty());
+    let mut policy = AutonomyPolicy::default();
+    policy.budgets.messages_per_candidate_per_day = 1;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert_eq!(super::agent_message::queue_info(&pool, actor, "candidate", "age", "How old are you?").await.unwrap_err(), "message_limit");
+    assert!(repo::get_state(&pool, 100).await.unwrap().is_none());
+    policy.budgets.messages_per_candidate_per_day = 3;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    super::agent_message::queue_info(&pool, actor, "candidate", "age", "How old are you?").await.unwrap();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 1);
+    say(&pool, 100, "not a number").await;
+    assert!(repo::get_state(&pool, 100).await.unwrap().is_some());
+    assert!(crate::ai::repo::pending_suggestions(&pool, "candidate").await.unwrap().is_empty());
+    say(&pool, 100, "29").await;
+    assert!(repo::get_state(&pool, 100).await.unwrap().is_none());
+    let suggestions = crate::ai::repo::pending_suggestions(&pool, "candidate").await.unwrap();
+    assert_eq!(suggestions.len(), 1);
+    assert_eq!(suggestions[0].field, "age");
+}

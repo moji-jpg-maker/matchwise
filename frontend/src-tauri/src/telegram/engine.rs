@@ -738,6 +738,7 @@ async fn flow_text(pool: &SqlitePool, link: &Link, st: Json, text: &str) -> R {
     let chat_id = link.chat_id;
     let loc = link.locale;
     match state_str(&st, "flow").as_deref() {
+        Some("request_info") => requested_answer(pool, link, st, text).await,
         Some("edit") => {
             let reg = MmRepository::registry(pool).await.map_err(err)?;
             let Some(key) = state_str(&st, "current") else { return Ok(vec![]) };
@@ -763,6 +764,54 @@ async fn flow_text(pool: &SqlitePool, link: &Link, st: Json, text: &str) -> R {
             Ok(vec![Reply::text(chat_id, loc.pick("Thank you. I have passed your message to your matchmaker.", "ممنون. پیام شما را به مشاورتان رساندم."))])
         }
     }
+}
+
+async fn requested_answer(pool: &SqlitePool, link: &Link, state: Json, text: &str) -> R {
+    let loc = link.locale;
+    let outbox_id = state["outbox_id"].as_i64().ok_or("Request missing")?;
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM mm_outbox WHERE id=? AND profile_id=? AND kind='request_info'")
+        .bind(outbox_id).bind(&link.profile_id).fetch_optional(pool).await.map_err(err)?;
+    if status.as_deref() == Some("pending") {
+        return Ok(vec![Reply::text(link.chat_id, loc.pick("Please wait for the question, or use /cancel.", "لطفاً منتظر پرسش بمانید، یا از /cancel استفاده کنید."))]);
+    }
+    if status.as_deref() != Some("sent") || state["profile_id"] != link.profile_id || state["linked_at"] != link.linked_at {
+        super::agent_message::clear_info(pool, outbox_id).await?;
+        repo::add_message(pool, &link.profile_id, "in", text, None).await.map_err(err)?;
+        return Ok(vec![Reply::text(link.chat_id, loc.pick("That question is no longer active. Your message was passed to your matchmaker.", "این پرسش دیگر فعال نیست. پیام شما به مشاورتان فرستاده شد."))]);
+    }
+    let key = state["field"].as_str().ok_or("Request field missing")?;
+    let reg = MmRepository::registry(pool).await.map_err(err)?;
+    let mut transaction = pool.begin().await.map_err(err)?;
+    let claimed = sqlx::query("DELETE FROM mm_telegram_state WHERE chat_id=? AND state=?")
+        .bind(link.chat_id).bind(state.to_string()).execute(&mut *transaction).await.map_err(err)?;
+    if claimed.rows_affected() != 1 { return Ok(vec![]) }
+    let linked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_telegram_links WHERE chat_id=? AND profile_id=? AND linked_at=? AND consent_version=? AND consented_at IS NOT NULL")
+        .bind(link.chat_id).bind(&link.profile_id).bind(&link.linked_at).bind(repo::CONSENT_VERSION).fetch_one(&mut *transaction).await.map_err(err)?;
+    if linked != 1 {
+        transaction.commit().await.map_err(err)?;
+        return Ok(vec![]);
+    }
+    let definition = match super::agent_message::info_field_on(&mut transaction, &link.profile_id, key).await {
+        Ok(definition) => definition,
+        Err(_) => {
+            repo::add_message(&mut *transaction, &link.profile_id, "in", text, None).await.map_err(err)?;
+            transaction.commit().await.map_err(err)?;
+            return Ok(vec![Reply::text(link.chat_id, loc.pick("That question is no longer needed. Your message was passed to your matchmaker.", "این پرسش دیگر لازم نیست. پیام شما به مشاورتان فرستاده شد."))]);
+        }
+    };
+    let Some(value) = parse_typed(&definition, text).filter(|value| reg.validate_value_for(key, value, loc).is_ok()) else {
+        transaction.rollback().await.map_err(err)?;
+        return Ok(vec![Reply::text(link.chat_id, loc.pick("I could not read that answer. Please try again, or use /cancel.", "نتوانستم پاسخ را بخوانم. دوباره تلاش کنید، یا از /cancel استفاده کنید."))]);
+    };
+    let payload = serde_json::to_value(value).map_err(err)?;
+    let run_id = crate::ai::repo::insert_run(&mut *transaction, Some(&link.profile_id), None, "extract", "rules", "telegram", false, "", None, &json!({"ambiguous":[],"request_outbox_id":outbox_id})).await.map_err(err)?;
+    crate::ai::repo::insert_suggestion(&mut *transaction, &link.profile_id, run_id, "field", key, &payload, text, 1.0, false, "telegram", "rule").await.map_err(err)?;
+    repo::add_message(&mut *transaction, &link.profile_id, "in", text, None).await.map_err(err)?;
+    sqlx::query("INSERT INTO mm_audit_log(org_id,actor,action,entity,entity_id,detail,at) VALUES (?,'system','request_info_answer','profile',?,NULL,?)")
+        .bind(crate::mm::repository::ORG).bind(&link.profile_id).bind(chrono::Utc::now().to_rfc3339()).execute(&mut *transaction).await.map_err(err)?;
+    transaction.commit().await.map_err(err)?;
+    crate::mm::autonomy::settle_extraction(pool, &link.profile_id, run_id, &std::collections::BTreeSet::new()).await?;
+    Ok(vec![Reply::text(link.chat_id, loc.pick("Thank you. Your answer was received for your profile.", "ممنون. پاسخ شما برای پروفایلتان دریافت شد."))])
 }
 
 // ------------------------------------------------------------------ preferences

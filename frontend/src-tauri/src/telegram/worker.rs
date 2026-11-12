@@ -133,7 +133,9 @@ pub async fn flush_outbox(pool: &SqlitePool, api: &dyn TelegramApi) -> Result<Fl
                 Some(id) => crate::mm::match_repo::MatchRepo::get(pool, id).await.map_err(err)?,
                 None => None,
             };
-            let waiting = if row.kind == "agent_message" {
+            let waiting = if row.kind == "request_info" {
+                super::agent_message::info_delivery_allowed(pool, &row.profile_id, row.id, &row.text).await?
+            } else if row.kind == "agent_message" {
                 if let Some(id) = row.match_id.as_deref() {
                     super::agent_message::delivery_allowed(pool, &row.profile_id, id, &row.text).await?
                 } else { false }
@@ -145,6 +147,7 @@ pub async fn flush_outbox(pool: &SqlitePool, api: &dyn TelegramApi) -> Result<Fl
                     || (m.profile_b == row.profile_id && m.b_response == matchmaking_core::Interest::Unknown))) };
             if !waiting {
                 repo::cancel(pool, row.id, "candidate no longer awaiting this message").await.map_err(err)?;
+                if row.kind == "request_info" { super::agent_message::clear_info(pool, row.id).await?; }
                 stats.cancelled += 1;
                 continue;
             }
@@ -152,6 +155,7 @@ pub async fn flush_outbox(pool: &SqlitePool, api: &dyn TelegramApi) -> Result<Fl
         let link = repo::link_by_profile(pool, &row.profile_id).await.map_err(err)?.filter(|l| l.consented && l.notifications_enabled);
         let Some(link) = link else {
             repo::cancel(pool, row.id, "recipient not reachable").await.map_err(err)?;
+            if row.kind == "request_info" { super::agent_message::clear_info(pool, row.id).await?; }
             stats.cancelled += 1;
             continue;
         };
@@ -186,6 +190,11 @@ pub async fn flush_outbox(pool: &SqlitePool, api: &dyn TelegramApi) -> Result<Fl
                     stats.retried += 1;
                 }
             }
+        }
+        if row.kind == "request_info" {
+            let failed: bool = sqlx::query_scalar("SELECT status='failed' FROM mm_outbox WHERE id=?")
+                .bind(row.id).fetch_one(pool).await.map_err(err)?;
+            if failed { super::agent_message::clear_info(pool, row.id).await?; }
         }
     }
     Ok(stats)

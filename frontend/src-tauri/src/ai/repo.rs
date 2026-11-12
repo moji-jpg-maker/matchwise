@@ -75,8 +75,8 @@ fn row_to_run(r: &sqlx::sqlite::SqliteRow) -> Result<RunRow, sqlx::Error> {
     })
 }
 
-pub async fn insert_run(
-    pool: &SqlitePool,
+pub async fn insert_run<'connection>(
+    pool: impl sqlx::Executor<'connection, Database = sqlx::Sqlite>,
     profile_id: Option<&str>,
     match_id: Option<&str>,
     kind: &str,
@@ -112,8 +112,8 @@ pub async fn supersede_pending(pool: &SqlitePool, profile_id: &str) -> Result<()
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn insert_suggestion(
-    pool: &SqlitePool,
+pub async fn insert_suggestion<'connection>(
+    pool: impl sqlx::Executor<'connection, Database = sqlx::Sqlite>,
     profile_id: &str,
     run_id: i64,
     kind: &str,

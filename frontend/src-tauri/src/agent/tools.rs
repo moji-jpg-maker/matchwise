@@ -131,7 +131,13 @@ async fn redacted_profile(
         };
         fields.insert(key.clone(), value);
     }
-    Ok(json!({"profile_id":id,"fields":fields}))
+    let requestable_fields: Vec<_> = registry.defs().filter(|definition| {
+        !stored.profile.fields.contains_key(&definition.key) && !definition.sensitive
+            && !matchmaking_core::ai::never_for_ai(&definition.key)
+            && !matchmaking_core::NEVER_SHARED.contains(&definition.key.as_str())
+            && !matches!(definition.kind, matchmaking_core::FieldKind::Records(_))
+    }).map(|definition| definition.key.clone()).collect();
+    Ok(json!({"profile_id":id,"fields":fields,"requestable_fields":requestable_fields}))
 }
 
 /// Validate scope and lifecycle before a proposal is recorded, and before a tool executes.
@@ -349,6 +355,11 @@ pub async fn execute(
             let queued = crate::telegram::notify::queue_agent_introduction(pool, actor, id,
                 (action.tool == "resend_interest_buttons").then(|| action.string("profile_id")), session.locale).await?;
             Ok(json!({"match_id":id,"queued":queued}))
+        }
+        "request_info" => {
+            action.validate()?;
+            crate::telegram::agent_message::queue_info(pool, actor, target, action.string("field"), action.string("text")).await?;
+            Ok(json!({"profile_id":target,"field":action.string("field"),"queued":1}))
         }
         "send_message" => {
             action.validate()?;

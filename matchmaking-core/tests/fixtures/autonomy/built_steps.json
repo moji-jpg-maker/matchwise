@@ -11,5 +11,6 @@
   "rule_override",
   "send_introduction",
   "send_follow_up",
-  "send_message"
+  "send_message",
+  "request_info"
 ]

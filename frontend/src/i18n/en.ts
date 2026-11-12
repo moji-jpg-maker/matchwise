@@ -91,7 +91,7 @@ export const en = {
     budgetsTitle: 'Agent budgets',
     budgetsHelp: 'Zero disables the corresponding work. Agent calls include extraction, pair analysis, retries and failed requests; usage persists across restarts. Human model calls are excluded.',
     followUpsHelp: 'Template follow-ups wait at least 3 days: up to 2 reminders per unanswered introduction and 3 per incomplete profile. L0 keeps existing system reminders; other levels use the Follow-up step and approvals inbox.',
-    messagesHelp: 'AI-written messages are follow-ups to linked candidates in existing introductions. Messages are screened for private values, contacts, scores and rule names, limited to 600 characters and counted against the daily message budget.',
+    messagesHelp: 'AI-written messages are follow-ups to linked candidates in existing introductions. Missing-info requests ask linked candidates for one missing nonsensitive field; answers become extraction suggestions. Messages are screened for private values, contacts, scores and rule names, limited to 600 characters and counted against the daily message budget.',
     candidateBudgetsHelp: 'Template introductions, button resends and follow-ups, including AI-written messages, count against a rolling 24-hour message budget, including queued or failed deliveries. Both candidates must have room for a new introduction.',
     budget: { model_calls_per_hour: 'Model calls per rolling hour', steps_per_run: 'Steps per run', open_introductions_per_profile: 'Open introductions per profile', messages_per_candidate_per_day: 'Messages per candidate per day' },
     thresholdHelp: 'Fields below this, ambiguous fields and fields a person entered are never accepted automatically.',
@@ -132,7 +132,7 @@ export const en = {
     reject: 'Reject',
     refresh: 'Refresh',
     status: { running: 'Running', finished: 'Finished', failed: 'Failed', stopped: 'Stopped', step_limit: 'Step budget reached', model_call_limit: 'Hourly model-call budget reached', introduction_limit: 'Open introduction budget reached', message_limit: 'Daily candidate message budget reached', executing: 'Executing', executed: 'Executed', proposed: 'Awaiting approval', scheduled: 'In review window', vetoed: 'Vetoed', denied: 'Denied by policy', rejected: 'Rejected' },
-    tool: { send_message: 'Send screened message', propose_introduction: 'Propose template introduction', resend_interest_buttons: 'Resend interest buttons', transition_match: 'Transition match', add_note: 'Add private note', list_work: 'List work', get_profile_redacted: 'Read redacted profile', run_extraction: 'Extract fields', accept_suggestion: 'Accept suggestion', find_matches: 'Find matches', create_match: 'Create match', analyse_pair: 'Analyse pair', finish: 'Finish' },
+    tool: { request_info: 'Request missing information', send_message: 'Send screened message', propose_introduction: 'Propose template introduction', resend_interest_buttons: 'Resend interest buttons', transition_match: 'Transition match', add_note: 'Add private note', list_work: 'List work', get_profile_redacted: 'Read redacted profile', run_extraction: 'Extract fields', accept_suggestion: 'Accept suggestion', find_matches: 'Find matches', create_match: 'Create match', analyse_pair: 'Analyse pair', finish: 'Finish' },
   },
   sidebar: {
     startRecording: 'Start Recording',

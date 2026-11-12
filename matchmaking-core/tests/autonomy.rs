@@ -97,7 +97,7 @@ fn built_steps_follow_each_mode_without_enabling_later_steps() {
         policy.steps.insert(step, StepMode::ReviewWindow { minutes: 60 });
         assert_eq!(decide(&action, &open(), &policy), Decision::Schedule { at: NOW + 3600 });
     }
-    for step in [Step::RequestInfo] {
+    for step in [Step::InterpretReply, Step::RecordOutcome, Step::Close, Step::Stop] {
         assert!(!step.is_built());
         assert_eq!(decide(&Action::Step(step), &open(), &all_auto()), denied(DenyReason::StepOff));
     }
@@ -387,6 +387,26 @@ fn template_follow_up_policy_matrix() {
 fn screened_message_policy_matrix() {
     let action = Action::Step(Step::SendMessage);
     assert!(Step::SendMessage.is_built());
+    for (level, expected) in [
+        (Level::L0Manual, denied(DenyReason::StepOff)),
+        (Level::L1Assisted, Decision::Propose),
+        (Level::L2Supervised, Decision::Propose),
+        (Level::L3Delegated, Decision::Schedule { at: NOW + 3600 }),
+        (Level::L4Autonomous, Decision::Execute),
+    ] {
+        assert_eq!(decide(&action, &open(), &AutonomyPolicy::preset(level)), expected);
+    }
+    let mut policy = all_auto();
+    policy.paused = true;
+    assert!(matches!(decide(&action, &open(), &policy), Decision::Deny { .. }));
+    policy.paused = false;
+    assert!(matches!(decide(&action, &DecisionContext { gate: AiGate::Closed, now: NOW }, &policy), Decision::Deny { .. }));
+}
+
+#[test]
+fn request_info_policy_matrix() {
+    let action = Action::Step(Step::RequestInfo);
+    assert!(Step::RequestInfo.is_built());
     for (level, expected) in [
         (Level::L0Manual, denied(DenyReason::StepOff)),
         (Level::L1Assisted, Decision::Propose),

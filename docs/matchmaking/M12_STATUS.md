@@ -1,8 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 / 5.1–5.2 / 6.1 are built:
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 / 5.1–5.2 / 6.1–6.2 are built:
 policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
-reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets, template introductions, template follow-ups and screened AI-written follow-ups.** Nothing has been run with a real model.
+reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets, template introductions, template follow-ups, screened AI-written follow-ups and missing-info requests.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -224,6 +224,13 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   run traces, edited approvals, review windows, veto, pause and AI gate apply. English/Persian settings help and
   run-log labels ship. No new inbound interpretation, missing-info tool or real-model run is included.
 
+## Step 6.2: what shipped
+- `request_info {field,text}` asks the run's linked target for one missing, registered nonsensitive field. Redacted profile observations list requestable fields. Existing values, contacts, identifiers, NEVER_SHARED fields and record fields cannot be requested.
+- Questions use the step-6.1 screen, escaped message renderer, shared daily budget and outbox. The existing policy, approvals, edited arguments, review windows, veto, pause and AI gate apply. English/Persian settings help and tool labels are included.
+- One question is reserved in the existing Telegram flow state atomically with delivery and budget reservation. Delivery rechecks the link, field and screen; cancellation or a stale request prevents delivery. Only a delivered question consumes an answer.
+- Answers use the existing typed bot parser and field validation, producing extraction suggestions transactionally with the incoming message and a text-free system audit. AcceptExtraction decides acceptance; accepted answers retain rank-zero provenance and existing undo. No model interprets replies and no Interest is set.
+- Scripted agent tests cover policy proposals, review windows, edited approval and blocked requests. English/Persian conversations cover escaping and pending versus automatic acceptance; cancellation and shared-budget tests cover blocked delivery.
+
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
   On-demand runtime actions instead record their real `agent:<run_id>` actor.
@@ -231,25 +238,25 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   counts as Off.
 - The rules-only tier is gated by the AI gate too, because a closed gate stops all agent actions.
 - `run_accept_all` in `ai/intake_commands.rs` is the manual, unthresholded path and is untouched.
-- Thirteen steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
-  Approve, Reject, RuleOverride, SendIntroduction, SendFollowUp and SendMessage.
+- Fourteen steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
+  Approve, Reject, RuleOverride, SendIntroduction, SendFollowUp, SendMessage and RequestInfo.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
 - Runtime/model access and due execution are serialized. Veto uses an atomic status check and does not wait for
   model work. Budget reservations are separate from retained AI prompts.
 
 ## Verified here
-- `cargo test -p matchmaking-core`: 197 passed, including the built-step policy matrix, invariant denials
+- `cargo test -p matchmaking-core`: 198 passed, including the built-step policy matrix, invariant denials
   and actor-aware lifecycle checks.
 - `cargo test --lib autonomy_tests` in `src-tauri`: 14 passed.
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
   batch subjects, durable review windows and veto, invalid actions and configurable budget stops. A prompt regression test lives in
-  `ai/tests.rs`. All 57 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
+  `ai/tests.rs`. All 59 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
   approval/rejection, rule override, migration, proposal, template follow-up and screened-message checks.
-- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 496 passed, 2 ignored; no real model was used.
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 500 passed, 2 ignored; no real model was used.
 
 ## Still open
-- Steps 6.2–8: missing-info requests, inbound reply interpretation,
+- Steps 6.3–8: inbound reply interpretation,
   outcomes and the full autonomy release remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.

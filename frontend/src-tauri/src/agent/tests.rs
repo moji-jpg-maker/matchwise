@@ -3303,6 +3303,57 @@ fn screened_message_protocol_limits() {
 }
 
 #[tokio::test]
+async fn request_info_scripted_policy_scope_and_screening() {
+    let _serial = serial().await;
+    for level in [Level::L1Assisted, Level::L3Delegated, Level::L2Supervised] {
+        let (pool, _) = setup(level).await;
+        crate::telegram::repo::create_link(&pool, "target", 100, 100, None, Locale::En).await.unwrap();
+        crate::telegram::repo::set_consent(&pool, "target").await.unwrap();
+        if level == Level::L2Supervised {
+            let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+            policy.steps.insert(Step::RequestInfo, StepMode::Auto);
+            AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        }
+        let backend = ScriptedLlmBackend::new(vec![
+            call("request_info", json!({"field":"city","text":"Where do you live?"})),
+            call("request_info", json!({"field":"health_notes","text":"How is your health?"})),
+            call("request_info", json!({"field":"occupation","text":"Contact @private"})),
+            call("request_info", json!({"field":"occupation","text":"What is your occupation?"})),
+            finish(),
+        ]);
+        let run = super::run(&pool, &session(&backend), "target", None).await.unwrap();
+        let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+        assert!(traces[..3].iter().all(|trace| trace.status == "denied"));
+        assert_eq!(traces[3].status, match level { Level::L1Assisted => "proposed", Level::L3Delegated => "scheduled", _ => "executed" });
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox WHERE kind='request_info'").fetch_one(&pool).await.unwrap(), if level == Level::L2Supervised { 1 } else { 0 });
+        if level == Level::L1Assisted {
+            assert!(super::decide_proposal(&pool, Some(&session(&backend)), traces[3].id, true,
+                Some(json!({"field":"occupation","text":"a@example.com"}))).await.is_err());
+            super::decide_proposal(&pool, Some(&session(&backend)), traces[3].id, true, None).await.unwrap();
+        } else if level == Level::L3Delegated {
+            expire_review(&pool, traces[3].id).await;
+            super::process_due(&pool, &session(&backend), &tokio_util::sync::CancellationToken::new()).await.unwrap();
+        }
+        let actor: String = sqlx::query_scalar("SELECT actor FROM mm_outbox WHERE kind='request_info'").fetch_one(&pool).await.unwrap();
+        assert_eq!(actor, format!("agent:{run}"));
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_audit_log WHERE action='request_info' AND detail IS NOT NULL").fetch_one(&pool).await.unwrap(), 0);
+        pool.close().await;
+    }
+}
+
+#[test]
+fn request_info_protocol_limits() {
+    let constraint = protocol::constraint();
+    assert!(constraint.gbnf.contains("request_info"));
+    for length in [600, 601] {
+        let action: Action = serde_json::from_value(call("request_info", json!({"field":"occupation","text":"ش".repeat(length)}))).unwrap();
+        assert_eq!(action.validate().is_ok(), length == 600);
+    }
+    let action: Action = serde_json::from_value(call("request_info", json!({"field":"occupation","text":"Question","profile_id":"candidate"}))).unwrap();
+    assert!(action.validate().is_err());
+}
+
+#[tokio::test]
 async fn template_follow_up_scripted_proposals_review_window_and_auto_caps() {
     let _serial = serial().await;
     for level in [Level::L1Assisted, Level::L3Delegated, Level::L2Supervised] {
