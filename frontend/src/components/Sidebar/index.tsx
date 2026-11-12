@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Users, ListChecks, HeartHandshake, Send, ClipboardList, Database, Gauge, Inbox } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Users, ListChecks, HeartHandshake, Send, ClipboardList, Database, Gauge, Inbox, Bot } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { useRouter, usePathname } from 'next/navigation';
 import { confirmNavigation } from '@/lib/navigation-guard';
@@ -639,6 +639,21 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                onClick={() => router.push('/autonomy')}
+                className={`p-2 rounded-lg transition-colors duration-150 ${pathname === '/autonomy' ? 'bg-gray-100' : 'hover:bg-gray-100'
+                  }`}
+              >
+                <Bot className="w-5 h-5 text-gray-600" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side={tooltipSide}>
+              <p>{t('nav.autonomy')}</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
                 onClick={() => router.push('/settings')}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-gray-100' : 'hover:bg-gray-100'
                   }`}
@@ -975,6 +990,14 @@ const Sidebar: React.FC = () => {
             >
               <Inbox className="w-4 h-4 me-2" />
               <span>{t('nav.bulkIntake')}</span>
+            </button>
+
+            <button
+              onClick={() => router.push('/autonomy')}
+              className="w-full flex items-center justify-center px-3 py-1.5 mt-1 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors shadow-sm"
+            >
+              <Bot className="w-4 h-4 me-2" />
+              <span>{t('nav.autonomy')}</span>
             </button>
 
             <button

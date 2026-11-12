@@ -8,7 +8,7 @@ import { ArrowLeft, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { FieldDef, ProfileView, RecordValue, UpdateResult, Value, kindName, kindOptions, recordFields } from '@/types/matchmaking';
+import { AgentAction, FieldDef, PolicyView, ProfileView, RecordValue, UpdateResult, Value, kindName, kindOptions, recordFields } from '@/types/matchmaking';
 import { RecordsInput } from '@/components/matchmaking/RecordsInput';
 import { PreferencesPanel } from '@/components/matchmaking/PreferencesPanel';
 import { setNavigationGuard } from '@/lib/navigation-guard';
@@ -39,6 +39,7 @@ function ProfileEditor() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [intakeNote, setIntakeNote] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [agentActions, setAgentActions] = useState<AgentAction[]>([]);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -52,6 +53,7 @@ function ProfileEditor() {
       setProfile(p);
       setDraft({});
       invoke<string | null>('mm_intake_note', { id }).then(setIntakeNote).catch(() => setIntakeNote(null));
+      invoke<PolicyView>('agent_get_policy', { profileId: id }).then((view) => setAgentActions(view.actions)).catch(() => setAgentActions([]));
     } catch (e) {
       setLoadError(`${e}`);
       toast.error(t('profile.loadToast', { error: `${e}` }));
@@ -59,6 +61,16 @@ function ProfileEditor() {
   }, [id, t]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const undoAgent = async (actionId: number) => {
+    try {
+      await invoke('agent_undo', { actionId, locale });
+      toast.success(t('autonomy.undone'));
+      await load();
+    } catch (e) {
+      toast.error(t('autonomy.undoFailed'), { description: `${e}` });
+    }
+  };
 
   const dirty = Object.keys(draft).length > 0;
 
@@ -231,6 +243,7 @@ function ProfileEditor() {
         <div className="bg-white rounded-lg border divide-y">
           {fields.map((def) => {
             const src = profile.fields[def.key]?.source;
+            const agentAction = agentActions.find((action) => action.field === def.key);
             return (
               <div key={def.key} className="p-4 grid grid-cols-3 gap-4 items-start">
                 <div>
@@ -238,6 +251,12 @@ function ProfileEditor() {
                     {fieldLabel(def, locale)}{def.required && <span className="text-red-500"> *</span>}
                   </div>
                   {def.sensitive && <div className="text-xs text-gray-500">{t('profile.sensitive')}</div>}
+                  {agentAction && !(def.key in draft) && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <span title={t('autonomy.aiBadgeTitle')} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">{t('autonomy.aiBadge')}</span>
+                      <button type="button" className="text-xs text-blue-600 hover:underline" onClick={() => void undoAgent(agentAction.id)}>{t('autonomy.undo')}</button>
+                    </div>
+                  )}
                   {src && !(def.key in draft) && <div className="text-xs text-gray-400">{SOURCE_KEY[src] ? t(SOURCE_KEY[src]) : src}</div>}
                 </div>
                 <div className="col-span-2">{input(def)}</div>

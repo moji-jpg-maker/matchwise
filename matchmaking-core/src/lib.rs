@@ -4,6 +4,7 @@
 //! same engine can be reused by the desktop app, a Telegram adapter, or a future server.
 
 pub mod ai;
+pub mod autonomy;
 pub mod defaults;
 pub mod matching;
 pub mod expr;
@@ -25,6 +26,9 @@ pub mod search;
 pub mod sharing;
 
 pub use expr::{evaluate, Expr, Trace};
+pub use autonomy::{
+    acceptance_check, decide, Action, Actor, AiGate, AutonomyPolicy, Decision, DecisionContext, DenyReason, Disclosure, HumanOnly, Level, SkipReason, Step, StepMode,
+};
 pub use locale::{interpolate as interpolate_message, localize_digits, Locale, Message, TextDirection};
 pub use field::{FieldDef, FieldKind, FieldRegistry};
 pub use intake::{parse_entries, parse_json_corpus, split_corpus, DropReason, DroppedEntry, IntakeEntry, ParsedCorpus, MAX_ENTRY_CHARS};

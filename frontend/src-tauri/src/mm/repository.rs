@@ -249,8 +249,14 @@ impl MmRepository {
 
     /// Append an audit entry. `detail` must never contain field values.
     pub async fn audit(pool: &SqlitePool, action: &str, entity: &str, entity_id: &str, detail: Option<&str>) {
-        let res = sqlx::query("INSERT INTO mm_audit_log (org_id, actor, action, entity, entity_id, detail, at) VALUES (?, 'matchmaker', ?, ?, ?, ?, ?)")
+        Self::audit_as(pool, matchmaking_core::autonomy::Actor::Matchmaker, action, entity, entity_id, detail).await;
+    }
+
+    /// Like [`audit`](Self::audit), recording who acted: the matchmaker, the system or an agent run.
+    pub async fn audit_as(pool: &SqlitePool, actor: matchmaking_core::autonomy::Actor, action: &str, entity: &str, entity_id: &str, detail: Option<&str>) {
+        let res = sqlx::query("INSERT INTO mm_audit_log (org_id, actor, action, entity, entity_id, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(ORG)
+            .bind(actor.as_text())
             .bind(action)
             .bind(entity)
             .bind(entity_id)

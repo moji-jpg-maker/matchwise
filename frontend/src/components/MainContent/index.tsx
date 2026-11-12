@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { KillSwitchBar } from '@/components/Autonomy/KillSwitchBar';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 
 interface MainContentProps {
@@ -16,6 +17,9 @@ const MainContent: React.FC<MainContentProps> = ({ children }) => {
         isCollapsed ? 'ms-16' : 'ms-64'
       }`}
     >
+      <div className="sticky top-0 z-30">
+        <KillSwitchBar />
+      </div>
       <div className="ps-8 min-w-0 w-full max-w-full">
         {children}
       </div>

@@ -883,3 +883,87 @@ export interface IntakeAcceptReport {
   /** The field names that were accepted, for the audit trail's own wording. */
   fields: string[];
 }
+
+export type AutonomyStep =
+  | 'run_extraction'
+  | 'accept_extraction'
+  | 'find_matches'
+  | 'create_match'
+  | 'analyse_pair'
+  | 'add_note'
+  | 'recommend'
+  | 'approve'
+  | 'reject'
+  | 'rule_override'
+  | 'interpret_reply'
+  | 'record_outcome'
+  | 'close'
+  | 'stop'
+  | 'send_introduction'
+  | 'send_follow_up'
+  | 'send_message'
+  | 'request_info';
+
+export const AUTONOMY_STEPS: AutonomyStep[] = [
+  'run_extraction',
+  'accept_extraction',
+  'find_matches',
+  'create_match',
+  'analyse_pair',
+  'add_note',
+  'recommend',
+  'approve',
+  'reject',
+  'rule_override',
+  'interpret_reply',
+  'record_outcome',
+  'close',
+  'stop',
+  'send_introduction',
+  'send_follow_up',
+  'send_message',
+  'request_info',
+];
+
+/** Steps built in this release; the rest stay Off and are disabled in the UI. */
+export const BUILT_AUTONOMY_STEPS: AutonomyStep[] = ['accept_extraction'];
+
+export type AutonomyLevel = 'l0_manual' | 'l1_assisted' | 'l2_supervised' | 'l3_delegated' | 'l4_autonomous';
+
+export const AUTONOMY_LEVELS: AutonomyLevel[] = ['l0_manual', 'l1_assisted', 'l2_supervised', 'l3_delegated', 'l4_autonomous'];
+
+/** Not released until every step exists (M12 phase 8). */
+export const UNRELEASED_AUTONOMY_LEVELS: AutonomyLevel[] = ['l4_autonomous'];
+
+export type AutonomyStepMode = 'off' | 'suggest' | 'auto' | { review_window: { minutes: number } };
+
+export const AUTONOMY_MODE_NAMES = ['off', 'suggest', 'review_window', 'auto'] as const;
+
+export interface AutonomyPolicy {
+  version: number;
+  level: AutonomyLevel;
+  paused: boolean;
+  min_confidence: number;
+  steps: Record<AutonomyStep, AutonomyStepMode>;
+}
+
+export interface AgentAction {
+  id: number;
+  profile_id: string;
+  field: string;
+  kind: string;
+  prior: unknown | null;
+  applied: unknown;
+  suggestion_id: number | null;
+  actor: string;
+  run_id: number | null;
+  undone_at: string | null;
+  created_at: string;
+}
+
+export interface PolicyView {
+  policy: AutonomyPolicy;
+  /** True once a step differs from the preset named by `policy.level`. */
+  custom: boolean;
+  actions: AgentAction[];
+}

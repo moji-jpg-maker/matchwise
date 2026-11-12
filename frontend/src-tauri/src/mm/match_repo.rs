@@ -1,4 +1,5 @@
 use chrono::Utc;
+use matchmaking_core::autonomy::Actor;
 use matchmaking_core::{Interest, MatchStatus, Outcome};
 use serde_json::Value as Json;
 use sqlx::{Row, SqlitePool};
@@ -127,8 +128,9 @@ impl MatchRepo {
 
     /// Create the match, its first snapshot and a "created" event in one transaction.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create(
+    pub async fn create_as(
         pool: &SqlitePool,
+        actor: Actor,
         x: &str,
         y: &str,
         source_profile: Option<&str>,
@@ -139,6 +141,7 @@ impl MatchRepo {
         status: MatchStatus,
         scorecard: &Json,
     ) -> Result<String, sqlx::Error> {
+        let actor_text = actor.as_text();
         let (a, b) = pair_key(x, y);
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -151,8 +154,8 @@ impl MatchRepo {
             .bind(&id).bind(rule_set_id).bind(rule_set_version as i64).bind(scoring_config_id).bind(scoring_config_version.map(|v| v as i64))
             .bind(scorecard.to_string()).bind(&now)
             .execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', 'created', NULL, ?, NULL)")
-            .bind(&id).bind(&now).bind(status.as_str())
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'created', NULL, ?, NULL)")
+            .bind(&id).bind(&now).bind(&actor_text).bind(status.as_str())
             .execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(id)
@@ -181,8 +184,9 @@ impl MatchRepo {
 
     /// Store a new snapshot and, if requested, switch the match to a different rule-set version, with an event.
     #[allow(clippy::too_many_arguments)]
-    pub async fn add_snapshot(
+    pub async fn add_snapshot_as(
         pool: &SqlitePool,
+        actor: Actor,
         id: &str,
         rule_set_id: &str,
         rule_set_version: u32,
@@ -192,6 +196,7 @@ impl MatchRepo {
         scorecard: &Json,
         weights: Option<&BTreeMap<String, f64>>,
     ) -> Result<(), sqlx::Error> {
+        let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
         sqlx::query("INSERT INTO mm_match_snapshots (match_id, rule_set_id, rule_set_version, scoring_config_id, scoring_config_version, trigger, scorecard, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -205,8 +210,8 @@ impl MatchRepo {
             let json = if w.is_empty() { None } else { Some(serde_json::to_string(w).map_err(|e| bad(e.to_string()))?) };
             sqlx::query("UPDATE mm_matches SET weight_overrides = ? WHERE id = ?").bind(json).bind(id).execute(&mut *tx).await?;
         }
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', ?, NULL, NULL, ?)")
-            .bind(id).bind(&now).bind(trigger).bind(format!("rule set v{rule_set_version}"))
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, ?, NULL, NULL, ?)")
+            .bind(id).bind(&now).bind(&actor_text).bind(trigger).bind(format!("rule set v{rule_set_version}"))
             .execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
@@ -214,8 +219,9 @@ impl MatchRepo {
 
     /// Move to a new status, optionally recording an outcome and an override reason, plus the event: one transaction.
     #[allow(clippy::too_many_arguments)]
-    pub async fn record_transition(
+    pub async fn record_transition_as(
         pool: &SqlitePool,
+        actor: Actor,
         id: &str,
         from: MatchStatus,
         to: MatchStatus,
@@ -223,21 +229,23 @@ impl MatchRepo {
         override_reason: Option<&str>,
         detail: Option<&str>,
     ) -> Result<(), sqlx::Error> {
+        let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), override_reason = COALESCE(?, override_reason), updated_at = ? WHERE id = ?")
             .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(override_reason).bind(&now).bind(id)
             .execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', 'status_changed', ?, ?, ?)")
-            .bind(id).bind(&now).bind(from.as_str()).bind(to.as_str()).bind(detail)
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'status_changed', ?, ?, ?)")
+            .bind(id).bind(&now).bind(&actor_text).bind(from.as_str()).bind(to.as_str()).bind(detail)
             .execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
 
     /// Record what the two people said and any status change that follows, in one transaction.
-    pub async fn record_responses(
+    pub async fn record_responses_as(
         pool: &SqlitePool,
+        actor: Actor,
         id: &str,
         from: MatchStatus,
         a: Interest,
@@ -245,13 +253,14 @@ impl MatchRepo {
         new_status: Option<MatchStatus>,
         who: &str,
     ) -> Result<(), sqlx::Error> {
+        let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE mm_matches SET a_response = ?, b_response = ?, status = COALESCE(?, status), updated_at = ? WHERE id = ?")
             .bind(a.as_str()).bind(b.as_str()).bind(new_status.map(|s| s.as_str())).bind(&now).bind(id)
             .execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', 'response_recorded', NULL, NULL, ?)")
-            .bind(id).bind(&now).bind(format!("{who}: a={}, b={}", a.as_str(), b.as_str()))
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'response_recorded', NULL, NULL, ?)")
+            .bind(id).bind(&now).bind(&actor_text).bind(format!("{who}: a={}, b={}", a.as_str(), b.as_str()))
             .execute(&mut *tx).await?;
         if let Some(to) = new_status {
             sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'system', 'status_changed', ?, ?, 'follows from the responses')")
@@ -262,46 +271,50 @@ impl MatchRepo {
         Ok(())
     }
 
-    pub async fn set_outcome(pool: &SqlitePool, id: &str, outcome: Outcome) -> Result<(), sqlx::Error> {
+    pub async fn set_outcome_as(pool: &SqlitePool, actor: Actor, id: &str, outcome: Outcome) -> Result<(), sqlx::Error> {
+        let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE mm_matches SET outcome = ?, updated_at = ? WHERE id = ?").bind(outcome.as_str()).bind(&now).bind(id).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', 'outcome_recorded', NULL, NULL, ?)")
-            .bind(id).bind(&now).bind(outcome.as_str()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'outcome_recorded', NULL, NULL, ?)")
+            .bind(id).bind(&now).bind(&actor_text).bind(outcome.as_str()).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
 
     /// Set or clear the "waiting for more information" hold.
-    pub async fn set_hold(pool: &SqlitePool, id: &str, reason: Option<&str>) -> Result<(), sqlx::Error> {
+    pub async fn set_hold_as(pool: &SqlitePool, actor: Actor, id: &str, reason: Option<&str>) -> Result<(), sqlx::Error> {
+        let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE mm_matches SET hold_reason = ?, updated_at = ? WHERE id = ?").bind(reason).bind(&now).bind(id).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', ?, NULL, NULL, ?)")
-            .bind(id).bind(&now).bind(if reason.is_some() { "info_requested" } else { "hold_cleared" }).bind(reason)
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, ?, NULL, NULL, ?)")
+            .bind(id).bind(&now).bind(&actor_text).bind(if reason.is_some() { "info_requested" } else { "hold_cleared" }).bind(reason)
             .execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    pub async fn set_hidden(pool: &SqlitePool, id: &str, hidden: bool) -> Result<(), sqlx::Error> {
+    pub async fn set_hidden_as(pool: &SqlitePool, actor: Actor, id: &str, hidden: bool) -> Result<(), sqlx::Error> {
+        let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE mm_matches SET hidden = ?, updated_at = ? WHERE id = ?").bind(hidden).bind(&now).bind(id).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', ?, NULL, NULL, NULL)")
-            .bind(id).bind(&now).bind(if hidden { "hidden" } else { "unhidden" }).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, ?, NULL, NULL, NULL)")
+            .bind(id).bind(&now).bind(&actor_text).bind(if hidden { "hidden" } else { "unhidden" }).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    pub async fn add_note(pool: &SqlitePool, id: &str, text: &str) -> Result<(), sqlx::Error> {
+    pub async fn add_note_as(pool: &SqlitePool, actor: Actor, id: &str, text: &str) -> Result<(), sqlx::Error> {
+        let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
         sqlx::query("INSERT INTO mm_match_notes (match_id, text, created_at) VALUES (?, ?, ?)").bind(id).bind(text).bind(&now).execute(&mut *tx).await?;
         sqlx::query("UPDATE mm_matches SET updated_at = ? WHERE id = ?").bind(&now).bind(id).execute(&mut *tx).await?;
         // the event deliberately carries no text
-        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, 'matchmaker', 'note_added', NULL, NULL, NULL)")
-            .bind(id).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'note_added', NULL, NULL, NULL)")
+            .bind(id).bind(&now).bind(&actor_text).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -322,5 +335,78 @@ impl MatchRepo {
     pub async fn counts(pool: &SqlitePool) -> Result<BTreeMap<String, i64>, sqlx::Error> {
         let rows = sqlx::query("SELECT status, count(*) AS n FROM mm_matches WHERE org_id = ? AND hidden = 0 GROUP BY status").bind(ORG).fetch_all(pool).await?;
         Ok(rows.iter().map(|r| (r.get::<String, _>("status"), r.get::<i64, _>("n"))).collect())
+    }
+
+    /// The matchmaker's own writes. Each `*_as` variant takes the [`Actor`] that is recorded on the event.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
+        pool: &SqlitePool,
+        x: &str,
+        y: &str,
+        source_profile: Option<&str>,
+        rule_set_id: &str,
+        rule_set_version: u32,
+        scoring_config_id: Option<&str>,
+        scoring_config_version: Option<u32>,
+        status: MatchStatus,
+        scorecard: &Json,
+    ) -> Result<String, sqlx::Error> {
+        Self::create_as(pool, Actor::Matchmaker, x, y, source_profile, rule_set_id, rule_set_version, scoring_config_id, scoring_config_version, status, scorecard).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_snapshot(
+        pool: &SqlitePool,
+        id: &str,
+        rule_set_id: &str,
+        rule_set_version: u32,
+        scoring_config_id: Option<&str>,
+        scoring_config_version: Option<u32>,
+        trigger: &str,
+        scorecard: &Json,
+        weights: Option<&BTreeMap<String, f64>>,
+    ) -> Result<(), sqlx::Error> {
+        Self::add_snapshot_as(pool, Actor::Matchmaker, id, rule_set_id, rule_set_version, scoring_config_id, scoring_config_version, trigger, scorecard, weights).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_transition(
+        pool: &SqlitePool,
+        id: &str,
+        from: MatchStatus,
+        to: MatchStatus,
+        outcome: Option<Outcome>,
+        override_reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        Self::record_transition_as(pool, Actor::Matchmaker, id, from, to, outcome, override_reason, detail).await
+    }
+
+    pub async fn record_responses(
+        pool: &SqlitePool,
+        id: &str,
+        from: MatchStatus,
+        a: Interest,
+        b: Interest,
+        new_status: Option<MatchStatus>,
+        who: &str,
+    ) -> Result<(), sqlx::Error> {
+        Self::record_responses_as(pool, Actor::Matchmaker, id, from, a, b, new_status, who).await
+    }
+
+    pub async fn set_outcome(pool: &SqlitePool, id: &str, outcome: Outcome) -> Result<(), sqlx::Error> {
+        Self::set_outcome_as(pool, Actor::Matchmaker, id, outcome).await
+    }
+
+    pub async fn set_hold(pool: &SqlitePool, id: &str, reason: Option<&str>) -> Result<(), sqlx::Error> {
+        Self::set_hold_as(pool, Actor::Matchmaker, id, reason).await
+    }
+
+    pub async fn set_hidden(pool: &SqlitePool, id: &str, hidden: bool) -> Result<(), sqlx::Error> {
+        Self::set_hidden_as(pool, Actor::Matchmaker, id, hidden).await
+    }
+
+    pub async fn add_note(pool: &SqlitePool, id: &str, text: &str) -> Result<(), sqlx::Error> {
+        Self::add_note_as(pool, Actor::Matchmaker, id, text).await
     }
 }

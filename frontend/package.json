@@ -7,6 +7,7 @@
         "dev": "next dev -p 3118",
         "check:invoke": "node scripts/check-invoke-handlers.js",
         "check:i18n": "node scripts/check-i18n.js",
+        "check:autonomy": "node scripts/check-autonomy-types.js",
         "build": "next build",
         "export": "next export",
         "start": "next start -p 3118",

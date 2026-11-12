@@ -328,6 +328,7 @@ pub async fn extract_profile(
     }
 
     MmRepository::audit(pool, "ai_extract", "profile", profile_id, Some(if session.is_none() { "rules" } else if is_cloud { "cloud" } else { "local" })).await;
+    crate::mm::autonomy::settle_extraction(pool, profile_id, run_id, &rules.ambiguous).await?;
     view.suggestions = repo::suggestions_for_run(pool, run_id).await.map_err(err)?;
     Ok(view)
 }
@@ -342,13 +343,18 @@ pub enum Decision {
 }
 
 pub async fn decide_suggestion(pool: &SqlitePool, id: i64, decision: Decision, locale: Locale) -> Result<(), String> {
+    decide_suggestion_as(pool, matchmaking_core::autonomy::Actor::Matchmaker, id, decision, locale).await
+}
+
+/// [`decide_suggestion`] on behalf of `actor`, which the audit row records.
+pub async fn decide_suggestion_as(pool: &SqlitePool, actor: matchmaking_core::autonomy::Actor, id: i64, decision: Decision, locale: Locale) -> Result<(), String> {
     let sug = repo::get_suggestion(pool, id).await.map_err(err)?.ok_or_else(|| locale.pick("Suggestion not found", "پیشنهاد پیدا نشد").to_string())?;
     if sug.status != "pending" {
         return Err(locale.pick("This suggestion has already been handled or replaced", "این پیشنهاد پیش‌تر بررسی یا جایگزین شده است").to_string());
     }
     if decision == Decision::Reject {
         repo::set_suggestion_status(pool, id, "rejected").await.map_err(err)?;
-        MmRepository::audit(pool, "ai_suggestion_rejected", "profile", &sug.profile_id, Some(&sug.field)).await;
+        MmRepository::audit_as(pool, actor, "ai_suggestion_rejected", "profile", &sug.profile_id, Some(&sug.field)).await;
         return Ok(());
     }
     let reg = MmRepository::registry(pool).await.map_err(err)?;
@@ -385,7 +391,7 @@ pub async fn decide_suggestion(pool: &SqlitePool, id: i64, decision: Decision, l
     }
     repo::set_suggestion_status(pool, id, "accepted").await.map_err(err)?;
     // Which field, never the value or the quoted evidence.
-    MmRepository::audit(pool, if decision == Decision::AcceptVerified { "ai_suggestion_verified" } else { "ai_suggestion_accepted" }, "profile", &sug.profile_id, Some(&sug.field)).await;
+    MmRepository::audit_as(pool, actor, if decision == Decision::AcceptVerified { "ai_suggestion_verified" } else { "ai_suggestion_accepted" }, "profile", &sug.profile_id, Some(&sug.field)).await;
     Ok(())
 }
 

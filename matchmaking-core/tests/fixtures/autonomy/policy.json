@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "level": "l3_delegated",
+  "paused": false,
+  "min_confidence": 0.85,
+  "steps": {
+    "run_extraction": "auto",
+    "accept_extraction": "auto",
+    "find_matches": "auto",
+    "create_match": "auto",
+    "analyse_pair": "auto",
+    "add_note": "auto",
+    "recommend": "auto",
+    "approve": "auto",
+    "reject": "auto",
+    "rule_override": "suggest",
+    "interpret_reply": "auto",
+    "record_outcome": "auto",
+    "close": "auto",
+    "stop": "auto",
+    "send_introduction": { "review_window": { "minutes": 60 } },
+    "send_follow_up": { "review_window": { "minutes": 60 } },
+    "send_message": { "review_window": { "minutes": 60 } },
+    "request_info": { "review_window": { "minutes": 60 } }
+  }
+}

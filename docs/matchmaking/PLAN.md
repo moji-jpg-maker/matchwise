@@ -39,6 +39,13 @@ Same feature set as before, ordered so something works end to end early.
 - **M11 Fast, deterministic extraction** `[NEW]` -- a local rule tier that always runs and never fails, plus an
   optional constrained LLM tier that only reads the fields the rules left empty. *(written and tested with a scripted
   model; the timing comparison on real notes is left to a person with a model: see `M11_STATUS.md`)*
+- **M12 Configurable autonomy** `[NEW]` -- an autonomy level from L0 Manual to L4 Autonomous, checked by a pure policy
+  engine in `matchmaking-core/src/autonomy.rs`; the agent acts only through the existing validated code paths and every
+  action records its actor. Eight vertical phases, each releasable alone, L0 staying the default: (1) policy and
+  autonomous extraction acceptance, (2) agent runtime with read and analysis tools, (3) recommend, approve, reject and
+  rule override, (4) background scheduler, review windows and budgets, (5) template introductions and reminders,
+  (6) AI-written messages and inbound replies, (7) outcomes and closing, (8) full autonomy release (L4). *(phase 1
+  written and tested; nothing run with a real model: see `M12_STATUS.md`)*
 - **M9 Windows distribution** `[NEW]` -- a production Windows installer: sign and bundle the sidecar binaries per
   target, complete the Windows signing step that the inherited config already points at, and ship NSIS plus MSI
   verified on a clean machine. *(config and workflows written: see `M9_STATUS.md`. Nothing has run on a Windows
@@ -137,6 +144,6 @@ Scope: an installer a stranger can run on a clean Windows machine.
 The original phases 2-5 -- better psychology/AI reasoning, outcome-based learning, an agentic assistant with an
 authorization policy, and the web/mobile/API ecosystem -- are **out of scope for now** and are not planned for the
 near future. Phase 1 plus M8 (bulk intake) and M9 (Windows distribution) is the whole of the current commitment.
-The text below is kept for record only and describes nothing that is being built.
+The agentic assistant is now planned as **M12** (above). The rest of the text below is kept for record only and describes nothing that is being built.
 
 Original intent: better psychology/AI reasoning -> outcome-based learning -> agentic assistant with authorization policy -> web/mobile/API ecosystem.

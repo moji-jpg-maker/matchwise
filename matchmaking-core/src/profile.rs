@@ -83,6 +83,11 @@ impl Profile {
         self.fields.insert(key.to_string(), Entry { value, source });
         true
     }
+
+    /// Drop a field. Only for undoing an agent's own write; a person's edit goes through `set`.
+    pub fn remove(&mut self, key: &str) -> Option<Entry> {
+        self.fields.remove(key)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

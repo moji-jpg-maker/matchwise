@@ -1,4 +1,7 @@
 //! Matchwise application layer: persistence and Tauri commands around `matchmaking-core`.
+pub mod autonomy;
+pub mod autonomy_commands;
+pub mod autonomy_repo;
 pub mod commands;
 pub mod export_commands;
 pub mod export_repo;
@@ -16,6 +19,8 @@ pub mod rules_commands;
 pub mod scoring_config_commands;
 pub mod scoring_config_repo;
 
+#[cfg(test)]
+mod autonomy_tests;
 #[cfg(test)]
 mod export_tests;
 #[cfg(test)]
