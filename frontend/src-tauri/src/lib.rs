@@ -471,6 +471,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .manage(telegram::worker::TelegramRuntime::default())
+        .manage(agent::scheduler::AgentRuntime::default())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -875,6 +876,12 @@ pub fn run() {
                 tauri::RunEvent::Exit => {
                     log::info!("Application exiting, cleaning up resources...");
                     tauri::async_runtime::block_on(async {
+                        if let Some(runtime) = _app_handle.try_state::<agent::scheduler::AgentRuntime>() {
+                            runtime.stop().await;
+                        }
+                        if let Some(runtime) = _app_handle.try_state::<telegram::worker::TelegramRuntime>() {
+                            runtime.stop().await;
+                        }
                         // Clean up database connection and checkpoint WAL
                         if let Some(app_state) = _app_handle.try_state::<state::AppState>() {
                             log::info!("Starting database cleanup...");

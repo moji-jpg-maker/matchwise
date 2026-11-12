@@ -1,7 +1,8 @@
 //! The life of a match, from "identified" to an outcome, as an explicit state machine.
 //!
-//! Callers explicitly request transitions. Agent actors may only recommend and review eligible pairs.
-//! Human approval or recommendation of excluded pairs requires a written override reason.
+//! Callers explicitly request transitions. Agents may recommend, review, approve or reject pairs.
+//! Recommendation or approval of excluded pairs requires a written override reason;
+//! agent callers must also obtain RuleOverride permission from the autonomy policy.
 //! Candidate responses remain the authority for interest transitions.
 
 use serde::{Deserialize, Serialize};
@@ -243,21 +244,26 @@ pub fn validate_transition_for(ctx: &TransitionContext, to: MatchStatus, req: &T
     validate_transition_by_for(Actor::Matchmaker, ctx, to, req, locale)
 }
 
-/// Actor-aware lifecycle checks. Agent recommendations and reviews cannot use overrides or reconsider rejections.
+/// Actor-aware lifecycle checks. Agent overrides are limited to recommendation and approval;
+/// reconsidering rejections remains human only. Callers must also check autonomy policy.
 pub fn validate_transition_by(actor: Actor, ctx: &TransitionContext, to: MatchStatus, req: &TransitionRequest) -> Result<TransitionPlan, String> {
     validate_transition_by_for(actor, ctx, to, req, Locale::En)
 }
 
 pub fn validate_transition_by_for(actor: Actor, ctx: &TransitionContext, to: MatchStatus, req: &TransitionRequest, locale: Locale) -> Result<TransitionPlan, String> {
     if actor.is_agent() {
-        if !matches!(to, MatchStatus::Recommended | MatchStatus::Reviewed) || ctx.current == MatchStatus::Rejected {
+        if !matches!(to, MatchStatus::Recommended | MatchStatus::Reviewed | MatchStatus::Approved | MatchStatus::Rejected) || ctx.current == MatchStatus::Rejected {
             return Err(locale.pick("This transition requires a matchmaker", "این تغییر وضعیت به همسان‌گزین نیاز دارد").into());
         }
-        if !ctx.eligible || clean(&req.override_reason).is_some() {
-            return Err(locale.pick("The agent cannot override the rules", "عامل نمی‌تواند قوانین را نادیده بگیرد").into());
+        if (!ctx.eligible && to == MatchStatus::Reviewed)
+            || (clean(&req.override_reason).is_some() && (ctx.eligible || !matches!(to, MatchStatus::Recommended | MatchStatus::Approved))) {
+            return Err(locale.pick("This transition cannot use a rule override", "این تغییر وضعیت نمی‌تواند از استثنای قوانین استفاده کند").into());
         }
         if req.outcome.is_some() {
             return Err(locale.pick("The agent cannot record an outcome through a transition", "عامل نمی‌تواند از طریق تغییر وضعیت نتیجه ثبت کند").into());
+        }
+        if to == MatchStatus::Rejected && clean(&req.reason).is_none() {
+            return Err(locale.pick("An agent rejection requires a reason", "رد کردن توسط عامل به دلیل نیاز دارد").into());
         }
     }
     if !ctx.current.allowed_next().contains(&to) {

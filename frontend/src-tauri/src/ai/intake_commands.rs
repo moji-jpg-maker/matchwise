@@ -302,6 +302,7 @@ pub(crate) async fn run_batch_with(
         )),
     )
     .await;
+    crate::agent::scheduler::enqueue_batch(pool, &batch_id).await?;
     Ok(report)
 }
 

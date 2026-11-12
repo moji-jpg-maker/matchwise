@@ -36,6 +36,7 @@ export const en = {
     settings: 'Settings',
   },
   autonomy: {
+    background: 'While the app is open, the agent checks for work every 15 minutes, after intake finishes, and when a match changes status. Each run handles one profile and appears in the run log. Pause stops background work; Manual stays idle.',
     title: 'Autonomy',
     intro: 'Choose how much the assistant may do on its own. Every action is checked against this policy and recorded as made by the agent.',
     preset: 'Level',
@@ -576,6 +577,10 @@ export const en = {
     pair: '{nameA} ↔ {nameB}',
     updated: 'Updated {date}',
     onHold: 'waiting for info',
+    overrideFilter: 'Rule overrides',
+    overrideAll: 'All matches',
+    overrideAny: 'Any override',
+    aiOverride: 'AI override',
     rulesExclude: 'rules exclude',
     hiddenChip: 'hidden',
     noScore: '–',

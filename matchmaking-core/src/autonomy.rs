@@ -106,9 +106,9 @@ impl Step {
         Step::RequestInfo,
     ];
 
-    /// Built in this release: extraction acceptance and the phase 2 analysis tools.
+    /// Built through step 3.3: extraction, analysis, lifecycle decisions and rule overrides.
     pub fn is_built(self) -> bool {
-        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend)
+        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride)
     }
 
     /// Reaches a candidate (a Telegram message). These get a review window at L3.
@@ -355,6 +355,19 @@ pub enum Decision {
     /// Run once due; `at` is seconds since the Unix epoch.
     Schedule { at: i64 },
     Deny { reason: DenyReason },
+}
+
+impl Decision {
+    /// Require both permissions. A review window cannot be bypassed by approving a proposal.
+    pub fn requiring(self, other: Self) -> Self {
+        match (self, other) {
+            (denied @ Self::Deny { .. }, _) | (_, denied @ Self::Deny { .. }) => denied,
+            (Self::Schedule { at: a }, Self::Schedule { at: b }) => Self::Schedule { at: a.max(b) },
+            (scheduled @ Self::Schedule { .. }, _) | (_, scheduled @ Self::Schedule { .. }) => scheduled,
+            (Self::Propose, _) | (_, Self::Propose) => Self::Propose,
+            _ => Self::Execute,
+        }
+    }
 }
 
 /// Check one agent action. Invariants first, then the step's mode.

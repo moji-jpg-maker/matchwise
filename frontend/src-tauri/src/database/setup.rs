@@ -30,7 +30,11 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
             .await
             .map_err(|e| format!("Failed to initialize database manager: {}", e))?;
 
+        let pool = db_manager.pool().clone();
         app.manage(AppState { db_manager });
+        app.state::<crate::agent::scheduler::AgentRuntime>()
+            .start(pool)
+            .await;
         info!("Database initialized successfully");
     }
 

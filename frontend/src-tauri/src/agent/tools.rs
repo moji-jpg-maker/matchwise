@@ -157,8 +157,8 @@ pub async fn check_match_action(
             id,
             to,
             &TransitionRequest {
-                reason: None,
-                override_reason: None,
+                reason: action.reason(),
+                override_reason: action.override_reason(),
                 outcome: None,
             },
             locale,
@@ -314,7 +314,17 @@ pub async fn execute(
             let id = action.string("match_id");
             if action.tool == "transition_match" {
                 let to: MatchStatus = action.string("to_status").parse()?;
-                transition_match_as(pool, actor, id, to, None, None, None, session.locale).await?;
+                transition_match_as(
+                    pool,
+                    actor,
+                    id,
+                    to,
+                    action.reason(),
+                    action.override_reason(),
+                    None,
+                    session.locale,
+                )
+                .await?;
                 Ok(json!({"match_id":id,"status":to}))
             } else {
                 add_match_note_as(pool, actor, id, action.string("text"), session.locale).await?;

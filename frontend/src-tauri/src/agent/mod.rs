@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod protocol;
 pub mod repo;
+pub mod scheduler;
 mod tools;
 
 use crate::ai::{models::TaskProfile, service::Session, settings};
@@ -55,7 +56,7 @@ async fn policy_decision(
     if stored.status != "active" {
         return Err("Target is inactive".into());
     }
-    let tool = action.validate()?;
+    let step = action.step()?;
     let policy = AutonomyRepo::load_policy(pool)
         .await
         .map_err(|error| error.to_string())?;
@@ -69,12 +70,19 @@ async fn policy_decision(
     if matches!(action.tool.as_str(), "transition_match" | "add_note") {
         tools::check_match_action(pool, target, action, session.locale).await?;
     }
-    if tool.step == Some(Step::AcceptExtraction) {
+    if step == Some(Step::AcceptExtraction) {
         return tools::acceptance_decision(pool, target, action, &context, &policy).await;
     }
-    Ok(tool.step.map_or(Decision::Execute, |step| {
+    let decision = step.map_or(Decision::Execute, |step| {
         decide(&PolicyAction::Step(step), &context, &policy)
-    }))
+    });
+    if action.tool == "transition_match" && action.override_reason().is_some() {
+        // Neither permission can bypass the other, including edited proposal approvals.
+        let override_decision = decide(&PolicyAction::Step(Step::RuleOverride), &context, &policy);
+        Ok(decision.requiring(override_decision))
+    } else {
+        Ok(decision)
+    }
 }
 
 async fn perform(
@@ -130,6 +138,23 @@ async fn run_subject(
     target: &str,
     batch_id: Option<&str>,
 ) -> Result<i64, String> {
+    run_subject_cancellable(
+        pool,
+        session,
+        target,
+        batch_id,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+
+async fn run_subject_cancellable(
+    pool: &SqlitePool,
+    session: &Session<'_>,
+    target: &str,
+    batch_id: Option<&str>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<i64, String> {
     ensure_open(pool, session).await?;
     let stored = MmRepository::get_profile(pool, target)
         .await
@@ -139,7 +164,7 @@ async fn run_subject(
         return Err("Target is inactive".into());
     }
     let run_id = repo::start(pool, target, batch_id).await?;
-    let outcome = run_loop(pool, session, target, run_id).await;
+    let outcome = run_loop(pool, session, target, run_id, cancel).await;
     repo::finish(pool, run_id, outcome.as_deref().unwrap_or("failed")).await?;
     MmRepository::audit_as(
         pool,
@@ -179,30 +204,55 @@ async fn run_loop(
     session: &Session<'_>,
     target: &str,
     run_id: i64,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<&'static str, String> {
     let mut history = Vec::new();
     let constraint = protocol::constraint();
     for turn in 0..20 {
-        if ensure_open(pool, session).await.is_err() {
+        if cancel.is_cancelled() || ensure_open(pool, session).await.is_err() {
             return Ok("stopped");
         }
         let user = json!({"target_profile_id":target,"untrusted_observations":history}).to_string();
-        let reply = {
+        let completion = async {
             let _model = crate::ai::service::lock().lock().await;
             if ensure_open(pool, session).await.is_err() {
-                return Ok("stopped");
+                return None;
             }
-            tokio::time::timeout(
-                std::time::Duration::from_secs(TaskProfile::Agent.timeout_secs()),
-                session.backend.complete_structured(
-                    TaskProfile::Agent,
-                    &protocol::system_prompt(),
-                    &user,
-                    &constraint,
-                ),
+            Some(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(TaskProfile::Agent.timeout_secs()),
+                    session.backend.complete_structured(
+                        TaskProfile::Agent,
+                        &protocol::system_prompt(),
+                        &user,
+                        &constraint,
+                    ),
+                )
+                .await,
             )
-            .await
         };
+        tokio::pin!(completion);
+        let mut policy_tick = tokio::time::interval(scheduler::TICK);
+        let policy_closed = async {
+            loop {
+                policy_tick.tick().await;
+                if ensure_open(pool, session).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let reply = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok("stopped"),
+            _ = policy_closed => return Ok("stopped"),
+            reply = &mut completion => match reply {
+                Some(reply) => reply,
+                None => return Ok("stopped"),
+            }
+        };
+        if cancel.is_cancelled() || ensure_open(pool, session).await.is_err() {
+            return Ok("stopped");
+        }
         let full = format!("{}\n\n{user}", protocol::system_prompt());
         let _ = crate::ai::repo::log_call(
             pool,

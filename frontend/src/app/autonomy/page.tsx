@@ -116,6 +116,7 @@ export default function AutonomyPage() {
       <div>
         <h1 className="text-2xl font-semibold">{t('autonomy.title')}</h1>
         <p className="text-sm text-gray-500 mt-1">{t('autonomy.intro')}</p>
+        <p className="text-sm text-gray-500 mt-2">{t('autonomy.background')}</p>
       </div>
 
       <div className="bg-white rounded-lg border p-4 flex items-center justify-between gap-4">

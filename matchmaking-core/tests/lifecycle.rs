@@ -120,18 +120,18 @@ fn refusals_follow_the_locale() {
 }
 
 #[test]
-fn agents_can_only_recommend_and_review_eligible_pairs_without_overrides() {
+fn agents_can_recommend_review_and_approve_eligible_pairs_without_overrides() {
     use matchmaking_core::autonomy::Actor;
     let agent = Actor::agent_deterministic();
-    for (from, to) in [(Identified, Recommended), (Recommended, Reviewed)] {
+    for (from, to) in [(Identified, Recommended), (Recommended, Reviewed), (Recommended, Approved), (Reviewed, Approved)] {
         assert!(validate_transition_by(agent, &ctx(from, true), to, &TransitionRequest::default()).is_ok());
         assert!(validate_transition_by(agent, &ctx(from, false), to, &TransitionRequest::default()).is_err());
         let req = TransitionRequest { override_reason: Some("Known family".into()), ..Default::default() };
-        assert!(validate_transition_by(agent, &ctx(from, false), to, &req).is_err());
+        assert_eq!(validate_transition_by(agent, &ctx(from, false), to, &req).is_ok(), matches!(to, Recommended | Approved));
         assert!(validate_transition_by(agent, &ctx(from, true), to, &req).is_err());
     }
     for from in MatchStatus::PIPELINE.into_iter().chain([Rejected, Declined, Closed, Stopped]) {
-        for to in [Approved, Rejected, IntroductionProposed, BothInterested, ContactExchanged, Closed, Stopped] {
+        for to in [Rejected, IntroductionProposed, BothInterested, ContactExchanged, Closed, Stopped] {
             assert!(validate_transition_by(agent, &ctx(from, true), to, &TransitionRequest::default()).is_err());
         }
     }
@@ -139,4 +139,50 @@ fn agents_can_only_recommend_and_review_eligible_pairs_without_overrides() {
     let req = TransitionRequest { outcome: Some(Outcome::Married), ..Default::default() };
     assert!(validate_transition_by(agent, &ctx(Identified, true), Recommended, &req).is_err());
     assert!(validate_transition_by(Actor::Matchmaker, &ctx(Rejected, true), Reviewed, &TransitionRequest::default()).is_ok());
+}
+
+#[test]
+fn agent_rejections_require_a_reason_and_preserve_lifecycle_limits() {
+    use matchmaking_core::{autonomy::Actor, Locale};
+    let agent = Actor::Agent { run_id: 42 };
+    let request = TransitionRequest { reason: Some("  Incompatible expectations  ".into()), ..Default::default() };
+    for from in MatchStatus::PIPELINE.into_iter().chain([Rejected, Declined, Closed, Stopped]) {
+        for eligible in [true, false] {
+            let result = validate_transition_by(agent, &ctx(from, eligible), Rejected, &request);
+            assert_eq!(result.is_ok(), from.allowed_next().contains(&Rejected), "{from:?}");
+            if let Ok(plan) = result {
+                assert_eq!(plan.reason.as_deref(), Some("Incompatible expectations"));
+                assert!(!plan.override_used);
+            }
+        }
+    }
+    for reason in [None, Some("  ".into()), Some("ی".repeat(matchmaking_core::lifecycle::MAX_TEXT + 1))] {
+        let req = TransitionRequest { reason, ..Default::default() };
+        assert!(validate_transition_by(agent, &ctx(Reviewed, true), Rejected, &req).is_err());
+    }
+    for req in [
+        TransitionRequest { override_reason: Some("Human override".into()), ..request.clone() },
+        TransitionRequest { outcome: Some(Outcome::Married), ..request.clone() },
+    ] {
+        assert!(validate_transition_by(agent, &ctx(Reviewed, false), Rejected, &req).is_err());
+    }
+    let error = validate_transition_by_for(agent, &ctx(Reviewed, true), Rejected, &TransitionRequest::default(), Locale::Fa).unwrap_err();
+    assert!(error.contains("دلیل"));
+    assert!(validate_transition_by(Actor::Matchmaker, &ctx(Reviewed, true), Rejected, &TransitionRequest::default()).is_ok());
+    assert!(validate_transition_by(agent, &ctx(Identified, true), Approved, &TransitionRequest::default()).is_err());
+}
+
+#[test]
+fn agent_override_reasons_count_trimmed_unicode_characters() {
+    use matchmaking_core::autonomy::Actor;
+    for (from, to) in [(Identified, Recommended), (Recommended, Approved), (Reviewed, Approved)] {
+        for (reason, valid) in [("", false), ("  ab  ", false), ("  یا  ", false), ("  بله  ", true), ("yes", true)] {
+            let req = TransitionRequest { override_reason: Some(reason.into()), ..Default::default() };
+            let result = validate_transition_by(Actor::Agent { run_id: 8 }, &ctx(from, false), to, &req);
+            assert_eq!(result.is_ok(), valid, "{from:?} {to:?} {reason}");
+            if let Ok(plan) = result { assert!(plan.override_used); }
+        }
+        let req = TransitionRequest { override_reason: Some("x".repeat(matchmaking_core::lifecycle::MAX_TEXT + 1)), ..Default::default() };
+        assert!(validate_transition_by(Actor::agent_deterministic(), &ctx(from, false), to, &req).is_err());
+    }
 }

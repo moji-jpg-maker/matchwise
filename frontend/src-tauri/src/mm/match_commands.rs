@@ -81,6 +81,7 @@ pub struct MatchDetail {
     pub b_response: Interest,
     pub outcome: Option<Outcome>,
     pub override_reason: Option<String>,
+    pub override_by: Option<String>,
     pub weight_overrides: BTreeMap<String, f64>,
     pub hidden: bool,
     pub created_at: String,
@@ -179,6 +180,7 @@ async fn detail(pool: &SqlitePool, id: &str, locale: Locale) -> Result<MatchDeta
         b_response: m.b_response,
         outcome: m.outcome,
         override_reason: m.override_reason,
+        override_by: m.override_by,
         weight_overrides: m.weight_overrides,
         hidden: m.hidden,
         created_at: m.created_at,
@@ -307,6 +309,8 @@ pub(crate) async fn create_match_as(
 
 #[derive(Serialize)]
 pub struct MatchSummary {
+    pub override_reason: Option<String>,
+    pub override_by: Option<String>,
     pub id: String,
     pub name_a: Option<String>,
     pub name_b: Option<String>,
@@ -344,6 +348,8 @@ pub async fn mm_list_matches(
         .filter(|(m, _)| include_finished.unwrap_or(status.is_some()) || !m.status.is_terminal())
         .filter(|(m, _)| include_hidden.unwrap_or(false) || !m.hidden)
         .map(|(m, card)| MatchSummary {
+            override_reason: m.override_reason,
+            override_by: m.override_by,
             name_a: names.get(&m.profile_a).cloned().flatten(),
             name_b: names.get(&m.profile_b).cloned().flatten(),
             eligible: eligible_of(&card),
@@ -407,8 +413,8 @@ pub(crate) async fn transition_match_as(
     Ok(())
 }
 
-/// Also called before proposing, and again before execution. Agents require a current eligible score
-/// under the match's recorded rule/config versions, as well as an eligible stored snapshot.
+/// Also called before proposing and execution. Agents re-score under the recorded rule/config
+/// versions; exclusions require an explicit override, checked separately by agent policy.
 pub(crate) async fn check_transition_as(
     pool: &SqlitePool, actor: Actor, id: &str, to: MatchStatus, req: &TransitionRequest, locale: Locale,
 ) -> Result<(MatchRow, matchmaking_core::TransitionPlan), String> {
@@ -434,7 +440,7 @@ pub(crate) async fn check_transition_as(
     Ok((m, plan))
 }
 
-/// Human undo is a status-only restoration of the last agent recommendation/review.
+/// Human undo restores the status and prior override metadata of the last agent recommendation/review.
 #[tauri::command]
 pub async fn agent_undo_transition(state: State<'_, AppState>, event_id: i64, locale: Option<String>) -> Result<MatchDetail, String> {
     let pool = state.db_manager.pool();

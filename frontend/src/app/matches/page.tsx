@@ -22,6 +22,7 @@ function MatchesView() {
   const [rows, setRows] = useState<MatchSummary[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [showHidden, setShowHidden] = useState(false);
+  const [overrideFilter, setOverrideFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -62,10 +63,13 @@ function MatchesView() {
     const filtered = needle
       ? rows.filter((m) => normalizeSearch(`${m.name_a ?? ''} ${m.name_b ?? ''}`).includes(needle))
       : rows;
-    return [...filtered].sort((x, y) =>
+    const overrides = filtered.filter((m) => overrideFilter === 'all'
+      || (overrideFilter === 'any' && m.override_reason != null)
+      || (overrideFilter === 'ai' && m.override_by?.startsWith('agent:')));
+    return [...overrides].sort((x, y) =>
       sortKey === 'score' ? (y.score ?? -1) - (x.score ?? -1) : y.updated_at.localeCompare(x.updated_at)
     );
-  }, [rows, query, sortKey]);
+  }, [rows, query, sortKey, overrideFilter]);
 
   const activeCount = PIPELINE.reduce((n, s) => n + (counts[s] ?? 0), 0);
   const tabs: { key: Tab; label: string; n: number }[] = [
@@ -120,8 +124,16 @@ function MatchesView() {
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> {t('matches.includeHidden')}
           </label>
-          {(query || sortKey !== 'updated' || showHidden) && (
-            <button className="text-sm underline" onClick={() => { setQuery(''); setSortKey('updated'); setShowHidden(false); }}>{t('matches.reset')}</button>
+          <label className="flex items-center gap-2 text-sm">
+            {t('matches.overrideFilter')}
+            <select className="border rounded-md px-2 py-1.5 text-sm bg-white" value={overrideFilter} onChange={(e) => setOverrideFilter(e.target.value)}>
+              <option value="all">{t('matches.overrideAll')}</option>
+              <option value="any">{t('matches.overrideAny')}</option>
+              <option value="ai">{t('matches.aiOverride')}</option>
+            </select>
+          </label>
+          {(overrideFilter !== 'all' || query || sortKey !== 'updated' || showHidden) && (
+            <button className="text-sm underline" onClick={() => { setOverrideFilter('all'); setQuery(''); setSortKey('updated'); setShowHidden(false); }}>{t('matches.reset')}</button>
           )}
         </div>
 
@@ -141,6 +153,7 @@ function MatchesView() {
                 <div className="font-medium truncate"><bdi>{t('matches.pair', { nameA: m.name_a || t('matches.unnamed'), nameB: m.name_b || t('matches.unnamed') })}</bdi></div>
                 <div className="text-xs text-gray-500">{t('matches.updated', { date: fmt.date(m.updated_at) })}{m.outcome ? ` · ${t(OUTCOME_KEY[m.outcome])}` : ''}</div>
               </div>
+              {m.override_by?.startsWith('agent:') && <span className="text-xs px-2 py-0.5 rounded bg-purple-100 text-purple-800">{t('matches.aiOverride')}</span>}
               {m.on_hold && <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">{t('matches.onHold')}</span>}
               {!m.eligible && !TERMINAL.includes(m.status) && <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-800">{t('matches.rulesExclude')}</span>}
               {m.hidden && <span className="text-xs px-2 py-0.5 rounded bg-gray-200">{t('matches.hiddenChip')}</span>}

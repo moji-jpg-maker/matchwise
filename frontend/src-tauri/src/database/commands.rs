@@ -54,6 +54,9 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     }
 
     info!("Fresh database initialized successfully with default models");
+    app.state::<crate::agent::scheduler::AgentRuntime>()
+        .start(pool.clone())
+        .await;
 
     // Emit event to notify frontend that database is ready
     app.emit("database-initialized", ())

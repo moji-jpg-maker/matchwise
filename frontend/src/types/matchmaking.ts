@@ -402,6 +402,7 @@ export interface MatchDetail {
   b_response: Interest;
   outcome: Outcome | null;
   override_reason: string | null;
+  override_by: string | null;
   weight_overrides: Record<string, number>;
   hidden: boolean;
   created_at: string;
@@ -415,6 +416,8 @@ export interface MatchDetail {
 }
 
 export interface MatchSummary {
+  override_reason: string | null;
+  override_by: string | null;
   id: string;
   name_a: string | null;
   name_b: string | null;
@@ -952,7 +955,7 @@ export const AUTONOMY_STEPS: AutonomyStep[] = [
 ];
 
 /** Steps built in this release; the rest stay Off and are disabled in the UI. */
-export const BUILT_AUTONOMY_STEPS: AutonomyStep[] = ['run_extraction', 'accept_extraction', 'find_matches', 'create_match', 'analyse_pair', 'add_note', 'recommend'];
+export const BUILT_AUTONOMY_STEPS: AutonomyStep[] = ['run_extraction', 'accept_extraction', 'find_matches', 'create_match', 'analyse_pair', 'add_note', 'recommend', 'approve', 'reject', 'rule_override'];
 
 export type AutonomyLevel = 'l0_manual' | 'l1_assisted' | 'l2_supervised' | 'l3_delegated' | 'l4_autonomous';
 

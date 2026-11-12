@@ -87,7 +87,7 @@ fn built_step_follows_the_preset_mode() {
 
 #[test]
 fn built_steps_follow_each_mode_without_enabling_later_steps() {
-    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair, Step::AddNote, Step::Recommend] {
+    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair, Step::AddNote, Step::Recommend, Step::Reject] {
         assert!(step.is_built());
         let action = Action::Step(step);
         assert_eq!(decide(&action, &open(), &AutonomyPolicy::default()), denied(DenyReason::StepOff));
@@ -97,7 +97,7 @@ fn built_steps_follow_each_mode_without_enabling_later_steps() {
         policy.steps.insert(step, StepMode::ReviewWindow { minutes: 60 });
         assert_eq!(decide(&action, &open(), &policy), Decision::Schedule { at: NOW + 3600 });
     }
-    for step in [Step::Approve, Step::RuleOverride, Step::SendMessage] {
+    for step in [Step::SendMessage] {
         assert!(!step.is_built());
         assert_eq!(decide(&Action::Step(step), &open(), &all_auto()), denied(DenyReason::StepOff));
     }
@@ -257,4 +257,68 @@ fn built_steps_match_the_frontend_contract_fixture() {
     let built: Vec<_> = Step::ALL.into_iter().filter(|s| s.is_built()).collect();
     let fixture: serde_json::Value = serde_json::from_str(include_str!("fixtures/autonomy/built_steps.json")).unwrap();
     assert_eq!(serde_json::to_value(built).unwrap(), fixture);
+}
+
+#[test]
+fn approval_has_its_own_mode_and_l3_auto_preset() {
+    let action = Action::Step(Step::Approve);
+    assert!(Step::Approve.is_built());
+    for (level, expected) in [
+        (Level::L0Manual, denied(DenyReason::StepOff)),
+        (Level::L1Assisted, Decision::Propose),
+        (Level::L2Supervised, Decision::Propose),
+        (Level::L3Delegated, Decision::Execute),
+    ] {
+        assert_eq!(decide(&action, &open(), &AutonomyPolicy::preset(level)), expected);
+    }
+    let mut policy = AutonomyPolicy::preset(Level::L3Delegated);
+    for (mode, expected) in [
+        (StepMode::Off, denied(DenyReason::StepOff)),
+        (StepMode::Suggest, Decision::Propose),
+        (StepMode::ReviewWindow { minutes: 60 }, Decision::Schedule { at: NOW + 3600 }),
+        (StepMode::Auto, Decision::Execute),
+    ] {
+        policy.steps.insert(Step::Approve, mode);
+        assert_eq!(decide(&action, &open(), &policy), expected);
+        assert_eq!(decide(&Action::Step(Step::Reject), &open(), &policy), Decision::Execute);
+    }
+}
+
+#[test]
+fn overrides_require_both_transition_and_override_permission() {
+    let modes = [StepMode::Off, StepMode::Suggest, StepMode::Auto, StepMode::ReviewWindow { minutes: 60 }];
+    for step in [Step::Recommend, Step::Approve] {
+        for base in &modes {
+            for override_mode in &modes {
+                let mut policy = all_auto();
+                policy.steps.insert(step, *base);
+                policy.steps.insert(Step::RuleOverride, *override_mode);
+                let combined = decide(&Action::Step(step), &open(), &policy)
+                    .requiring(decide(&Action::Step(Step::RuleOverride), &open(), &policy));
+                let expected = if matches!(base, StepMode::Off) || matches!(override_mode, StepMode::Off) {
+                    denied(DenyReason::StepOff)
+                } else if matches!(base, StepMode::ReviewWindow { .. }) || matches!(override_mode, StepMode::ReviewWindow { .. }) {
+                    Decision::Schedule { at: NOW + 3600 }
+                } else if matches!(base, StepMode::Suggest) || matches!(override_mode, StepMode::Suggest) {
+                    Decision::Propose
+                } else { Decision::Execute };
+                assert_eq!(combined, expected, "{step:?} {base:?} {override_mode:?}");
+            }
+        }
+    }
+    assert_eq!(Decision::Schedule { at: 10 }.requiring(Decision::Schedule { at: 20 }), Decision::Schedule { at: 20 });
+}
+
+#[test]
+fn rule_override_presets_remain_suggest_until_l4() {
+    assert!(Step::RuleOverride.is_built());
+    for (level, expected) in [
+        (Level::L0Manual, denied(DenyReason::StepOff)),
+        (Level::L1Assisted, Decision::Propose),
+        (Level::L2Supervised, Decision::Propose),
+        (Level::L3Delegated, Decision::Propose),
+        (Level::L4Autonomous, Decision::Execute),
+    ] {
+        assert_eq!(decide(&Action::Step(Step::RuleOverride), &open(), &AutonomyPolicy::preset(level)), expected);
+    }
 }

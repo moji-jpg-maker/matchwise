@@ -31,6 +31,7 @@ struct ScriptedLlmBackend {
     prompts: Mutex<Vec<String>>,
     pause_on_call: Option<SqlitePool>,
     change_config_on_call: Option<SqlitePool>,
+    stall_on_call: bool,
 }
 
 impl ScriptedLlmBackend {
@@ -40,6 +41,7 @@ impl ScriptedLlmBackend {
             prompts: Mutex::new(Vec::new()),
             pause_on_call: None,
             change_config_on_call: None,
+            stall_on_call: false,
         }
     }
 }
@@ -90,6 +92,9 @@ impl LlmBackend for ScriptedLlmBackend {
             let mut config = settings::load_config(pool).await.unwrap();
             config.base_url = "http://127.0.0.1:9999".into();
             settings::save_config(pool, &config).await.unwrap();
+        }
+        if self.stall_on_call {
+            std::future::pending::<()>().await;
         }
         let mut action = self
             .actions
@@ -158,6 +163,9 @@ fn profile(id: &str) -> Profile {
 async fn setup(level: Level) -> (SqlitePool, String) {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
+        // Cancelling the policy watcher must not drop this in-memory database
+        // during SQLx's optional connection health check.
+        .test_before_acquire(false)
         .connect("sqlite::memory:")
         .await
         .unwrap();
@@ -239,6 +247,8 @@ fn registry_contract_rejects_unregistered_and_extra_arguments() {
                         json!(1)
                     } else if *kind == "review_status" {
                         json!("recommended")
+                    } else if *name == "override_reason" {
+                        json!("exception")
                     } else {
                         json!("id")
                     },
@@ -262,11 +272,11 @@ fn registry_contract_rejects_unregistered_and_extra_arguments() {
         call("transition_match", json!({})),
         call(
             "transition_match",
-            json!({"match_id":"id","to_status":"approved"}),
+            json!({"match_id":"id","to_status":"introduction_proposed"}),
         ),
         call(
             "transition_match",
-            json!({"match_id":"id","to_status":"recommended","override_reason":"Allowed"}),
+            json!({"match_id":"id","to_status":"recommended","override_reason":"ab"}),
         ),
         call("add_note", json!({"match_id":"id","text":"   "})),
         call(
@@ -731,6 +741,320 @@ async fn tracked_pair(pool: &SqlitePool, rules: &str, other: &str) -> String {
     .unwrap()
 }
 
+async fn recommend_as_matchmaker(pool: &SqlitePool, id: &str) {
+    crate::mm::match_commands::transition_match_as(
+        pool,
+        matchmaking_core::autonomy::Actor::Matchmaker,
+        id,
+        MatchStatus::Recommended,
+        None,
+        None,
+        None,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+}
+
+#[test]
+fn transition_registry_selects_separate_steps_and_bounds_optional_reasons() {
+    for (status, step) in [
+        ("recommended", Step::Recommend),
+        ("reviewed", Step::Recommend),
+        ("approved", Step::Approve),
+        ("rejected", Step::Reject),
+    ] {
+        let action: Action = serde_json::from_value(call(
+            "transition_match",
+            json!({"match_id":"id","to_status":status}),
+        ))
+        .unwrap();
+        assert_eq!(action.step().unwrap(), Some(step));
+    }
+    for reason in [
+        json!(null),
+        json!(3),
+        json!("  "),
+        json!("ی".repeat(matchmaking_core::lifecycle::MAX_TEXT + 1)),
+    ] {
+        let action: Action = serde_json::from_value(call(
+            "transition_match",
+            json!({"match_id":"id","to_status":"rejected","reason":reason}),
+        ))
+        .unwrap();
+        assert!(action.validate().is_err());
+    }
+    let constraint = protocol::constraint();
+    let schema = constraint.json_schema["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["properties"]["tool"]["const"] == "transition_match")
+        .unwrap();
+    assert_eq!(
+        schema["properties"]["args"]["required"],
+        json!(["match_id", "to_status"])
+    );
+    assert_eq!(
+        schema["properties"]["args"]["properties"]["to_status"]["enum"],
+        json!(["recommended", "reviewed", "approved", "rejected"])
+    );
+    assert_eq!(
+        schema["properties"]["args"]["properties"]["reason"]["maxLength"],
+        matchmaking_core::lifecycle::MAX_TEXT
+    );
+    assert!(constraint
+        .gbnf
+        .contains(r#"(ws "," ws "\"reason\"" ws ":" ws string)?"#));
+}
+
+#[tokio::test]
+async fn l3_approves_then_rejects_with_actor_reason_and_no_reconsideration() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L3Delegated).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    recommend_as_matchmaker(&pool, &id).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"approved"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"rejected"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"rejected","reason":"  Different expectations  "}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"reviewed"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert_eq!(
+        traces.iter().map(|t| t.status.as_str()).collect::<Vec<_>>(),
+        ["executed", "denied", "executed", "denied", "executed"]
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Rejected
+    );
+    let events = MatchRepo::events(&pool, &id).await.unwrap();
+    for status in ["approved", "rejected"] {
+        let event = events
+            .iter()
+            .find(|e| e.to_status.as_deref() == Some(status))
+            .unwrap();
+        assert_eq!(event.actor, format!("agent:{run}"));
+        if status == "rejected" {
+            assert_eq!(event.detail.as_deref(), Some("Different expectations"));
+        }
+    }
+    let audit: Vec<(String, String)> = sqlx::query_as(
+        "SELECT actor, COALESCE(detail, '') FROM mm_audit_log WHERE action = 'match_transition'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(audit
+        .iter()
+        .any(|(actor, detail)| actor == &format!("agent:{run}")
+            && detail == "recommended -> approved"));
+    assert!(audit
+        .iter()
+        .all(|(_, detail)| !detail.contains("Different expectations")));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    crate::mm::match_commands::transition_match_as(
+        &pool,
+        matchmaking_core::autonomy::Actor::Matchmaker,
+        &id,
+        MatchStatus::Reviewed,
+        None,
+        None,
+        None,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Reviewed
+    );
+}
+
+#[tokio::test]
+async fn l1_approval_and_rejection_proposals_recheck_policy_and_edited_reasons() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L1Assisted).await;
+    let approve = tracked_pair(&pool, &rules, "candidate").await;
+    let reject = tracked_pair(&pool, &rules, "edited").await;
+    recommend_as_matchmaker(&pool, &approve).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":approve,"to_status":"approved"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":reject,"to_status":"rejected","reason":"Original private reason"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let proposals = repo::traces(&pool, Some(run), true).await.unwrap();
+    assert_eq!(proposals.len(), 2);
+    assert_eq!(
+        MatchRepo::get(&pool, &approve)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        MatchStatus::Recommended
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &reject)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        MatchStatus::Identified
+    );
+    let approval = proposals
+        .iter()
+        .find(|p| p.action.string("to_status") == "approved")
+        .unwrap();
+    let rejection = proposals
+        .iter()
+        .find(|p| p.action.string("to_status") == "rejected")
+        .unwrap();
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy.steps.insert(Step::Reject, StepMode::Off);
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert!(super::decide_proposal(
+        &pool,
+        Some(&session(&backend)),
+        approval.id,
+        true,
+        Some(json!({"match_id":approve,"to_status":"rejected","reason":"Edited destination"}))
+    )
+    .await
+    .is_err());
+    policy.steps.insert(Step::Reject, StepMode::Suggest);
+    policy.steps.insert(Step::Approve, StepMode::Off);
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), approval.id, true, None)
+            .await
+            .is_err()
+    );
+    policy.steps.insert(Step::Approve, StepMode::Suggest);
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    sqlx::query("UPDATE mm_match_snapshots SET scorecard = json_set(scorecard, '$.eligible', json('false')) WHERE match_id = ?")
+        .bind(&approve).execute(&pool).await.unwrap();
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), approval.id, true, None)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE mm_match_snapshots SET scorecard = json_set(scorecard, '$.eligible', json('true')) WHERE match_id = ?")
+        .bind(&approve).execute(&pool).await.unwrap();
+    super::decide_proposal(&pool, Some(&session(&backend)), approval.id, true, None)
+        .await
+        .unwrap();
+    assert!(super::decide_proposal(
+        &pool,
+        Some(&session(&backend)),
+        rejection.id,
+        true,
+        Some(json!({"match_id":reject,"to_status":"rejected"}))
+    )
+    .await
+    .is_err());
+    super::decide_proposal(
+        &pool,
+        Some(&session(&backend)),
+        rejection.id,
+        true,
+        Some(json!({"match_id":reject,"to_status":"rejected","reason":"  دلیل ویرایش‌شده  "})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        MatchRepo::get(&pool, &approve)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        MatchStatus::Approved
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &reject)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        MatchStatus::Rejected
+    );
+    let event = MatchRepo::events(&pool, &reject).await.unwrap().remove(0);
+    assert_eq!(event.detail.as_deref(), Some("دلیل ویرایش‌شده"));
+    assert_eq!(event.actor, format!("agent:{run}"));
+    assert!(repo::traces(&pool, Some(run), true)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn l2_approval_is_proposed_but_rejection_executes_independently_of_recommend() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    recommend_as_matchmaker(&pool, &id).await;
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy.steps.insert(Step::Recommend, StepMode::Off);
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"approved"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"rejected","reason":"Not a fit"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert_eq!(traces[0].status, "proposed");
+    assert_eq!(traces[1].status, "executed");
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Rejected
+    );
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), traces[0].id, true, None)
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn l2_recommends_reviews_notes_and_undoes_only_latest_agent_transition() {
     let _serial = serial().await;
@@ -905,7 +1229,7 @@ async fn excluded_and_unrelated_pairs_and_future_transitions_remain_untouched() 
         .unwrap();
     let traces = repo::traces(&pool, Some(run), false).await.unwrap();
     assert!(traces[..2].iter().all(|t| t.status == "denied"));
-    assert_eq!(traces[2].status, "failed"); // Outside the registered action schema.
+    assert_eq!(traces[2].status, "denied"); // Approval also requires an eligible lifecycle move.
     assert_eq!(
         MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
         MatchStatus::Identified
@@ -1005,4 +1329,690 @@ async fn proposal_approval_rechecks_eligibility_and_undo_refuses_later_human_mov
         MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
         MatchStatus::Reviewed
     );
+}
+
+async fn exclude_snapshot(pool: &SqlitePool, id: &str) {
+    sqlx::query("UPDATE mm_match_snapshots SET scorecard = json_set(scorecard, '$.eligible', json('false')) WHERE match_id = ?")
+        .bind(id).execute(pool).await.unwrap();
+}
+
+#[tokio::test]
+async fn custom_all_auto_overrides_exclusions_and_undo_restores_attribution() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L3Delegated).await;
+    let mut policy = AutonomyPolicy::preset(Level::L4Autonomous);
+    // The full L4 preset remains unreleased until phase 8; its built steps can be customized now.
+    policy.level = Level::L3Delegated;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    exclude_snapshot(&pool, &id).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"recommended","override_reason":"  بله  "}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Recommended);
+    assert_eq!(m.override_reason.as_deref(), Some("بله"));
+    assert_eq!(m.override_by, Some(format!("agent:{run}")));
+    let event = MatchRepo::events(&pool, &id).await.unwrap().remove(0);
+    assert_eq!(event.actor, format!("agent:{run}"));
+    assert!(event.detail.unwrap().contains("بله"));
+    crate::mm::match_commands::undo_transition(&pool, event.id, Locale::En)
+        .await
+        .unwrap();
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Identified);
+    assert!(m.override_reason.is_none() && m.override_by.is_none());
+
+    let reason = "Reviewed exception with family";
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"recommended","override_reason":reason}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"approved","override_reason":reason}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert!(traces[..2].iter().all(|t| t.status == "executed"));
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Approved);
+    assert_eq!(m.override_reason.as_deref(), Some(reason));
+    assert_eq!(m.override_by, Some(format!("agent:{run}")));
+    let audit = sqlx::query_scalar::<_, String>("SELECT COALESCE(detail, '') FROM mm_audit_log")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(audit
+        .iter()
+        .all(|d| !d.contains(reason) && !d.contains("بله")));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn l3_override_proposals_recheck_both_permissions_and_edited_arguments() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L3Delegated).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    recommend_as_matchmaker(&pool, &id).await;
+    exclude_snapshot(&pool, &id).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"approved","override_reason":"Original exception"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let proposal = repo::traces(&pool, Some(run), true)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(proposal.status, "proposed");
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Recommended);
+    assert!(m.override_by.is_none());
+    for args in [
+        json!({"match_id":id,"to_status":"approved","override_reason":" a "}),
+        json!({"match_id":id,"to_status":"approved"}),
+        json!({"match_id":id,"to_status":"reviewed","override_reason":"Bad destination"}),
+        json!({"match_id":id,"to_status":"approved","override_reason":"Valid reason","outcome":"married"}),
+    ] {
+        assert!(super::decide_proposal(
+            &pool,
+            Some(&session(&backend)),
+            proposal.id,
+            true,
+            Some(args)
+        )
+        .await
+        .is_err());
+    }
+    for step in [Step::RuleOverride, Step::Approve] {
+        for mode in [StepMode::Off, StepMode::ReviewWindow { minutes: 60 }] {
+            let mut policy = AutonomyPolicy::preset(Level::L3Delegated);
+            policy.steps.insert(step, mode);
+            AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+            assert!(super::decide_proposal(
+                &pool,
+                Some(&session(&backend)),
+                proposal.id,
+                true,
+                None
+            )
+            .await
+            .is_err());
+        }
+    }
+    let mut policy = AutonomyPolicy::preset(Level::L3Delegated);
+    policy.paused = true;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), proposal.id, true, None)
+            .await
+            .is_err()
+    );
+    AutonomyRepo::save_policy(&pool, &AutonomyPolicy::preset(Level::L3Delegated))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE mm_profiles SET status = 'inactive' WHERE id = 'candidate'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), proposal.id, true, None)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE mm_profiles SET status = 'active' WHERE id = 'candidate'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    super::decide_proposal(
+        &pool,
+        Some(&session(&backend)),
+        proposal.id,
+        true,
+        Some(
+            json!({"match_id":id,"to_status":"approved","override_reason":"  Edited exception  "}),
+        ),
+    )
+    .await
+    .unwrap();
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Approved);
+    assert_eq!(m.override_reason.as_deref(), Some("Edited exception"));
+    assert_eq!(m.override_by, Some(format!("agent:{run}")));
+}
+
+#[tokio::test]
+async fn overrides_do_not_bypass_transition_modes_or_current_rule_exclusions() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L3Delegated).await;
+    let mut definition = matchmaking_core::default_ruleset();
+    definition
+        .rules
+        .iter_mut()
+        .find(|r| r.id == "age_gap")
+        .unwrap()
+        .kind = matchmaking_core::RuleKind::Hard;
+    let rules = MmRepository::create_rule_set(&pool, "Hard age rules", "", &definition, None)
+        .await
+        .unwrap();
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    recommend_as_matchmaker(&pool, &id).await;
+    let mut changed = profile("candidate");
+    changed.set("age", Value::Num(60.0), Provenance::Matchmaker);
+    MmRepository::update_profile_data(&pool, &changed)
+        .await
+        .unwrap();
+    for (base, overrides, expected) in [
+        (StepMode::Auto, StepMode::Off, "denied"),
+        (StepMode::Off, StepMode::Auto, "denied"),
+        (StepMode::Suggest, StepMode::Auto, "proposed"),
+        (StepMode::Auto, StepMode::Suggest, "proposed"),
+        (
+            StepMode::Auto,
+            StepMode::ReviewWindow { minutes: 60 },
+            "denied",
+        ),
+        (StepMode::Auto, StepMode::Auto, "executed"),
+    ] {
+        let mut policy = AutonomyPolicy::preset(Level::L3Delegated);
+        policy.steps.insert(Step::Approve, base);
+        policy.steps.insert(Step::RuleOverride, overrides);
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let backend = ScriptedLlmBackend::new(vec![
+            call(
+                "transition_match",
+                json!({"match_id":id,"to_status":"approved"}),
+            ),
+            call(
+                "transition_match",
+                json!({"match_id":id,"to_status":"approved","override_reason":"Intentional age exception"}),
+            ),
+            finish(),
+        ]);
+        let run = super::run(&pool, &session(&backend), "target", None)
+            .await
+            .unwrap();
+        let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+        assert_eq!(traces[0].status, "denied");
+        assert_eq!(traces[1].status, expected);
+        assert_eq!(
+            MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+            if expected == "executed" {
+                MatchStatus::Approved
+            } else {
+                MatchStatus::Recommended
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn override_migration_preserves_historical_human_attribution_and_undo() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TABLE mm_matches (id TEXT PRIMARY KEY, override_reason TEXT); CREATE TABLE mm_match_events (id INTEGER PRIMARY KEY, match_id TEXT); CREATE TABLE mm_agent_transition_undo (event_id INTEGER PRIMARY KEY);
+        INSERT INTO mm_matches VALUES ('overridden', 'Family exception'), ('ordinary', NULL);
+        INSERT INTO mm_match_events VALUES (1, 'overridden'), (2, 'ordinary');
+        INSERT INTO mm_agent_transition_undo VALUES (1), (2);")
+        .execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../migrations/20261112030000_add_agent_rule_override.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let attribution: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, override_by FROM mm_matches ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        attribution,
+        vec![
+            ("ordinary".into(), None),
+            ("overridden".into(), Some("matchmaker".into()))
+        ]
+    );
+    let receipts: Vec<(Option<String>, Option<String>)> = sqlx::query_as("SELECT prior_override_reason, prior_override_by FROM mm_agent_transition_undo ORDER BY event_id")
+        .fetch_all(&pool).await.unwrap();
+    assert_eq!(
+        receipts,
+        vec![
+            (Some("Family exception".into()), Some("matchmaker".into())),
+            (None, None)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn undo_agent_review_preserves_prior_human_override() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    exclude_snapshot(&pool, &id).await;
+    crate::mm::match_commands::transition_match_as(
+        &pool,
+        matchmaking_core::autonomy::Actor::Matchmaker,
+        &id,
+        MatchStatus::Recommended,
+        None,
+        Some("Human exception".into()),
+        None,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    // The latest scorecard is now eligible, allowing ordinary agent review of a historical override.
+    sqlx::query("UPDATE mm_match_snapshots SET scorecard = json_set(scorecard, '$.eligible', json('true')) WHERE match_id = ?")
+        .bind(&id).execute(&pool).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"reviewed"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+        "executed"
+    );
+    let event = MatchRepo::events(&pool, &id).await.unwrap().remove(0);
+    crate::mm::match_commands::undo_transition(&pool, event.id, Locale::En)
+        .await
+        .unwrap();
+    let restored = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(restored.status, MatchStatus::Recommended);
+    assert_eq!(restored.override_reason.as_deref(), Some("Human exception"));
+    assert_eq!(restored.override_by.as_deref(), Some("matchmaker"));
+}
+
+async fn queued(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar("SELECT profile_id FROM mm_agent_work WHERE org_id='default' ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn scheduler_unattended_runs_one_subject_at_a_time_and_respects_policy() {
+    let _serial = serial().await;
+    for level in [Level::L2Supervised, Level::L1Assisted] {
+        let (pool, rules) = setup(level).await;
+        let pair = tracked_pair(&pool, &rules, "candidate").await;
+        let backend = std::sync::Arc::new(ScriptedLlmBackend::new(vec![
+            call(
+                "transition_match",
+                json!({"match_id":pair,"to_status":"recommended"}),
+            ),
+            finish(),
+            finish(),
+            finish(),
+            finish(),
+        ]));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task = tokio::spawn(super::scheduler::worker(
+            pool.clone(),
+            cancel.clone(),
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_secs(900),
+            move |pool, token| {
+                let backend = backend.clone();
+                async move {
+                    let Ok(_guard) = super::runtime_lock().try_lock() else {
+                        return Ok(());
+                    };
+                    super::scheduler::process_next(&pool, &session(&backend), &token).await
+                }
+            },
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let runs = repo::runs(&pool).await.unwrap();
+                if runs.len() == if level == Level::L1Assisted { 3 } else { 4 }
+                    && runs.iter().all(|r| r.finished_at.is_some())
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        cancel.cancel();
+        task.await.unwrap();
+        let mut runs = repo::runs(&pool).await.unwrap();
+        runs.sort_by_key(|r| r.id);
+        assert_eq!(
+            runs.iter()
+                .map(|r| r.profile_id.as_str())
+                .collect::<Vec<_>>(),
+            if level == Level::L1Assisted {
+                vec!["candidate", "edited", "target"]
+            } else {
+                vec!["candidate", "candidate", "edited", "target"]
+            }
+        );
+        assert!(runs
+            .iter()
+            .all(|r| r.status == "finished" && r.actor == format!("agent:{}", r.id)));
+        let traces = repo::traces(&pool, Some(runs[0].id), false).await.unwrap();
+        assert_eq!(
+            traces[0].status,
+            if level == Level::L1Assisted {
+                "proposed"
+            } else {
+                "executed"
+            }
+        );
+        assert_eq!(
+            MatchRepo::get(&pool, &pair).await.unwrap().unwrap().status,
+            if level == Level::L1Assisted {
+                MatchStatus::Identified
+            } else {
+                MatchStatus::Recommended
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn scheduler_intake_completion_enqueues_the_completed_batch() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L2Supervised).await;
+    let report = crate::ai::intake_commands::run_batch_with(
+        &pool,
+        None,
+        None,
+        Some(vec!["A new intake profile".into()]),
+        "scheduler-batch".into(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.created, 1);
+    let target = queued(&pool).await.pop().unwrap();
+    let backend = ScriptedLlmBackend::new(vec![finish()]);
+    let _guard = super::runtime_lock().lock().await;
+    super::scheduler::process_next(&pool, &session(&backend), &Default::default())
+        .await
+        .unwrap();
+    let runs = repo::runs(&pool).await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].profile_id, target);
+    assert_eq!(runs[0].batch_id.as_deref(), Some("scheduler-batch"));
+    assert!(queued(&pool).await.is_empty());
+}
+
+#[tokio::test]
+async fn scheduler_status_events_are_transactional_and_coalesced() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let pair = tracked_pair(&pool, &rules, "candidate").await;
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE mm_matches SET status='recommended' WHERE id=?")
+        .bind(&pair)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert!(queued(&pool).await.is_empty());
+    recommend_as_matchmaker(&pool, &pair).await;
+    assert_eq!(queued(&pool).await, ["candidate", "target"]);
+    // A no-op status write cannot retrigger the agent.
+    sqlx::query("UPDATE mm_matches SET status=status WHERE id=?")
+        .bind(&pair)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let generations: Vec<i64> =
+        sqlx::query_scalar("SELECT generation FROM mm_agent_work ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(generations, [1, 1]);
+    crate::mm::match_commands::transition_match_as(
+        &pool,
+        matchmaking_core::autonomy::Actor::System,
+        &pair,
+        MatchStatus::Reviewed,
+        None,
+        None,
+        None,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    assert_eq!(queued(&pool).await, ["candidate", "target"]);
+    let generations: Vec<i64> =
+        sqlx::query_scalar("SELECT generation FROM mm_agent_work ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(generations, [2, 2]);
+}
+
+#[tokio::test]
+async fn scheduler_events_during_a_run_survive_acknowledgement() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let pair = tracked_pair(&pool, &rules, "candidate").await;
+    sqlx::query("INSERT INTO mm_agent_work(org_id,profile_id) VALUES ('default','target')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":pair,"to_status":"recommended"}),
+        ),
+        finish(),
+        finish(),
+    ]);
+    let _guard = super::runtime_lock().lock().await;
+    super::scheduler::process_next(&pool, &session(&backend), &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(queued(&pool).await, ["target", "candidate"]);
+    assert_eq!(repo::runs(&pool).await.unwrap().len(), 1);
+    super::scheduler::process_next(&pool, &session(&backend), &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(queued(&pool).await, ["candidate"]);
+    assert_eq!(repo::runs(&pool).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn scheduler_defers_proposals_and_skips_inactive_profiles() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L1Assisted).await;
+    let pair = tracked_pair(&pool, &rules, "candidate").await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":pair,"to_status":"recommended"}),
+        ),
+        finish(),
+        finish(),
+        finish(),
+    ]);
+    super::run(&pool, &session(&backend), "candidate", None)
+        .await
+        .unwrap();
+    super::scheduler::scan(&pool).await.unwrap();
+    sqlx::query("UPDATE mm_profiles SET status='deactivated' WHERE id='edited'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let _guard = super::runtime_lock().lock().await;
+    super::scheduler::process_next(&pool, &session(&backend), &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(queued(&pool).await, ["candidate"]);
+    assert_eq!(repo::runs(&pool).await.unwrap().len(), 2);
+    let proposal = repo::traces(&pool, None, true).await.unwrap()[0].id;
+    drop(_guard);
+    super::decide_proposal(&pool, None, proposal, false, None)
+        .await
+        .unwrap();
+    let _guard = super::runtime_lock().lock().await;
+    super::scheduler::process_next(&pool, &session(&backend), &Default::default())
+        .await
+        .unwrap();
+    assert!(queued(&pool).await.is_empty());
+}
+
+#[tokio::test]
+async fn scheduler_manual_pause_closed_gate_and_busy_runtime_leave_work_untouched() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L0Manual).await;
+    super::scheduler::scan(&pool).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![]);
+    let original = queued(&pool).await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _guard = super::runtime_lock().lock().await;
+    super::scheduler::process_next(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap();
+    let mut policy = AutonomyPolicy::preset(Level::L2Supervised);
+    policy.paused = true;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    super::scheduler::process_next(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap();
+    policy.paused = false;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let mut closed = config();
+    closed.provider = "none".into();
+    settings::save_config(&pool, &closed).await.unwrap();
+    super::scheduler::process_next(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap();
+    settings::save_config(&pool, &config()).await.unwrap();
+    // Production tick uses try_lock before preparing its model or consuming work.
+    super::scheduler::tick_once(&pool, &cancel).await.unwrap();
+    assert!(backend.prompts.lock().unwrap().is_empty());
+    assert!(repo::runs(&pool).await.unwrap().is_empty());
+    assert_eq!(queued(&pool).await, original);
+}
+
+#[tokio::test]
+async fn scheduler_pause_and_shutdown_interrupt_a_waiting_model_and_finalize_the_run() {
+    let _serial = serial().await;
+    for pause in [true, false] {
+        let (pool, _) = setup(Level::L2Supervised).await;
+        super::scheduler::scan(&pool).await.unwrap();
+        let mut backend = ScriptedLlmBackend::new(vec![]);
+        backend.stall_on_call = true;
+        if pause {
+            backend.pause_on_call = Some(pool.clone());
+        }
+        let backend = std::sync::Arc::new(backend);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task_pool = pool.clone();
+        let token = cancel.clone();
+        let model = backend.clone();
+        let task = tokio::spawn(async move {
+            let _guard = super::runtime_lock().lock().await;
+            super::scheduler::process_next(&task_pool, &session(&model), &token)
+                .await
+                .unwrap();
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while backend.prompts.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            if !pause {
+                cancel.cancel();
+            }
+            task.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(repo::runs(&pool).await.unwrap()[0].status, "stopped");
+        assert_eq!(queued(&pool).await.len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn scheduler_lifecycle_is_idempotent_and_restarts_after_stop() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L0Manual).await;
+    let runtime = super::scheduler::AgentRuntime::default();
+    runtime.start(pool.clone()).await;
+    runtime.start(pool.clone()).await;
+    runtime.stop().await;
+    runtime.stop().await;
+    runtime.start(pool.clone()).await;
+    runtime.stop().await;
+    assert!(repo::runs(&pool).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn scheduler_repeats_the_periodic_scan_after_draining_work() {
+    let _serial = serial().await;
+    let (pool, _) = setup(Level::L2Supervised).await;
+    let scans = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = scans.clone();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        super::scheduler::worker(
+            pool.clone(),
+            cancel,
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(30),
+            move |pool, token| {
+                let observed = observed.clone();
+                async move {
+                    let work = queued(&pool).await;
+                    if !work.is_empty() {
+                        assert_eq!(work, ["candidate", "edited", "target"]);
+                        sqlx::query("DELETE FROM mm_agent_work")
+                            .execute(&pool)
+                            .await
+                            .unwrap();
+                        if observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                            token.cancel();
+                        }
+                    }
+                    Ok(())
+                }
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(scans.load(std::sync::atomic::Ordering::SeqCst), 2);
 }

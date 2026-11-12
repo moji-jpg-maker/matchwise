@@ -27,6 +27,7 @@ pub struct MatchRow {
     pub b_response: Interest,
     pub outcome: Option<Outcome>,
     pub override_reason: Option<String>,
+    pub override_by: Option<String>,
     pub weight_overrides: BTreeMap<String, f64>,
     pub hidden: bool,
     pub created_at: String,
@@ -64,7 +65,7 @@ pub fn pair_key(a: &str, b: &str) -> (String, String) {
     if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
 }
 
-const COLS: &str = "id, profile_a, profile_b, source_profile, rule_set_id, rule_set_version, scoring_config_id, scoring_config_version, status, hold_reason, a_response, b_response, outcome, override_reason, weight_overrides, hidden, created_at, updated_at";
+const COLS: &str = "id, profile_a, profile_b, source_profile, rule_set_id, rule_set_version, scoring_config_id, scoring_config_version, status, hold_reason, a_response, b_response, outcome, override_reason, override_by, weight_overrides, hidden, created_at, updated_at";
 
 fn row_to_match(r: &sqlx::sqlite::SqliteRow) -> Result<MatchRow, sqlx::Error> {
     let status: String = r.get("status");
@@ -87,6 +88,7 @@ fn row_to_match(r: &sqlx::sqlite::SqliteRow) -> Result<MatchRow, sqlx::Error> {
         b_response: b.parse().map_err(bad)?,
         outcome: outcome.map(|o| o.parse().map_err(bad)).transpose()?,
         override_reason: r.get("override_reason"),
+        override_by: r.get("override_by"),
         weight_overrides: match weights {
             Some(w) => serde_json::from_str(&w).map_err(|e| bad(e.to_string()))?,
             None => BTreeMap::new(),
@@ -234,8 +236,10 @@ impl MatchRepo {
         let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
-        let updated = sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), override_reason = COALESCE(?, override_reason), updated_at = ? WHERE id = ? AND status = ?")
-            .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(override_reason).bind(&now).bind(id).bind(from.as_str())
+        let prior = sqlx::query("SELECT override_reason, override_by FROM mm_matches WHERE id = ?")
+            .bind(id).fetch_one(&mut *tx).await?;
+        let updated = sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), override_reason = COALESCE(?, override_reason), override_by = CASE WHEN ? IS NOT NULL THEN ? ELSE override_by END, updated_at = ? WHERE id = ? AND status = ?")
+            .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(override_reason).bind(override_reason).bind(&actor_text).bind(&now).bind(id).bind(from.as_str())
             .execute(&mut *tx).await?;
         if updated.rows_affected() != 1 { return Err(bad("Match status changed")); }
         let event = sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'status_changed', ?, ?, ?)")
@@ -243,8 +247,9 @@ impl MatchRepo {
             .execute(&mut *tx).await?;
         if actor.is_agent() && matches!((from, to),
             (MatchStatus::Identified, MatchStatus::Recommended) | (MatchStatus::Recommended, MatchStatus::Reviewed)) {
-            sqlx::query("INSERT INTO mm_agent_transition_undo (event_id) VALUES (?)")
-                .bind(event.last_insert_rowid()).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO mm_agent_transition_undo (event_id, prior_override_reason, prior_override_by) VALUES (?, ?, ?)")
+                .bind(event.last_insert_rowid()).bind(prior.get::<Option<String>, _>("override_reason"))
+                .bind(prior.get::<Option<String>, _>("override_by")).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -253,7 +258,7 @@ impl MatchRepo {
     /// Restore only the latest lifecycle event, atomically. A later move away and back still invalidates the receipt.
     pub async fn undo_agent_transition(pool: &SqlitePool, event_id: i64) -> Result<String, sqlx::Error> {
         let mut tx = pool.begin().await?;
-        let row = sqlx::query("SELECT e.match_id, e.from_status, e.to_status FROM mm_match_events e JOIN mm_agent_transition_undo u ON u.event_id = e.id JOIN mm_matches m ON m.id = e.match_id WHERE e.id = ? AND u.undone_at IS NULL AND m.status = e.to_status AND NOT EXISTS (SELECT 1 FROM mm_match_events later WHERE later.match_id = e.match_id AND later.id > e.id AND later.to_status IS NOT NULL)")
+        let row = sqlx::query("SELECT e.match_id, e.from_status, e.to_status, u.prior_override_reason, u.prior_override_by FROM mm_match_events e JOIN mm_agent_transition_undo u ON u.event_id = e.id JOIN mm_matches m ON m.id = e.match_id WHERE e.id = ? AND u.undone_at IS NULL AND m.status = e.to_status AND NOT EXISTS (SELECT 1 FROM mm_match_events later WHERE later.match_id = e.match_id AND later.id > e.id AND later.to_status IS NOT NULL)")
             .bind(event_id).fetch_optional(&mut *tx).await?.ok_or_else(|| bad("Transition is no longer undoable"))?;
         let id: String = row.get("match_id");
         let from: String = row.get("from_status");
@@ -263,8 +268,9 @@ impl MatchRepo {
             return Err(bad("Transition is not undoable"));
         }
         let now = Utc::now().to_rfc3339();
-        let updated = sqlx::query("UPDATE mm_matches SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
-            .bind(&from).bind(&now).bind(&id).bind(&to).execute(&mut *tx).await?;
+        let updated = sqlx::query("UPDATE mm_matches SET status = ?, override_reason = ?, override_by = ?, updated_at = ? WHERE id = ? AND status = ?")
+            .bind(&from).bind(row.get::<Option<String>, _>("prior_override_reason"))
+            .bind(row.get::<Option<String>, _>("prior_override_by")).bind(&now).bind(&id).bind(&to).execute(&mut *tx).await?;
         if updated.rows_affected() != 1 { return Err(bad("Match status changed")); }
         sqlx::query("UPDATE mm_agent_transition_undo SET undone_at = ? WHERE event_id = ?")
             .bind(&now).bind(event_id).execute(&mut *tx).await?;

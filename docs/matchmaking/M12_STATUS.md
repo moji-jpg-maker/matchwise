@@ -1,7 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and step 3.1 are built:
-policy-checked extraction acceptance, an on-demand read/analysis agent, and eligible-pair recommendation/review.** Nothing has been run with a real model.
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1 are built:
+policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
+reasoned rejection, policy-controlled rule overrides and background scheduling.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -57,6 +58,64 @@ policy-checked extraction acceptance, an on-demand read/analysis agent, and elig
 - Scripted tests cover L2 recommendation/review/notes, L1 proposals and edited approval, excluded/unrelated pairs,
   stale profiles at approval, actor attribution, no outbox writes and undo after later human changes.
 
+## Step 3.2: what shipped
+- `transition_match` also accepts `approved` and `rejected`, selecting the independent Approve or Reject policy
+  step from the requested destination. Editing a proposal repeats this selection and all lifecycle checks.
+  The existing stored `reject` policy key is preserved.
+- L3 approves eligible Recommended/Reviewed pairs automatically; L1 and L2 propose approvals. Reject is an
+  internal step: L2/L3 execute reasoned rejections and L1 proposes them. Both steps can be overridden individually
+  on the autonomy page, using the existing English and Persian labels.
+- Agent rejections require a nonempty reason, trimmed and limited to 2,000 characters. Rejected → Reviewed
+  remains human only. Ineligible pairs cannot be approved, and rule overrides and outcomes remain unavailable
+  to agent transitions. Rejecting an ineligible pair needs no override.
+- Approval reuses current-profile eligibility checks and the existing lifecycle, repository, audit and notify path.
+  Timeline events retain the real agent run actor and AI badge. Rejection reasons stay in events/traces;
+  audit rows contain only transition metadata. Recommendation/review undo keeps its existing scope.
+- The action grammar and JSON Schema include both destinations and an optional reason field; lifecycle validation
+  requires it for rejections. Scripted tests cover L3 execution, L1 proposals, L2 independent step modes,
+  edited destinations/reasons, eligibility rechecks, missing reasons, stale proposals and human-only reconsideration.
+
+## Step 3.3: what shipped
+- RuleOverride is available as an individual step on the autonomy page. L1/L2/L3 default to Suggest;
+  custom Auto permits overrides. The L4 preset remains unreleased until phase 8, but its Auto modes for
+  built steps can be selected individually now.
+- `transition_match` accepts an optional `override_reason`, trimmed to at least three characters and bounded
+  to 2,000 characters, including Persian. Excluded pairs can be recommended or approved only with both the
+  destination step's permission and RuleOverride permission. Off denies either operation; Suggest proposes;
+  review windows remain unavailable and cannot be bypassed through proposal approval.
+- Current-profile rescoring, active-profile checks, target ownership, the AI gate and kill switch still apply.
+  Overrides cannot reconsider a rejection, review an excluded pair, record outcomes or change candidate Interest.
+  Edited proposal approval repeats the same policy and lifecycle validation.
+- Migration `20261112030000_add_agent_rule_override.sql` adds `mm_matches.override_by`, preserving historical
+  overrides as `matchmaker`. New overrides record `agent:<run_id>` or the human actor through the existing
+  lifecycle/repository/audit path. Reasons stay in match records, events and traces, outside `mm_audit_log`.
+- The match list has All / Any override / AI override filters and an AI override badge in English and Persian.
+  Undoing an agent recommendation restores its prior override reason and actor along with its status; undoing
+  a later eligible review preserves an existing human override. Historical undo receipts are migrated too.
+- Scripted tests cover custom Auto recommendation/approval of excluded pairs, L3 proposals, edited arguments,
+  each required permission, current rule exclusions, paused/inactive targets, attribution and undo. Migration
+  fixtures cover existing human overrides and undo receipts. No real model was used.
+
+## Step 4.1: what shipped
+- A desktop-managed agent worker starts with the initialized database and stops before database cleanup.
+  It scans active profiles at startup and every 15 minutes, and polls queued events once per second.
+  Each run handles one profile; background runs, manual runs and proposal decisions share the runtime lock.
+- Migration `20261112040000_add_agent_scheduler.sql` adds a durable per-profile work queue. Completed intake
+  batches enqueue their profiles with batch attribution. A transactional status-change trigger enqueues both
+  match participants across human, agent, Telegram and undo paths; no-op updates and rollbacks enqueue nothing.
+- Repeated events coalesce. Generation checks preserve events received during a run; inactive profiles are
+  discarded, and profiles with pending proposals wait for a decision. Failed runs retry at the next periodic
+  scan. Restarting the app preserves queued work.
+- L0 and pause leave the worker idle. The AI/consent/redaction gate is checked before model construction;
+  closed gates preserve queued work. Waiting model calls and model-lock waits stop on pause within the
+  one-second policy tick or on shutdown cancellation. An already executing validated tool finishes its audit.
+  Stopped runs are finalized as stopped and their queued work remains available after resume.
+- Existing run history, traces, agent actors, approvals inbox and kill switch serve background runs too.
+  The autonomy page explains the background behavior in English and Persian. Review windows remain unavailable.
+- Scripted tests cover unattended L2 execution and L1 proposals, stable ordering, intake completion, coalesced
+  transactional status events, events during runs, proposal deferral, inactive profiles, gate/pause/L0 checks,
+  shared-lock contention, waiting-model cancellation, repeated periodic scans and idempotent worker start/stop/restart.
+
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
   On-demand runtime actions instead record their real `agent:<run_id>` actor.
@@ -64,23 +123,25 @@ policy-checked extraction acceptance, an on-demand read/analysis agent, and elig
   counts as Off.
 - The rules-only tier is gated by the AI gate too, because a closed gate stops all agent actions.
 - `run_accept_all` in `ai/intake_commands.rs` is the manual, unthresholded path and is untouched.
-- Seven steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote and Recommend.
+- Ten steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
+  Approve, Reject and RuleOverride.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
-- Runtime/model access is serialized. There is no background scheduler or review-window executor: a ReviewWindow
+- Runtime/model access is serialized. The desktop background scheduler uses the same runtime; there is no review-window executor. A ReviewWindow
   action is explicitly denied as unavailable, never executed early. Hourly/message budgets belong to later phases.
 
 ## Verified here
-- `cargo test -p matchmaking-core`: 188 passed, including the built-step policy matrix, invariant denials
+- `cargo test -p matchmaking-core`: 193 passed, including the built-step policy matrix, invariant denials
   and actor-aware lifecycle checks.
 - `cargo test --lib autonomy_tests` in `src-tauri`: 14 passed.
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
   batch subjects, unavailable review windows, invalid actions and the 20-turn stop. A prompt regression test lives in
-  `ai/tests.rs`. All 14 agent tests pass, including step 3.1 recommendation/review, notes and transition undo.
-- `cargo test -p matchwise --lib`: 448 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
+  `ai/tests.rs`. All 32 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
+  approval/rejection, rule override, migration and proposal checks.
+- `cargo test -p matchwise --lib`: 466 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
   so its local HTTP fixture servers could bind sockets; no real model was used.
 
 ## Still open
-- Steps 3.2–8: approval/rejection, overrides, scheduler and agent messages to candidates remain unavailable.
+- Steps 4.2–8: review-window execution, budgets and agent messages to candidates remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.
