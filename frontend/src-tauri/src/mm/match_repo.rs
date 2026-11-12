@@ -26,6 +26,7 @@ pub struct MatchRow {
     pub a_response: Interest,
     pub b_response: Interest,
     pub outcome: Option<Outcome>,
+    pub outcome_by: Option<String>,
     pub override_reason: Option<String>,
     pub override_by: Option<String>,
     pub weight_overrides: BTreeMap<String, f64>,
@@ -65,7 +66,7 @@ pub fn pair_key(a: &str, b: &str) -> (String, String) {
     if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
 }
 
-const COLS: &str = "id, profile_a, profile_b, source_profile, rule_set_id, rule_set_version, scoring_config_id, scoring_config_version, status, hold_reason, a_response, b_response, outcome, override_reason, override_by, weight_overrides, hidden, created_at, updated_at";
+const COLS: &str = "id, profile_a, profile_b, source_profile, rule_set_id, rule_set_version, scoring_config_id, scoring_config_version, status, hold_reason, a_response, b_response, outcome, outcome_by, override_reason, override_by, weight_overrides, hidden, created_at, updated_at";
 
 fn row_to_match(r: &sqlx::sqlite::SqliteRow) -> Result<MatchRow, sqlx::Error> {
     let status: String = r.get("status");
@@ -87,6 +88,7 @@ fn row_to_match(r: &sqlx::sqlite::SqliteRow) -> Result<MatchRow, sqlx::Error> {
         a_response: a.parse().map_err(bad)?,
         b_response: b.parse().map_err(bad)?,
         outcome: outcome.map(|o| o.parse().map_err(bad)).transpose()?,
+        outcome_by: r.get("outcome_by"),
         override_reason: r.get("override_reason"),
         override_by: r.get("override_by"),
         weight_overrides: match weights {
@@ -250,8 +252,8 @@ impl MatchRepo {
         let now = Utc::now().to_rfc3339();
         let prior = sqlx::query("SELECT override_reason, override_by FROM mm_matches WHERE id = ?")
             .bind(id).fetch_one(&mut *connection).await?;
-        let updated = sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), override_reason = COALESCE(?, override_reason), override_by = CASE WHEN ? IS NOT NULL THEN ? ELSE override_by END, updated_at = ? WHERE id = ? AND status = ?")
-            .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(override_reason).bind(override_reason).bind(&actor_text).bind(&now).bind(id).bind(from.as_str())
+        let updated = sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), outcome_by = CASE WHEN ? IS NOT NULL THEN ? ELSE outcome_by END, override_reason = COALESCE(?, override_reason), override_by = CASE WHEN ? IS NOT NULL THEN ? ELSE override_by END, updated_at = ? WHERE id = ? AND status = ?")
+            .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(outcome.map(|o| o.as_str())).bind(&actor_text).bind(override_reason).bind(override_reason).bind(&actor_text).bind(&now).bind(id).bind(from.as_str())
             .execute(&mut *connection).await?;
         if updated.rows_affected() != 1 { return Err(bad("Match status changed")); }
         let event = sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'status_changed', ?, ?, ?)")
@@ -324,7 +326,7 @@ impl MatchRepo {
         let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
-        sqlx::query("UPDATE mm_matches SET outcome = ?, updated_at = ? WHERE id = ?").bind(outcome.as_str()).bind(&now).bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mm_matches SET outcome = ?, outcome_by = ?, updated_at = ? WHERE id = ?").bind(outcome.as_str()).bind(&actor_text).bind(&now).bind(id).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'outcome_recorded', NULL, NULL, ?)")
             .bind(id).bind(&now).bind(&actor_text).bind(outcome.as_str()).execute(&mut *tx).await?;
         tx.commit().await?;

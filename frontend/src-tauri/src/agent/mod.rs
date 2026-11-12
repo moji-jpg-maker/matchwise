@@ -185,7 +185,7 @@ async fn policy_decision_review(
     if context.gate != AiGate::Open {
         return Err("AI gate is closed".into());
     }
-    if matches!(action.tool.as_str(), "transition_match" | "add_note" | "propose_introduction" | "resend_interest_buttons") {
+    if matches!(action.tool.as_str(), "transition_match" | "add_note" | "record_outcome" | "propose_introduction" | "resend_interest_buttons") {
         tools::check_match_action(pool, target, action, session.locale).await?;
     }
     if action.tool == "send_follow_up" {

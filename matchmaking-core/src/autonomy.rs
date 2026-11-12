@@ -109,9 +109,9 @@ impl Step {
         Step::RequestInfo,
     ];
 
-    /// Built through step 6.3: internal decisions, screened candidate requests and why an inbound reply triggers a run.
+    /// Built through phase 7: internal decisions, screened candidate requests, inbound replies and closing a match.
     pub fn is_built(self) -> bool {
-        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride | Step::InterpretReply | Step::SendIntroduction | Step::SendFollowUp | Step::SendMessage | Step::RequestInfo)
+        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride | Step::InterpretReply | Step::RecordOutcome | Step::Close | Step::Stop | Step::SendIntroduction | Step::SendFollowUp | Step::SendMessage | Step::RequestInfo)
     }
 
     /// Reaches a candidate (a Telegram message). These get a review window at L3.

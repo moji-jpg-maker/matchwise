@@ -1,6 +1,7 @@
 //! The life of a match, from "identified" to an outcome, as an explicit state machine.
 //!
-//! Callers explicitly request transitions. Agents may recommend, review, approve or reject pairs.
+//! Callers explicitly request transitions. Agents may recommend, review, approve or reject pairs, and may close a
+//! match that already has an outcome or stop one after contact began.
 //! Recommendation or approval of excluded pairs requires a written override reason;
 //! agent callers must also obtain RuleOverride permission from the autonomy policy.
 //! Candidate responses remain the authority for interest transitions.
@@ -166,6 +167,18 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    pub const ALL: [Outcome; 9] = [
+        Outcome::Interested,
+        Outcome::NotInterested,
+        Outcome::FirstConversation,
+        Outcome::FirstMeeting,
+        Outcome::Continued,
+        Outcome::Stopped,
+        Outcome::RelationshipFormed,
+        Outcome::Married,
+        Outcome::Unknown,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Outcome::Interested => "interested",
@@ -252,7 +265,7 @@ pub fn validate_transition_by(actor: Actor, ctx: &TransitionContext, to: MatchSt
 
 pub fn validate_transition_by_for(actor: Actor, ctx: &TransitionContext, to: MatchStatus, req: &TransitionRequest, locale: Locale) -> Result<TransitionPlan, String> {
     if actor.is_agent() {
-        if !matches!(to, MatchStatus::Recommended | MatchStatus::Reviewed | MatchStatus::Approved | MatchStatus::Rejected | MatchStatus::IntroductionProposed) || ctx.current == MatchStatus::Rejected {
+        if !matches!(to, MatchStatus::Recommended | MatchStatus::Reviewed | MatchStatus::Approved | MatchStatus::Rejected | MatchStatus::IntroductionProposed | MatchStatus::Closed | MatchStatus::Stopped) || ctx.current == MatchStatus::Rejected {
             return Err(locale.pick("This transition requires a matchmaker", "این تغییر وضعیت به همسان‌گزین نیاز دارد").into());
         }
         if (!ctx.eligible && matches!(to, MatchStatus::Reviewed | MatchStatus::IntroductionProposed))

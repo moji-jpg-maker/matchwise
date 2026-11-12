@@ -89,7 +89,7 @@ fn built_step_follows_the_preset_mode() {
 
 #[test]
 fn built_steps_follow_each_mode_without_enabling_later_steps() {
-    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair, Step::AddNote, Step::Recommend, Step::Reject, Step::InterpretReply] {
+    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair, Step::AddNote, Step::Recommend, Step::Reject, Step::InterpretReply, Step::RecordOutcome, Step::Close, Step::Stop] {
         assert!(step.is_built());
         let action = Action::Step(step);
         assert_eq!(decide(&action, &open(), &AutonomyPolicy::default()), denied(DenyReason::StepOff));
@@ -99,10 +99,32 @@ fn built_steps_follow_each_mode_without_enabling_later_steps() {
         policy.steps.insert(step, StepMode::ReviewWindow { minutes: 60 });
         assert_eq!(decide(&action, &open(), &policy), Decision::Schedule { at: NOW + 3600 });
     }
+}
+
+#[test]
+fn outcome_and_closing_steps_are_internal_and_follow_the_preset() {
     for step in [Step::RecordOutcome, Step::Close, Step::Stop] {
-        assert!(!step.is_built());
-        assert_eq!(decide(&Action::Step(step), &open(), &all_auto()), denied(DenyReason::StepOff));
+        assert!(step.is_built(), "{step:?}");
+        assert!(step.is_internal() && !step.is_candidate_facing(), "{step:?}");
+        let action = Action::Step(step);
+        for (level, expected) in [
+            (Level::L0Manual, denied(DenyReason::StepOff)),
+            (Level::L1Assisted, Decision::Propose),
+            (Level::L2Supervised, Decision::Execute),
+            (Level::L3Delegated, Decision::Execute),
+            (Level::L4Autonomous, Decision::Execute),
+        ] {
+            assert_eq!(decide(&action, &open(), &AutonomyPolicy::preset(level)), expected, "{step:?} {level:?}");
+        }
     }
+    let mut policy = all_auto();
+    policy.paused = true;
+    assert_eq!(decide(&Action::Step(Step::Close), &open(), &policy), denied(DenyReason::Paused));
+    let mut policy = all_auto();
+    let closed = DecisionContext { gate: AiGate::Closed, now: NOW };
+    assert_eq!(decide(&Action::Step(Step::RecordOutcome), &closed, &policy), denied(DenyReason::GateClosed));
+    policy.steps.insert(Step::RecordOutcome, StepMode::Off);
+    assert_eq!(decide(&Action::Step(Step::RecordOutcome), &open(), &policy), denied(DenyReason::StepOff));
 }
 
 #[test]

@@ -23,6 +23,8 @@ pub struct OutcomeRow {
     pub b_response: String,
     /// The outcome recorded when the match closed, if it has closed.
     pub outcome: Option<String>,
+    /// Who recorded the outcome: `matchmaker`, `system` or `agent:<run_id>`.
+    pub outcome_by: Option<String>,
     /// Whether recommending or approving this pair needed a written override.
     pub was_overridden: bool,
     pub rule_set_id: String,
@@ -48,7 +50,7 @@ pub struct OutcomeRow {
 
 /// Columns of `mm_matches` the export needs, plus the newest snapshot's JSON and the terminal move from the history.
 const SQL: &str = "
-    SELECT m.id, m.profile_a, m.profile_b, m.status, m.a_response, m.b_response, m.outcome,
+    SELECT m.id, m.profile_a, m.profile_b, m.status, m.a_response, m.b_response, m.outcome, m.outcome_by,
            m.rule_set_id, m.rule_set_version, m.override_reason, m.created_at, m.updated_at,
            s.scorecard AS card, s.trigger AS card_trigger, s.created_at AS card_at,
            s.scoring_config_id AS card_config_id, s.scoring_config_version AS card_config_version
@@ -111,6 +113,7 @@ impl ExportRepo {
                     a_response: r.get("a_response"),
                     b_response: r.get("b_response"),
                     outcome: r.get("outcome"),
+                    outcome_by: r.get("outcome_by"),
                     was_overridden: override_reason.map(|s| !s.trim().is_empty()).unwrap_or(false),
                     rule_set_id: r.get("rule_set_id"),
                     rule_set_version: r.get::<i64, _>("rule_set_version") as u32,

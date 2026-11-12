@@ -60,6 +60,7 @@ fn to_core_row(r: &OutcomeRow) -> ExportRow {
         a_response: r.a_response.clone(),
         b_response: r.b_response.clone(),
         outcome: r.outcome.clone(),
+        outcome_by: r.outcome_by.clone(),
         was_overridden: r.was_overridden,
         rule_set_id: r.rule_set_id.clone(),
         rule_set_version: r.rule_set_version,

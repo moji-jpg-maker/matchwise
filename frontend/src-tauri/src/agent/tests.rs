@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use matchmaking_core::{
     ai::ExtractionConstraint,
     autonomy::{AutonomyPolicy, Level, Step, StepMode},
-    Interest, Locale, MatchStatus, Profile, Provenance, Value,
+    Interest, Locale, MatchStatus, Outcome, Profile, Provenance, Value,
 };
 use serde_json::{json, Value as Json};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
@@ -255,6 +255,8 @@ fn registry_contract_rejects_unregistered_and_extra_arguments() {
                         json!(1)
                     } else if *kind == "review_status" {
                         json!("recommended")
+                    } else if *kind == "outcome" {
+                        json!("first_meeting")
                     } else if *name == "override_reason" {
                         json!("exception")
                     } else {
@@ -771,6 +773,8 @@ fn transition_registry_selects_separate_steps_and_bounds_optional_reasons() {
         ("reviewed", Step::Recommend),
         ("approved", Step::Approve),
         ("rejected", Step::Reject),
+        ("closed", Step::Close),
+        ("stopped", Step::Stop),
     ] {
         let action: Action = serde_json::from_value(call(
             "transition_match",
@@ -805,7 +809,7 @@ fn transition_registry_selects_separate_steps_and_bounds_optional_reasons() {
     );
     assert_eq!(
         schema["properties"]["args"]["properties"]["to_status"]["enum"],
-        json!(["recommended", "reviewed", "approved", "rejected"])
+        json!(["recommended", "reviewed", "approved", "rejected", "closed", "stopped"])
     );
     assert_eq!(
         schema["properties"]["args"]["properties"]["reason"]["maxLength"],
@@ -3798,4 +3802,223 @@ async fn follow_up_migration_preserves_budget_and_backfills_reminder_caps() {
             .unwrap(),
         0
     );
+}
+
+async fn pair_at(pool: &SqlitePool, rules: &str, status: MatchStatus) -> String {
+    let id = tracked_pair(pool, rules, "candidate").await;
+    sqlx::query("UPDATE mm_matches SET status = ? WHERE id = ?")
+        .bind(status.as_str())
+        .bind(&id)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+#[test]
+fn outcome_and_closing_protocol_limits() {
+    for (status, step) in [
+        ("closed", Step::Close),
+        ("stopped", Step::Stop),
+    ] {
+        let action: Action = serde_json::from_value(call(
+            "transition_match",
+            json!({"match_id":"id","to_status":status}),
+        ))
+        .unwrap();
+        assert_eq!(action.step().unwrap(), Some(step));
+    }
+    let valid: Action = serde_json::from_value(call(
+        "record_outcome",
+        json!({"match_id":"id","outcome":"first_meeting"}),
+    ))
+    .unwrap();
+    assert!(valid.validate().is_ok());
+    assert_eq!(valid.step().unwrap(), Some(Step::RecordOutcome));
+    for args in [
+        json!({"match_id":"id"}),
+        json!({"match_id":"id","outcome":"married_now"}),
+        json!({"match_id":"id","outcome":""}),
+    ] {
+        assert!(serde_json::from_value::<Action>(call("record_outcome", args))
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+    let constraint = protocol::constraint();
+    assert!(constraint.gbnf.contains("outcome-value"));
+    assert!(constraint.gbnf.contains("\\\"closed\\\""));
+    assert!(constraint.gbnf.contains("\\\"first_meeting\\\""));
+}
+
+#[tokio::test]
+async fn scripted_feedback_to_closed_records_outcome_and_agent_attribution() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = pair_at(&pool, &rules, MatchStatus::Feedback).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "record_outcome",
+            json!({"match_id":id,"outcome":"first_meeting"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"closed"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert_eq!(traces.len(), 3);
+    assert!(traces[..2].iter().all(|trace| trace.status == "executed"));
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Closed);
+    assert_eq!(m.outcome, Some(Outcome::FirstMeeting));
+    assert_eq!(m.outcome_by, Some(format!("agent:{run}")));
+    let events = MatchRepo::events(&pool, &id).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "outcome_recorded" && event.actor == format!("agent:{run}")
+    }));
+    assert!(events.iter().any(|event| {
+        event.kind == "status_changed"
+            && event.to_status.as_deref() == Some("closed")
+            && event.actor == format!("agent:{run}")
+    }));
+    // The export carries the actor so ranking code can filter or weight an agent-recorded label.
+    let doc = crate::mm::export_commands::build_export(&pool).await.unwrap();
+    let row = doc.csv.lines().nth(1).unwrap();
+    assert!(row.contains("first_meeting"), "{row}");
+    assert!(row.contains(&format!("agent:{run}")), "{row}");
+}
+
+#[tokio::test]
+async fn l1_outcome_and_close_stay_proposals_until_approved() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L1Assisted).await;
+    let id = pair_at(&pool, &rules, MatchStatus::Feedback).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "record_outcome",
+            json!({"match_id":id,"outcome":"continued"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Feedback);
+    assert!(m.outcome.is_none() && m.outcome_by.is_none());
+    let proposals = repo::traces(&pool, Some(run), true).await.unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert!(proposals.iter().all(|trace| trace.status == "proposed"));
+    super::decide_proposal(
+        &pool,
+        Some(&session(&backend)),
+        proposals[0].id,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.outcome, Some(Outcome::Continued));
+    assert_eq!(m.outcome_by, Some(format!("agent:{run}")));
+    // A later run can now propose the close, because the lifecycle sees the recorded outcome.
+    let closing = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"closed"}),
+        ),
+        finish(),
+    ]);
+    let closing_run = super::run(&pool, &session(&closing), "target", None)
+        .await
+        .unwrap();
+    let close = repo::traces(&pool, Some(closing_run), true)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(close.status, "proposed");
+    super::decide_proposal(
+        &pool,
+        Some(&session(&closing)),
+        close.id,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Closed);
+}
+
+#[tokio::test]
+async fn outcome_and_closing_deny_wrong_state_scope_and_missing_outcome() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = tracked_pair(&pool, &rules, "candidate").await;
+    let unrelated = MatchRepo::create(
+        &pool,
+        "candidate",
+        "edited",
+        None,
+        &rules,
+        1,
+        None,
+        None,
+        MatchStatus::Feedback,
+        &json!({"eligible":true}),
+    )
+    .await
+    .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "record_outcome",
+            json!({"match_id":id,"outcome":"first_meeting"}),
+        ),
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"closed"}),
+        ),
+        call(
+            "record_outcome",
+            json!({"match_id":unrelated,"outcome":"first_meeting"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert!(traces[..3].iter().all(|trace| trace.status == "denied"));
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Identified);
+    assert!(m.outcome.is_none() && m.outcome_by.is_none());
+    let other = MatchRepo::get(&pool, &unrelated).await.unwrap().unwrap();
+    assert!(other.outcome.is_none() && other.outcome_by.is_none());
+}
+
+#[tokio::test]
+async fn stop_transition_runs_after_contact_and_keeps_the_outcome_unset() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = pair_at(&pool, &rules, MatchStatus::ContactExchanged).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"stopped","reason":"They decided not to continue"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert_eq!(traces[0].status, "executed");
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::Stopped);
+    assert!(m.outcome.is_none() && m.outcome_by.is_none());
 }

@@ -131,15 +131,26 @@ fn agents_can_recommend_review_and_approve_eligible_pairs_without_overrides() {
         assert!(validate_transition_by(agent, &ctx(from, true), to, &req).is_err());
     }
     for from in MatchStatus::PIPELINE.into_iter().chain([Rejected, Declined, Closed, Stopped]) {
-        for to in [Rejected, IntroductionProposed, BothInterested, ContactExchanged, Closed, Stopped] {
+        for to in [Rejected, IntroductionProposed, BothInterested, ContactExchanged] {
             if from != Approved || to != IntroductionProposed {
                 assert!(validate_transition_by(agent, &ctx(from, true), to, &TransitionRequest::default()).is_err());
             }
         }
     }
+    // Phase 7: the agent may stop a match after contact, and close one that already has an outcome.
+    for from in [ContactExchanged, Conversation, Meeting, Feedback] {
+        assert!(validate_transition_by(agent, &ctx(from, true), Stopped, &TransitionRequest::default()).is_ok(), "{from:?}");
+        assert!(validate_transition_by(agent, &ctx(from, false), Stopped, &TransitionRequest::default()).is_ok(), "{from:?}");
+    }
+    let mut closed = ctx(Feedback, true);
+    assert!(validate_transition_by(agent, &closed, Closed, &TransitionRequest::default()).is_err(), "closing needs an outcome");
+    closed.outcome = Some(Outcome::FirstMeeting);
+    assert!(validate_transition_by(agent, &closed, Closed, &TransitionRequest::default()).is_ok());
+    assert!(validate_transition_by(agent, &ctx(Identified, true), Closed, &TransitionRequest::default()).is_err());
     assert!(validate_transition_by(agent, &ctx(Rejected, true), Reviewed, &TransitionRequest::default()).is_err());
     let req = TransitionRequest { outcome: Some(Outcome::Married), ..Default::default() };
     assert!(validate_transition_by(agent, &ctx(Identified, true), Recommended, &req).is_err());
+    assert!(validate_transition_by(agent, &closed, Closed, &req).is_err(), "an outcome is recorded through its own tool");
     assert!(validate_transition_by(Actor::Matchmaker, &ctx(Rejected, true), Reviewed, &TransitionRequest::default()).is_ok());
 }
 
