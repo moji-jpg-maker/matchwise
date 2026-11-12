@@ -1,8 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 / 5.1 are built:
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 / 5.1–5.2 are built:
 policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
-reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets and template introductions.** Nothing has been run with a real model.
+reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets, template introductions and template follow-ups.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -183,6 +183,33 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   and replay. Scripted agent tests cover proposals, approval rechecks, Auto, resends, scope/eligibility denials,
   atomic budget rollback/expiry and review-window execution, veto and consent/budget changes. No real model was used.
 
+## Step 5.2: what shipped
+- `send_follow_up(profile_id, match_id?)` is a structured, template-only SendFollowUp tool. With a match ID it
+  reminds an unanswered introduction participant; without one it reminds the target about missing required fields.
+  `list_work` returns due reminder IDs. No model-written outbound text is accepted, and Interest remains button-only.
+- L1/L2 propose follow-ups, L3 uses a 60-minute review window, and a custom Auto mode sends immediately. The
+  autonomy page enables Follow-up and explains reminder caps in English and Persian. Existing run traces,
+  editable approvals, veto and due execution apply, with eligibility checked again at approval and admission.
+- Existing escaped English/Persian templates, buttons and outbox deliver the messages. Recipients need an active
+  profile, current Telegram consent and enabled notifications. Introduction reminders require active participants,
+  an existing introduction receipt and an unanswered, visible, unheld IntroductionProposed match involving the target.
+- The existing three-day delay and spacing, two reminders per participant per introduction and three per incomplete
+  profile are enforced inside the enqueue transaction. Migration `20261112080000_add_agent_follow_ups.sql` retains
+  text-free admission history, backfills retained noncancelled outbox records and permits profile-only message receipts.
+  Caps survive outbox cleanup; historical deliveries purged before upgrading cannot be recovered. New failed or
+  cancelled attempts conservatively consume their cap. Profile deletion cascades the metadata receipts.
+- Follow-ups share the rolling 24-hour candidate message ledger with introductions and resends. A write lock,
+  current profile/link snapshots, cap checks, budget reservation, outbox insert and agent audit commit together.
+  Budget stops appear as `message_limit`; audit rows contain no free text. Delivery repeats the AI gate, pause,
+  consent, notifications, active-profile and current-need checks, cancelling obsolete reminders.
+- Default L0 installations retain existing system reminders. Opted-in levels (or a custom enabled Follow-up step)
+  suppress the legacy reminder loop so it cannot bypass the step policy or approvals inbox. The existing agent
+  scheduler discovers reminders on its periodic subject scans; no additional scheduler or runtime is introduced.
+- Scripted tests cover proposals, edited scope rejection, review-window expiry, Auto, spacing, lifetime caps after
+  outbox cleanup, shared introduction/follow-up budgets and expiry, rollback and migration preservation. Telegram
+  fixtures cover both languages, delivered templates/buttons, candidate yes/decline, closed gates, pause and stale need.
+  No real model was used.
+
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
   On-demand runtime actions instead record their real `agent:<run_id>` actor.
@@ -190,26 +217,25 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   counts as Off.
 - The rules-only tier is gated by the AI gate too, because a closed gate stops all agent actions.
 - `run_accept_all` in `ai/intake_commands.rs` is the manual, unthresholded path and is untouched.
-- Eleven steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
-  Approve, Reject, RuleOverride and SendIntroduction.
+- Twelve steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
+  Approve, Reject, RuleOverride, SendIntroduction and SendFollowUp.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
 - Runtime/model access and due execution are serialized. Veto uses an atomic status check and does not wait for
   model work. Budget reservations are separate from retained AI prompts.
 
 ## Verified here
-- `cargo test -p matchmaking-core`: 194 passed, including the built-step policy matrix, invariant denials
+- `cargo test -p matchmaking-core`: 195 passed, including the built-step policy matrix, invariant denials
   and actor-aware lifecycle checks.
 - `cargo test --lib autonomy_tests` in `src-tauri`: 14 passed.
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
   batch subjects, durable review windows and veto, invalid actions and configurable budget stops. A prompt regression test lives in
-  `ai/tests.rs`. All 50 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
-  approval/rejection, rule override, migration and proposal checks.
-- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 486 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
-  so its local HTTP fixture servers could bind sockets; no real model was used.
+  `ai/tests.rs`. All 55 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
+  approval/rejection, rule override, migration, proposal and template follow-up checks.
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 493 passed, 2 ignored; no real model was used.
 
 ## Still open
-- Steps 5.2–8: agent-driven reminders, screened AI-written messages, missing-info requests, inbound reply interpretation,
+- Steps 6.1–8: screened AI-written messages, missing-info requests, inbound reply interpretation,
   outcomes and the full autonomy release remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.

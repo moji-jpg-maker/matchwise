@@ -7,6 +7,7 @@
 pub mod api;
 pub mod commands;
 pub mod engine;
+pub(crate) mod follow_up;
 pub mod notify;
 pub mod render;
 pub mod repo;

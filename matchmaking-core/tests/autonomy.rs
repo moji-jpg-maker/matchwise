@@ -362,3 +362,23 @@ fn budget_defaults_upgrade_and_boundaries() {
         assert!(serde_json::from_value::<Budgets>(bad).is_err());
     }
 }
+
+#[test]
+fn template_follow_up_policy_matrix() {
+    let action = Action::Step(Step::SendFollowUp);
+    assert!(Step::SendFollowUp.is_built());
+    for (level, expected) in [
+        (Level::L0Manual, denied(DenyReason::StepOff)),
+        (Level::L1Assisted, Decision::Propose),
+        (Level::L2Supervised, Decision::Propose),
+        (Level::L3Delegated, Decision::Schedule { at: NOW + 3600 }),
+    ] {
+        assert_eq!(decide(&action, &open(), &AutonomyPolicy::preset(level)), expected);
+    }
+    let mut policy = all_auto();
+    assert_eq!(decide(&action, &open(), &policy), Decision::Execute);
+    policy.paused = true;
+    assert!(matches!(decide(&action, &open(), &policy), Decision::Deny { .. }));
+    policy.paused = false;
+    assert!(matches!(decide(&action, &DecisionContext { gate: AiGate::Closed, now: NOW }, &policy), Decision::Deny { .. }));
+}

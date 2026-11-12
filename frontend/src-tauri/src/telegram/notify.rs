@@ -118,6 +118,13 @@ fn older_than(ts: &Option<String>, days: i64) -> bool {
 /// Follow-up reminders: introductions still waiting for an answer, and incomplete profiles. Safe to call often.
 /// Returns how many reminders were queued.
 pub async fn queue_reminders(pool: &SqlitePool) -> Result<usize, String> {
+    // Existing L0 installs retain their reminders. Opting into autonomy routes
+    // reminders exclusively through policy-checked tools and the approvals inbox.
+    let policy = crate::mm::autonomy_repo::AutonomyRepo::load_policy(pool).await.map_err(err)?;
+    if policy.level != matchmaking_core::autonomy::Level::L0Manual
+        || policy.mode_of(matchmaking_core::autonomy::Step::SendFollowUp) != matchmaking_core::autonomy::StepMode::Off {
+        return Ok(0);
+    }
     let mut queued = 0;
     // introductions still waiting for someone's answer
     for (m, _) in MatchRepo::list(pool).await.map_err(err)? {

@@ -133,12 +133,14 @@ pub async fn flush_outbox(pool: &SqlitePool, api: &dyn TelegramApi) -> Result<Fl
                 Some(id) => crate::mm::match_repo::MatchRepo::get(pool, id).await.map_err(err)?,
                 None => None,
             };
-            let waiting = current.is_some_and(|m| !m.hidden && m.hold_reason.is_none()
+            let waiting = if matches!(row.kind.as_str(), "profile_reminder" | "intro_reminder") {
+                super::follow_up::still_eligible(pool, &row.profile_id, row.match_id.as_deref()).await?
+            } else { current.is_some_and(|m| !m.hidden && m.hold_reason.is_none()
                 && m.status == matchmaking_core::MatchStatus::IntroductionProposed
                 && ((m.profile_a == row.profile_id && m.a_response == matchmaking_core::Interest::Unknown)
-                    || (m.profile_b == row.profile_id && m.b_response == matchmaking_core::Interest::Unknown)));
+                    || (m.profile_b == row.profile_id && m.b_response == matchmaking_core::Interest::Unknown))) };
             if !waiting {
-                repo::cancel(pool, row.id, "introduction no longer awaiting an answer").await.map_err(err)?;
+                repo::cancel(pool, row.id, "candidate no longer awaiting this message").await.map_err(err)?;
                 stats.cancelled += 1;
                 continue;
             }

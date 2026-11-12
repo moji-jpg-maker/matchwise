@@ -1603,3 +1603,181 @@ async fn agent_outbox_waits_for_open_gate_and_unpause_and_cancels_stale_buttons(
     assert_eq!((stats.sent, stats.cancelled), (0, 1));
     assert_eq!(api.sent.lock().unwrap().len(), 3);
 }
+
+#[tokio::test]
+async fn agent_follow_up_templates_deliver_and_buttons_preserve_candidate_authority() {
+    use crate::ai::settings::{save_config, AiConfig};
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{Actor, AutonomyPolicy, Step, StepMode};
+    for locale in [Locale::En, Locale::Fa] {
+        for accept in [true, false] {
+            let pool = test_pool().await;
+            for (profile, chat) in [("pa", 100), ("pb", 200)] {
+                make_profile(
+                    &pool,
+                    profile,
+                    &[
+                        ("full_name", txt("Sara <Private>")),
+                        ("age", Value::Num(30.0)),
+                        ("city", txt("Shiraz")),
+                        ("phone", txt("+989123456789")),
+                    ],
+                )
+                .await;
+                link(&pool, profile, chat).await;
+                repo::set_language(&pool, profile, locale).await.unwrap();
+            }
+            save_config(
+                &pool,
+                &AiConfig {
+                    provider: "ollama".into(),
+                    model: "scripted".into(),
+                    base_url: "http://localhost:11434".into(),
+                    local_include_sensitive: false,
+                },
+            )
+            .await
+            .unwrap();
+            let mut policy = AutonomyPolicy::default();
+            policy.steps.insert(Step::SendFollowUp, StepMode::Auto);
+            AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+            let id = new_match(&pool, "pa", "pb").await;
+            notify::queue_agent_introduction(&pool, Actor::Agent { run_id: 52 }, &id, None, locale).await.unwrap();
+            sqlx::query("UPDATE mm_reminder_history SET created_at='2020-01-01T00:00:00+00:00'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE mm_telegram_links SET linked_at='2020-01-01T00:00:00+00:00'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let actor = Actor::Agent { run_id: 52 };
+            for recipient in ["pa", "pb"] {
+                super::follow_up::queue(&pool, actor, "pa", recipient, Some(&id))
+                    .await
+                    .unwrap();
+                let message = outbox(&pool, recipient).await.pop().unwrap();
+                assert_eq!(message.kind, "intro_reminder");
+                assert_eq!(message.actor, "agent:52");
+                assert_eq!(
+                    message.text,
+                    super::render::reminder_intro_text(locale, "Sara")
+                );
+                assert_eq!(
+                    message.keyboard.unwrap()[0][0].callback_data,
+                    format!("intro:y:{id}")
+                );
+                assert!(!message.text.contains("Private") && !message.text.contains("+989"));
+            }
+            super::follow_up::queue(&pool, actor, "pa", "pa", None)
+                .await
+                .unwrap();
+            let profile_message = outbox(&pool, "pa").await.pop().unwrap();
+            let registry = MmRepository::registry(&pool).await.unwrap();
+            let profile = MmRepository::get_profile(&pool, "pa")
+                .await
+                .unwrap()
+                .unwrap();
+            let labels = profile
+                .profile
+                .missing_required(&registry)
+                .iter()
+                .filter_map(|k| registry.get(k).map(|d| d.label_for(locale).to_owned()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                profile_message.text,
+                super::render::reminder_profile_text(locale, &labels)
+            );
+            let api = MockApi::default();
+            assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 5);
+            say(&pool, 100, locale.pick("yes", "بله")).await;
+            assert_eq!(
+                MatchRepo::get(&pool, &id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .a_response,
+                Interest::Unknown
+            );
+            press(&pool, 100, &format!("intro:y:{id}")).await;
+            press(
+                &pool,
+                200,
+                &format!("intro:{}:{id}", if accept { "y" } else { "n" }),
+            )
+            .await;
+            let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+            if accept {
+                assert_eq!(m.status, MatchStatus::ContactExchanged);
+                assert_eq!(
+                    (m.a_response, m.b_response),
+                    (Interest::Interested, Interest::Interested)
+                );
+            } else {
+                assert_eq!(m.status, MatchStatus::Declined);
+                assert_eq!(
+                    outbox(&pool, "pa")
+                        .await
+                        .into_iter()
+                        .find(|r| r.kind == "not_going_ahead")
+                        .unwrap()
+                        .text,
+                    super::render::not_going_ahead_text(locale)
+                );
+            }
+            assert!(super::follow_up::check(&pool, "pa", "pb", Some(&id))
+                .await
+                .is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn agent_profile_follow_up_delivery_rechecks_gate_pause_and_profile_need() {
+    use crate::ai::settings::{save_config, AiConfig};
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{Actor, AutonomyPolicy, Step, StepMode};
+    let pool = test_pool().await;
+    make_profile(&pool, "p", &[]).await;
+    link(&pool, "p", 100).await;
+    sqlx::query("UPDATE mm_telegram_links SET linked_at='2020-01-01T00:00:00+00:00'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut policy = AutonomyPolicy::default();
+    policy.steps.insert(Step::SendFollowUp, StepMode::Auto);
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    super::follow_up::queue(&pool, Actor::Agent { run_id: 52 }, "p", "p", None)
+        .await
+        .unwrap();
+    let api = MockApi::default();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 0);
+    save_config(
+        &pool,
+        &AiConfig {
+            provider: "ollama".into(),
+            model: "scripted".into(),
+            base_url: "http://localhost:11434".into(),
+            local_include_sensitive: false,
+        },
+    )
+    .await
+    .unwrap();
+    policy.paused = true;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 0);
+    policy.paused = false;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    MmRepository::set_status(&pool, "p", "inactive")
+        .await
+        .unwrap();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().cancelled, 1);
+    assert!(api.sent.lock().unwrap().is_empty());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_agent_messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+}

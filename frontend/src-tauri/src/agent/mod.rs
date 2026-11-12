@@ -93,6 +93,9 @@ async fn policy_decision_review(
     if matches!(action.tool.as_str(), "transition_match" | "add_note" | "propose_introduction" | "resend_interest_buttons") {
         tools::check_match_action(pool, target, action, session.locale).await?;
     }
+    if action.tool == "send_follow_up" {
+        tools::check_follow_up_action(pool, target, action).await?;
+    }
     if step == Some(Step::AcceptExtraction) {
         return tools::acceptance_decision(pool, target, action, &context, &policy).await;
     }

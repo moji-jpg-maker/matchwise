@@ -172,6 +172,12 @@ pub async fn check_match_action(
     Ok(())
 }
 
+pub async fn check_follow_up_action(pool: &SqlitePool, target: &str, action: &Action) -> Result<(), String> {
+    action.validate()?;
+    crate::telegram::follow_up::check(pool, target, action.string("profile_id"),
+        action.args.get("match_id").and_then(Json::as_str)).await
+}
+
 pub async fn execute(
     pool: &SqlitePool,
     session: &Session<'_>,
@@ -195,6 +201,7 @@ pub async fn execute(
             Ok(
                 json!({"suggestions":suggestions.iter().take(100).map(|suggestion| json!({"suggestion_id":suggestion.id,"confidence":suggestion.confidence})).collect::<Vec<_>>(),
                 "matches":matches.iter().filter(|(pair, _)| pair.profile_a == target || pair.profile_b == target).take(100).map(|(pair, card)| json!({"match_id":pair.id,"profile_a":pair.profile_a,"profile_b":pair.profile_b,"a_response":pair.a_response,"b_response":pair.b_response,"status":pair.status,"eligible":card.as_ref().and_then(|c| c["eligible"].as_bool()).unwrap_or(false)})).collect::<Vec<_>>(),
+                "follow_ups":crate::telegram::follow_up::due_for_target(pool, target).await?,
                 "rule_sets":rules.iter().map(|(rule, _)| json!({"rule_set_id":rule.id})).collect::<Vec<_>>()}),
             )
         }
@@ -342,6 +349,12 @@ pub async fn execute(
             let queued = crate::telegram::notify::queue_agent_introduction(pool, actor, id,
                 (action.tool == "resend_interest_buttons").then(|| action.string("profile_id")), session.locale).await?;
             Ok(json!({"match_id":id,"queued":queued}))
+        }
+        "send_follow_up" => {
+            check_follow_up_action(pool, target, action).await?;
+            crate::telegram::follow_up::queue(pool, actor, target, action.string("profile_id"),
+                action.args.get("match_id").and_then(Json::as_str)).await?;
+            Ok(json!({"profile_id":action.string("profile_id"),"queued":1}))
         }
         "analyse_pair" => {
             let id = action.string("match_id");
