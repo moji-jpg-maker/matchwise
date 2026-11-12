@@ -526,6 +526,40 @@ async fn free_text_reaches_the_matchmaker_and_settings_work() {
 }
 
 #[tokio::test]
+async fn agent_inbound_reply_triggers_only_with_an_open_gate_and_a_built_step() {
+    use crate::ai::settings::{save_config, AiConfig};
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{AutonomyPolicy, Level};
+    let pool = test_pool().await;
+    make_profile(&pool, "p1", &[("full_name", txt("Sara"))]).await;
+    link(&pool, "p1", 100).await;
+    // L0 keeps the message with the matchmaker and never queues it for the agent.
+    assert!(texts(&say(&pool, 100, "Hello there").await).contains("passed your message"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_agent_inbound")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    // With a built reply step and an open local gate, the same free text is queued exactly once.
+    save_config(&pool, &AiConfig { provider: "ollama".into(), model: "scripted".into(), base_url: "http://localhost:11434".into(), local_include_sensitive: false }).await.unwrap();
+    AutonomyRepo::save_policy(&pool, &AutonomyPolicy::preset(Level::L2Supervised))
+        .await
+        .unwrap();
+    assert!(texts(&say(&pool, 100, "Can we talk Friday?").await).contains("passed your message"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_agent_inbound WHERE profile_id='p1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    // The everyday conversation is stored for the matchmaker either way.
+    assert_eq!(repo::unread_counts(&pool).await.unwrap().get("p1"), Some(&2));
+}
+
+#[tokio::test]
 async fn unlink_and_forget_are_confirmed_and_complete() {
     let pool = test_pool().await;
     make_profile(&pool, "p1", &[("full_name", txt("Sara"))]).await;

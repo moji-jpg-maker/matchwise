@@ -286,6 +286,11 @@ async fn linked(pool: &SqlitePool, link: &Link, text: &str) -> R {
     }
     // Free text: it goes to the matchmaker.
     repo::add_message(pool, &link.profile_id, "in", text, None).await.map_err(err)?;
+    // And, when the reply step is on and the AI gate is open, the agent may look at it as quoted untrusted data.
+    // A queuing problem must never lose the message the matchmaker already has.
+    if let Err(e) = crate::agent::note_inbound(pool, &link.profile_id, text).await {
+        log::warn!("could not queue an inbound reply for the assistant: {e}");
+    }
     Ok(vec![Reply::text(chat_id, link.locale.pick("Thank you. I have passed your message to your matchmaker.", "ممنون. پیام شما را به مشاورتان رساندم."))])
 }
 

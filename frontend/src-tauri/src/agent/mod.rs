@@ -8,7 +8,7 @@ mod tools;
 use crate::ai::{models::TaskProfile, service::Session, settings};
 use crate::mm::{autonomy::ai_gate, autonomy_repo::AutonomyRepo, repository::MmRepository};
 use matchmaking_core::autonomy::{
-    decide, Action as PolicyAction, Actor, AiGate, Decision, DecisionContext, Step,
+    decide, Action as PolicyAction, Actor, AiGate, Decision, DecisionContext, Step, StepMode,
 };
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -39,6 +39,101 @@ pub(crate) async fn ensure_open(pool: &SqlitePool, session: &Session<'_>) -> Res
         || mode.include_sensitive != session.mode.include_sensitive
     {
         return Err("Agent paused or AI configuration changed".into());
+    }
+    Ok(())
+}
+
+/// A linked candidate sent free text. Queue it for interpretation only when the reply step is on, the policy is not
+/// paused and the AI gate is open; the scheduler then runs the subject like any other work item. The text stays in
+/// `mm_agent_inbound` (never the audit log) until a run shows it to the model through the redactor.
+pub(crate) async fn note_inbound(
+    pool: &SqlitePool,
+    profile_id: &str,
+    text: &str,
+) -> Result<bool, String> {
+    let policy = AutonomyRepo::load_policy(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    if policy.paused || policy.mode_of(Step::InterpretReply) == StepMode::Off {
+        return Ok(false);
+    }
+    if crate::mm::autonomy::ai_gate(pool).await? != AiGate::Open {
+        return Ok(false);
+    }
+    let active: bool = sqlx::query_scalar(
+        "SELECT status='active' FROM mm_profiles WHERE id = ? AND org_id = ?",
+    )
+    .bind(profile_id)
+    .bind(crate::mm::repository::ORG)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| error.to_string())?
+    .unwrap_or(false);
+    if !active {
+        return Ok(false);
+    }
+    sqlx::query("INSERT INTO mm_agent_inbound (org_id, profile_id, text, created_at) VALUES (?, ?, ?, ?)")
+        .bind(crate::mm::repository::ORG)
+        .bind(profile_id)
+        .bind(text)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    sqlx::query("INSERT INTO mm_agent_work (org_id, profile_id) VALUES (?, ?) ON CONFLICT(org_id, profile_id) DO UPDATE SET generation = generation + 1")
+        .bind(crate::mm::repository::ORG)
+        .bind(profile_id)
+        .execute(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+/// Show the target's waiting candidate replies to the model as quoted, untrusted data, one time each. Values pass
+/// through the same redactor as every other observation.
+async fn seed_inbound(
+    pool: &SqlitePool,
+    target: &str,
+    history: &mut Vec<Value>,
+) -> Result<(), String> {
+    let policy = AutonomyRepo::load_policy(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    if policy.mode_of(Step::InterpretReply) == StepMode::Off {
+        return Ok(());
+    }
+    let names = match MmRepository::get_profile(pool, target)
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|stored| stored.profile.get("full_name").cloned())
+    {
+        Some(matchmaking_core::Value::Text(name)) => vec![name],
+        _ => vec![],
+    };
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, text FROM mm_agent_inbound WHERE org_id = ? AND profile_id = ? ORDER BY id LIMIT 20",
+    )
+    .bind(crate::mm::repository::ORG)
+    .bind(target)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    for (id, text) in rows {
+        let text: String = text.chars().take(2000).collect();
+        history.push(json!({
+            "tool": "candidate_message",
+            "observation": {
+                "kind": "inbound_reply",
+                "untrusted": true,
+                "text": matchmaking_core::ai::redact_text(&text, &names),
+            }
+        }));
+        sqlx::query("DELETE FROM mm_agent_inbound WHERE id = ? AND org_id = ?")
+            .bind(id)
+            .bind(crate::mm::repository::ORG)
+            .execute(pool)
+            .await
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -251,6 +346,7 @@ async fn run_loop(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<&'static str, String> {
     let mut history = Vec::new();
+    seed_inbound(pool, target, &mut history).await?;
     let constraint = protocol::constraint();
     for turn in 0usize.. {
         if cancel.is_cancelled() || ensure_open(pool, session).await.is_err() {

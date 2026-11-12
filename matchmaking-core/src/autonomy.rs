@@ -74,6 +74,9 @@ pub enum Step {
     Reject,
     /// Approving a pair the rules exclude. Its own step so it can be held back when everything else is Auto.
     RuleOverride,
+    /// Reading a candidate's free-text reply. When this step is `Off` the agent never sees the text; any other mode
+    /// triggers an on-demand run whose tools are still checked against their own steps. The text is quoted,
+    /// untrusted data and a free-text "yes" never sets Interest — only the introduction buttons can be resent.
     InterpretReply,
     RecordOutcome,
     Close,
@@ -106,9 +109,9 @@ impl Step {
         Step::RequestInfo,
     ];
 
-    /// Built through step 6.2: internal decisions and screened candidate requests.
+    /// Built through step 6.3: internal decisions, screened candidate requests and why an inbound reply triggers a run.
     pub fn is_built(self) -> bool {
-        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride | Step::SendIntroduction | Step::SendFollowUp | Step::SendMessage | Step::RequestInfo)
+        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride | Step::InterpretReply | Step::SendIntroduction | Step::SendFollowUp | Step::SendMessage | Step::RequestInfo)
     }
 
     /// Reaches a candidate (a Telegram message). These get a review window at L3.

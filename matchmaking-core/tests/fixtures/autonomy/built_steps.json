@@ -9,6 +9,7 @@
   "approve",
   "reject",
   "rule_override",
+  "interpret_reply",
   "send_introduction",
   "send_follow_up",
   "send_message",

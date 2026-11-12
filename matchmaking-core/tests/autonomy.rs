@@ -49,6 +49,8 @@ fn preset_matrix() {
 fn step_classes_match_the_spec() {
     assert!(Step::AcceptExtraction.is_internal());
     assert!(Step::Reject.is_internal());
+    assert!(Step::InterpretReply.is_internal());
+    assert!(!Step::InterpretReply.is_candidate_facing());
     assert!(!Step::Approve.is_internal());
     assert!(!Step::RuleOverride.is_internal());
     for step in [Step::SendIntroduction, Step::SendFollowUp, Step::SendMessage, Step::RequestInfo] {
@@ -87,7 +89,7 @@ fn built_step_follows_the_preset_mode() {
 
 #[test]
 fn built_steps_follow_each_mode_without_enabling_later_steps() {
-    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair, Step::AddNote, Step::Recommend, Step::Reject] {
+    for step in [Step::RunExtraction, Step::AcceptExtraction, Step::FindMatches, Step::CreateMatch, Step::AnalysePair, Step::AddNote, Step::Recommend, Step::Reject, Step::InterpretReply] {
         assert!(step.is_built());
         let action = Action::Step(step);
         assert_eq!(decide(&action, &open(), &AutonomyPolicy::default()), denied(DenyReason::StepOff));
@@ -97,7 +99,7 @@ fn built_steps_follow_each_mode_without_enabling_later_steps() {
         policy.steps.insert(step, StepMode::ReviewWindow { minutes: 60 });
         assert_eq!(decide(&action, &open(), &policy), Decision::Schedule { at: NOW + 3600 });
     }
-    for step in [Step::InterpretReply, Step::RecordOutcome, Step::Close, Step::Stop] {
+    for step in [Step::RecordOutcome, Step::Close, Step::Stop] {
         assert!(!step.is_built());
         assert_eq!(decide(&Action::Step(step), &open(), &all_auto()), denied(DenyReason::StepOff));
     }
@@ -335,6 +337,27 @@ fn rule_override_presets_remain_suggest_until_l4() {
     ] {
         assert_eq!(decide(&Action::Step(Step::RuleOverride), &open(), &AutonomyPolicy::preset(level)), expected);
     }
+}
+
+#[test]
+fn interpret_reply_is_internal_and_off_only_at_l0() {
+    assert!(Step::InterpretReply.is_built());
+    // Reading a candidate reply is an internal step: on from L2 up and still on (as a suggestion) at L1.
+    for (level, expected) in [
+        (Level::L0Manual, denied(DenyReason::StepOff)),
+        (Level::L1Assisted, Decision::Propose),
+        (Level::L2Supervised, Decision::Execute),
+        (Level::L3Delegated, Decision::Execute),
+        (Level::L4Autonomous, Decision::Execute),
+    ] {
+        assert_eq!(decide(&Action::Step(Step::InterpretReply), &open(), &AutonomyPolicy::preset(level)), expected);
+    }
+    // The kill switch and a closed gate stop it like every other step.
+    let mut policy = all_auto();
+    policy.paused = true;
+    assert_eq!(decide(&Action::Step(Step::InterpretReply), &open(), &policy), denied(DenyReason::Paused));
+    let closed = DecisionContext { gate: AiGate::Closed, now: NOW };
+    assert_eq!(decide(&Action::Step(Step::InterpretReply), &closed, &all_auto()), denied(DenyReason::GateClosed));
 }
 
 #[test]
