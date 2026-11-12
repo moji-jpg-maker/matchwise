@@ -90,7 +90,7 @@ async fn policy_decision_review(
     if context.gate != AiGate::Open {
         return Err("AI gate is closed".into());
     }
-    if matches!(action.tool.as_str(), "transition_match" | "add_note") {
+    if matches!(action.tool.as_str(), "transition_match" | "add_note" | "propose_introduction" | "resend_interest_buttons") {
         tools::check_match_action(pool, target, action, session.locale).await?;
     }
     if step == Some(Step::AcceptExtraction) {
@@ -133,10 +133,14 @@ async fn perform(
             budgets::MODEL_CALL_LIMIT,
             json!({"budget":"model_calls_per_hour"}),
         ),
+        Err(error) if matches!(error.as_str(), "introduction_limit" | "message_limit") => {
+            let budget = if error == "introduction_limit" { "open_introductions_per_profile" } else { "messages_per_candidate_per_day" };
+            (if error == "introduction_limit" { "introduction_limit" } else { "message_limit" }, json!({"budget":budget}))
+        }
         Err(_) => ("failed", json!({"error":"tool_failed"})),
     };
     repo::update(pool, trace_id, status, &observation).await?;
-    if status == budgets::MODEL_CALL_LIMIT {
+    if matches!(status, budgets::MODEL_CALL_LIMIT | "introduction_limit" | "message_limit") {
         repo::finish(pool, run_id, status).await?;
     }
     MmRepository::audit_as(
@@ -372,8 +376,8 @@ async fn run_loop(
         } else {
             json!({"status":status,"result":observation})
         };
-        if observation["status"] == budgets::MODEL_CALL_LIMIT {
-            return Ok(budgets::MODEL_CALL_LIMIT);
+        if let Some(status @ ("model_call_limit" | "introduction_limit" | "message_limit")) = observation["status"].as_str() {
+            return Ok(match status { "introduction_limit" => "introduction_limit", "message_limit" => "message_limit", _ => budgets::MODEL_CALL_LIMIT });
         }
         if action.tool == "finish" && status == "executing" {
             return Ok("finished");

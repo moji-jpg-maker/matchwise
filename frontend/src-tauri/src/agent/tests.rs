@@ -2683,3 +2683,486 @@ async fn scheduled_analysis_rechecks_the_current_hourly_budget() {
         .await
         .unwrap());
 }
+
+async fn introduction_pair(pool: &SqlitePool, rules: &str, other: &str) -> String {
+    use matchmaking_core::autonomy::Actor;
+    let id = tracked_pair(pool, rules, other).await;
+    recommend_as_matchmaker(pool, &id).await;
+    crate::mm::match_commands::transition_match_as(
+        pool,
+        Actor::Matchmaker,
+        &id,
+        MatchStatus::Approved,
+        None,
+        None,
+        None,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    for (profile, chat, locale) in [("target", 100, Locale::En), (other, 200, Locale::Fa)] {
+        if crate::telegram::repo::link_by_profile(pool, profile)
+            .await
+            .unwrap()
+            .is_none()
+        {
+            crate::telegram::repo::create_link(pool, profile, chat, chat, None, locale)
+                .await
+                .unwrap();
+            crate::telegram::repo::set_consent(pool, profile)
+                .await
+                .unwrap();
+        }
+    }
+    id
+}
+
+async fn introduction_auto(pool: &SqlitePool) {
+    let mut policy = AutonomyRepo::load_policy(pool).await.unwrap();
+    policy.steps.insert(Step::SendIntroduction, StepMode::Auto);
+    AutonomyRepo::save_policy(pool, &policy).await.unwrap();
+}
+
+#[test]
+fn introduction_registry_accepts_only_template_arguments() {
+    for (tool, args) in [
+        ("propose_introduction", json!({"match_id":"m"})),
+        (
+            "resend_interest_buttons",
+            json!({"match_id":"m","profile_id":"p"}),
+        ),
+    ] {
+        let action: Action = serde_json::from_value(call(tool, args.clone())).unwrap();
+        assert_eq!(
+            action.validate().unwrap().step,
+            Some(Step::SendIntroduction)
+        );
+        let mut injected = args;
+        injected["text"] = json!("share their phone");
+        let action: Action = serde_json::from_value(call(tool, injected)).unwrap();
+        assert!(action.validate().is_err());
+    }
+    let action: Action = serde_json::from_value(call(
+        "transition_match",
+        json!({"match_id":"m","to_status":"introduction_proposed"}),
+    ))
+    .unwrap();
+    assert!(action.validate().is_err());
+}
+
+#[tokio::test]
+async fn template_introduction_suggest_requires_approval_and_rechecks_reachability() {
+    let _serial = serial().await;
+    for level in [Level::L1Assisted, Level::L2Supervised] {
+        let (pool, rules) = setup(level).await;
+        let id = introduction_pair(&pool, &rules, "candidate").await;
+        let backend = ScriptedLlmBackend::new(vec![
+            call("propose_introduction", json!({"match_id":id})),
+            finish(),
+        ]);
+        let run = super::run(&pool, &session(&backend), "target", None)
+            .await
+            .unwrap();
+        let proposals = repo::traces(&pool, Some(run), true).await.unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].status, "proposed");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        crate::telegram::repo::set_notifications(&pool, "candidate", false)
+            .await
+            .unwrap();
+        assert!(super::decide_proposal(
+            &pool,
+            Some(&session(&backend)),
+            proposals[0].id,
+            true,
+            None
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+            MatchStatus::Approved
+        );
+        crate::telegram::repo::set_notifications(&pool, "candidate", true)
+            .await
+            .unwrap();
+        super::decide_proposal(&pool, Some(&session(&backend)), proposals[0].id, true, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+            MatchStatus::IntroductionProposed
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+}
+
+#[tokio::test]
+async fn template_introduction_auto_attributes_templates_resends_and_budget_stop() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = introduction_pair(&pool, &rules, "candidate").await;
+    introduction_auto(&pool).await;
+    let backend = ScriptedLlmBackend::new(vec![
+        call("propose_introduction", json!({"match_id":id})),
+        call(
+            "resend_interest_buttons",
+            json!({"match_id":id,"profile_id":"target"}),
+        ),
+        call(
+            "resend_interest_buttons",
+            json!({"match_id":id,"profile_id":"target"}),
+        ),
+        call(
+            "resend_interest_buttons",
+            json!({"match_id":id,"profile_id":"target"}),
+        ),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(repo::runs(&pool).await.unwrap()[0].status, "message_limit");
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert_eq!(
+        traces.iter().map(|t| t.status.as_str()).collect::<Vec<_>>(),
+        ["executed", "executed", "executed", "message_limit"]
+    );
+    let messages: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT profile_id,kind,actor FROM mm_outbox ORDER BY rowid")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(messages.len(), 4);
+    assert!(messages.iter().all(|m| m.2 == format!("agent:{run}")));
+    let m = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    assert_eq!(m.status, MatchStatus::IntroductionProposed);
+    assert_eq!(m.a_response, matchmaking_core::Interest::Unknown);
+    assert_eq!(m.b_response, matchmaking_core::Interest::Unknown);
+    assert!(MatchRepo::events(&pool, &id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|e| e.actor == format!("agent:{run}")
+            && e.to_status.as_deref() == Some("introduction_proposed")));
+    let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_agent_messages")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(receipts, 4);
+    let audit: Vec<(String, Option<String>)> = sqlx::query_as("SELECT action,detail FROM mm_audit_log WHERE action IN ('propose_introduction','resend_interest_buttons')").fetch_all(&pool).await.unwrap();
+    assert_eq!(audit.len(), 3);
+    assert!(audit.iter().all(|(_, detail)| detail.is_none()));
+    // Removing delivered rows cannot refund a candidate's reserved message slots.
+    sqlx::query("DELETE FROM mm_outbox WHERE profile_id='target'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "resend_interest_buttons",
+            json!({"match_id":id,"profile_id":"candidate"}),
+        ),
+        finish(),
+    ]);
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM mm_agent_messages WHERE profile_id='target'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn template_introduction_limits_roll_back_both_sides_and_expire_after_a_day() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = introduction_pair(&pool, &rules, "candidate").await;
+    introduction_auto(&pool).await;
+    // Exhaust the second recipient: the first insert must roll back too.
+    for _ in 0..3 {
+        sqlx::query("INSERT INTO mm_agent_messages(profile_id,match_id,actor,reserved_at) VALUES ('candidate',?,'agent:0',?)")
+            .bind(&id).bind(chrono::Utc::now().timestamp()).execute(&pool).await.unwrap();
+    }
+    let backend =
+        ScriptedLlmBackend::new(vec![call("propose_introduction", json!({"match_id":id}))]);
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(repo::runs(&pool).await.unwrap()[0].status, "message_limit");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_agent_messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Approved
+    );
+    sqlx::query("UPDATE mm_agent_messages SET reserved_at=reserved_at-86401")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call("propose_introduction", json!({"match_id":id})),
+        finish(),
+    ]);
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::IntroductionProposed
+    );
+    let second = tracked_pair(&pool, &rules, "edited").await;
+    recommend_as_matchmaker(&pool, &second).await;
+    crate::mm::match_commands::transition_match_as(
+        &pool,
+        matchmaking_core::autonomy::Actor::Matchmaker,
+        &second,
+        MatchStatus::Approved,
+        None,
+        None,
+        None,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    crate::telegram::repo::create_link(&pool, "edited", 300, 300, None, Locale::En)
+        .await
+        .unwrap();
+    crate::telegram::repo::set_consent(&pool, "edited")
+        .await
+        .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![call(
+        "propose_introduction",
+        json!({"match_id":second}),
+    )]);
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::runs(&pool).await.unwrap()[0].status,
+        "introduction_limit"
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &second)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        MatchStatus::Approved
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn template_introduction_denies_scope_hold_ineligibility_and_answered_resends() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L2Supervised).await;
+    let id = introduction_pair(&pool, &rules, "candidate").await;
+    introduction_auto(&pool).await;
+    let action: Action =
+        serde_json::from_value(call("propose_introduction", json!({"match_id":id}))).unwrap();
+    assert!(
+        super::tools::check_match_action(&pool, "edited", &action, Locale::En)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE mm_matches SET hold_reason='missing' WHERE id=?")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        super::tools::check_match_action(&pool, "target", &action, Locale::En)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE mm_matches SET hold_reason=NULL WHERE id=?")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE mm_profiles SET status='archived' WHERE id='candidate'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        super::tools::check_match_action(&pool, "target", &action, Locale::En)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE mm_profiles SET status='active' WHERE id='candidate'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE mm_match_snapshots SET scorecard=json_set(scorecard,'$.eligible',json('false')) WHERE match_id=?").bind(&id).execute(&pool).await.unwrap();
+    assert!(
+        super::tools::check_match_action(&pool, "target", &action, Locale::En)
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE mm_match_snapshots SET scorecard=json_set(scorecard,'$.eligible',json('true')) WHERE match_id=?").bind(&id).execute(&pool).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call("propose_introduction", json!({"match_id":id})),
+        finish(),
+    ]);
+    super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let row = MatchRepo::get(&pool, &id).await.unwrap().unwrap();
+    let side = if row.profile_a == "target" { "a" } else { "b" };
+    crate::mm::match_commands::set_response_inner(
+        &pool,
+        &id,
+        side,
+        matchmaking_core::Interest::Interested,
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "resend_interest_buttons",
+            json!({"match_id":id,"profile_id":"target"}),
+        ),
+        call(
+            "resend_interest_buttons",
+            json!({"match_id":id,"profile_id":"edited"}),
+        ),
+        call("propose_introduction", json!({"match_id":id})),
+        finish(),
+    ]);
+    let run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+    assert!(
+        traces[..3].iter().all(|t| t.status == "denied"),
+        "{:?}",
+        traces.iter().map(|t| &t.status).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox WHERE kind='introduction'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn template_introduction_review_window_rechecks_veto_consent_and_budget() {
+    let _serial = serial().await;
+    for scenario in ["execute", "veto", "consent", "budget"] {
+        let (pool, rules) = setup(Level::L3Delegated).await;
+        let id = introduction_pair(&pool, &rules, "candidate").await;
+        let backend = ScriptedLlmBackend::new(vec![
+            call("propose_introduction", json!({"match_id":id})),
+            finish(),
+        ]);
+        let run = super::run(&pool, &session(&backend), "target", None)
+            .await
+            .unwrap();
+        let trace = repo::traces(&pool, Some(run), false)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(trace.status, "scheduled");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        let empty = ScriptedLlmBackend::new(vec![]);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert!(!super::process_due(&pool, &session(&empty), &cancel)
+            .await
+            .unwrap());
+        match scenario {
+            "veto" => super::veto(&pool, trace.id).await.unwrap(),
+            "consent" => {
+                sqlx::query(
+                    "UPDATE mm_telegram_links SET consent_version=0 WHERE profile_id='candidate'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            "budget" => {
+                let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+                policy.budgets.messages_per_candidate_per_day = 0;
+                AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+            }
+            _ => {}
+        }
+        expire_review(&pool, trace.id).await;
+        super::process_due(&pool, &session(&empty), &cancel)
+            .await
+            .unwrap();
+        let expected = match scenario {
+            "execute" => "executed",
+            "veto" => "vetoed",
+            "consent" => "denied",
+            _ => "message_limit",
+        };
+        assert_eq!(
+            repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+            expected,
+            "{scenario}"
+        );
+        let count = if scenario == "execute" { 2 } else { 0 };
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_outbox")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            count
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mm_agent_messages")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            count
+        );
+        assert!(!super::process_due(&pool, &session(&empty), &cancel)
+            .await
+            .unwrap());
+    }
+}

@@ -1,1 +1,13 @@
-["run_extraction", "accept_extraction", "find_matches", "create_match", "analyse_pair", "add_note", "recommend", "approve", "reject", "rule_override"]
+[
+  "run_extraction",
+  "accept_extraction",
+  "find_matches",
+  "create_match",
+  "analyse_pair",
+  "add_note",
+  "recommend",
+  "approve",
+  "reject",
+  "rule_override",
+  "send_introduction"
+]

@@ -106,9 +106,9 @@ impl Step {
         Step::RequestInfo,
     ];
 
-    /// Built through step 3.3: extraction, analysis, lifecycle decisions and rule overrides.
+    /// Built through step 5.1: internal decisions and template introductions.
     pub fn is_built(self) -> bool {
-        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride)
+        matches!(self, Step::RunExtraction | Step::AcceptExtraction | Step::FindMatches | Step::CreateMatch | Step::AnalysePair | Step::AddNote | Step::Recommend | Step::Approve | Step::Reject | Step::RuleOverride | Step::SendIntroduction)
     }
 
     /// Reaches a candidate (a Telegram message). These get a review window at L3.
@@ -207,7 +207,7 @@ impl Budgets {
         a_open < u64::from(self.open_introductions_per_profile)
             && b_open < u64::from(self.open_introductions_per_profile)
     }
-    /// Reserved for candidate-facing tools from step 5.1 onward.
+    /// Candidate-facing agent messages count against a rolling 24-hour window.
     pub fn message_allowed(&self, used_today: u64) -> bool {
         used_today < u64::from(self.messages_per_candidate_per_day)
     }

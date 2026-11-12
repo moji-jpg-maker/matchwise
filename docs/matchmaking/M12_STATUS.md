@@ -1,8 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 are built:
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.3 / 5.1 are built:
 policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
-reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto and configurable budgets.** Nothing has been run with a real model.
+reasoned rejection, policy-controlled rule overrides, background scheduling, review windows, veto, configurable budgets and template introductions.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -152,12 +152,36 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   that exhaust it are finalized once with the same trace status. Step limits are rechecked after waiting for the model lock.
 - The introduction admission guard checks both participants and counts existing human and agent introductions in
   IntroductionProposed, BothInterested, ContactExchanged, Conversation, Meeting and Feedback. Terminal matches
-  release their slots. Introduction tools remain unavailable until step 5.1, when this guard must be called under the
-  runtime lock through the validated introduction transition. The daily message predicate and setting are reserved
-  for enforcement from step 5.1; existing human Telegram flows are unchanged.
+  release their slots. Step 5.1 now integrates these limits into atomic introduction admission and message reservations;
+  existing human Telegram flows are unchanged.
 - Tests cover upgrade/default and invalid policy values, quota boundaries, configured/zero run limits, shared hourly
   usage and expiry, atomic reservations, nested analysis/extraction retries, proposal approvals, due actions and
   introduction slot release. No real model was used.
+
+## Step 5.1: what shipped
+- `propose_introduction(match_id)` and `resend_interest_buttons(match_id, profile_id)` are registered structured tools
+  under SendIntroduction. They accept template arguments only. L1/L2 propose; L3 schedules a 60-minute review
+  window; a custom per-step Auto policy executes immediately. L4 remains disabled.
+- Introductions require an approved eligible target match, active participants, current Telegram consent and enabled
+  notifications on both sides. Existing lifecycle validation rechecks saved and current eligibility. Hidden, held,
+  excluded and unrelated matches are denied. Resends require an unanswered participant of an existing introduction.
+- Existing safe cards, localized templates, escaped text, interest buttons and the outbox carry delivery. The model
+  supplies no outbound text. The work list exposes participant IDs and response states for selecting a resend.
+- Delivery rechecks the kill switch and AI gate, leaving agent messages pending while either blocks execution.
+  Stale buttons for answered, held, hidden or ended introductions are cancelled before sending.
+- Migration `20261112070000_add_agent_introductions.sql` attributes outbox rows and adds a durable message ledger.
+  Initial introductions reserve both participants' open-introduction capacity and daily message slots atomically
+  with the lifecycle event, outbox and metadata-only audit. Resends consume a message slot. Pending and failed
+  agent deliveries count for a rolling 24 hours; outbox cleanup cannot reset usage. Budget stops appear in the
+  bilingual run log as `introduction_limit` or `message_limit`.
+- Interest still comes only from candidates' Telegram buttons. After both candidates press yes on an agent
+  introduction, the existing response flow records BothInterested, then a validated System transition records
+  ContactExchanged. Only the existing mutual-interest notices are sent; contact values remain private. A decline
+  produces the existing neutral notice, and replayed buttons do not duplicate messages. Human introductions keep
+  their existing behavior.
+- English/Persian conversation fixtures cover escaped introductions, privacy, free-text yes, both buttons, decline
+  and replay. Scripted agent tests cover proposals, approval rechecks, Auto, resends, scope/eligibility denials,
+  atomic budget rollback/expiry and review-window execution, veto and consent/budget changes. No real model was used.
 
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
@@ -166,8 +190,8 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
   counts as Off.
 - The rules-only tier is gated by the AI gate too, because a closed gate stops all agent actions.
 - `run_accept_all` in `ai/intake_commands.rs` is the manual, unthresholded path and is untouched.
-- Ten steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
-  Approve, Reject and RuleOverride.
+- Eleven steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
+  Approve, Reject, RuleOverride and SendIntroduction.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
 - Runtime/model access and due execution are serialized. Veto uses an atomic status check and does not wait for
   model work. Budget reservations are separate from retained AI prompts.
@@ -180,11 +204,12 @@ reasoned rejection, policy-controlled rule overrides, background scheduling, rev
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
   batch subjects, durable review windows and veto, invalid actions and configurable budget stops. A prompt regression test lives in
-  `ai/tests.rs`. All 44 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
+  `ai/tests.rs`. All 50 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
   approval/rejection, rule override, migration and proposal checks.
-- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 478 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 486 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
   so its local HTTP fixture servers could bind sockets; no real model was used.
 
 ## Still open
-- Steps 5.1–8: candidate-facing agent tools, introduction/message budget integration, outcomes and the full autonomy release remain unavailable.
+- Steps 5.2–8: agent-driven reminders, screened AI-written messages, missing-info requests, inbound reply interpretation,
+  outcomes and the full autonomy release remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.

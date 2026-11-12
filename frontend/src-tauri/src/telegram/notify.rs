@@ -163,3 +163,196 @@ pub async fn queue_reminders(pool: &SqlitePool) -> Result<usize, String> {
     }
     Ok(queued)
 }
+
+/// Candidate-facing agent actions share the human lifecycle and safe card renderer.
+/// Validate before proposing, and again immediately before delivery admission.
+pub(crate) async fn check_agent_introduction(
+    pool: &SqlitePool,
+    id: &str,
+    recipient: Option<&str>,
+    locale: Locale,
+) -> Result<MatchRow, String> {
+    use matchmaking_core::{autonomy::Actor, Interest, TransitionRequest};
+    let m = MatchRepo::get(pool, id)
+        .await
+        .map_err(err)?
+        .ok_or("Match not found")?;
+    if m.hidden || m.hold_reason.is_some() {
+        return Err(locale
+            .pick(
+                "Introduction is hidden or on hold",
+                "معرفی پنهان یا در انتظار اطلاعات است",
+            )
+            .into());
+    }
+    if let Some(me) = recipient {
+        let response = if me == m.profile_a {
+            m.a_response
+        } else if me == m.profile_b {
+            m.b_response
+        } else {
+            return Err("Recipient is outside match".into());
+        };
+        if m.status != MatchStatus::IntroductionProposed || response != Interest::Unknown {
+            return Err(locale
+                .pick(
+                    "Introduction is no longer awaiting this answer",
+                    "معرفی دیگر منتظر این پاسخ نیست",
+                )
+                .into());
+        }
+        if !was_introduced(pool, me, id).await? {
+            return Err("Recipient has not been introduced".into());
+        }
+    } else {
+        crate::mm::match_commands::check_transition_as(
+            pool,
+            Actor::agent_deterministic(),
+            id,
+            MatchStatus::IntroductionProposed,
+            &TransitionRequest::default(),
+            locale,
+        )
+        .await?;
+    }
+    for me in [&m.profile_a, &m.profile_b] {
+        if MmRepository::get_profile(pool, me)
+            .await
+            .map_err(err)?
+            .ok_or("Profile not found")?
+            .status
+            != "active"
+        {
+            return Err("Profile inactive".into());
+        }
+        if reachable_link(pool, me).await?.is_none() {
+            return Err(locale
+                .pick(
+                    "Both candidates must be linked with consent and notifications enabled",
+                    "هر دو متقاضی باید متصل باشند و رضایت و اعلان فعال داشته باشند",
+                )
+                .into());
+        }
+    }
+    Ok(m)
+}
+
+/// Commit the lifecycle event, durable message receipts, outbox and audit together.
+/// No outbound text is supplied by the model. Resends never write Interest.
+pub(crate) async fn queue_agent_introduction(
+    pool: &SqlitePool,
+    actor: matchmaking_core::autonomy::Actor,
+    id: &str,
+    recipient: Option<&str>,
+    locale: Locale,
+) -> Result<usize, String> {
+    use crate::mm::{autonomy_repo::AutonomyRepo, repository::ORG};
+    if !actor.is_agent() {
+        return Err("Agent actor required".into());
+    }
+    let m = check_agent_introduction(pool, id, recipient, locale).await?;
+    let policy = AutonomyRepo::load_policy(pool).await.map_err(err)?;
+    let mut messages = Vec::new();
+    for me in [&m.profile_a, &m.profile_b] {
+        if recipient.is_some_and(|selected| selected != me) {
+            continue;
+        }
+        let link = reachable_link(pool, me)
+            .await?
+            .ok_or("Recipient unreachable")?;
+        let (text, keyboard) =
+            introduction_message(pool, &m, other_of(&m, me), link.locale).await?;
+        messages.push((me.clone(), text, keyboard));
+    }
+    let now = chrono::Utc::now();
+    let mut tx = pool.begin().await.map_err(err)?;
+    // Acquire the write lock and reject stale status/hold/visibility before reserving anything.
+    let admitted = sqlx::query("UPDATE mm_matches SET updated_at = updated_at WHERE id = ? AND status = ? AND hidden = 0 AND hold_reason IS NULL")
+        .bind(id).bind(m.status.as_str()).execute(&mut *tx).await.map_err(err)?;
+    if admitted.rows_affected() != 1 {
+        return Err("Match changed".into());
+    }
+    for me in [&m.profile_a, &m.profile_b] {
+        let reachable: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_telegram_links l JOIN mm_profiles p ON p.id=l.profile_id WHERE l.profile_id=? AND p.status='active' AND l.consent_version=? AND l.consented_at IS NOT NULL AND l.notifications_enabled=1")
+            .bind(me).bind(repo::CONSENT_VERSION).fetch_one(&mut *tx).await.map_err(err)?;
+        if reachable != 1 {
+            return Err("Recipient unreachable".into());
+        }
+        if recipient.is_none() {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_matches WHERE org_id=? AND (profile_a=? OR profile_b=?) AND status IN ('introduction_proposed','both_interested','contact_exchanged','conversation','meeting','feedback')")
+                .bind(ORG).bind(me).bind(me).fetch_one(&mut *tx).await.map_err(err)?;
+            if count as u64 >= u64::from(policy.budgets.open_introductions_per_profile) {
+                return Err("introduction_limit".into());
+            }
+        }
+    }
+    if let Some(me) = recipient {
+        let unanswered: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_matches WHERE id=? AND ((profile_a=? AND a_response='unknown') OR (profile_b=? AND b_response='unknown'))")
+            .bind(id).bind(me).bind(me).fetch_one(&mut *tx).await.map_err(err)?;
+        if unanswered != 1 {
+            return Err("Answer changed".into());
+        }
+    }
+    for (me, text, keyboard) in &messages {
+        // Rolling 24 hours, including pending/failed deliveries. Cleanup cannot reset usage.
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM mm_agent_messages WHERE profile_id=? AND reserved_at>?",
+        )
+        .bind(me)
+        .bind(now.timestamp() - 86400)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(err)?;
+        if !policy.budgets.message_allowed(used as u64) {
+            return Err("message_limit".into());
+        }
+        sqlx::query(
+            "INSERT INTO mm_agent_messages(profile_id,match_id,actor,reserved_at) VALUES (?,?,?,?)",
+        )
+        .bind(me)
+        .bind(id)
+        .bind(actor.as_text())
+        .bind(now.timestamp())
+        .execute(&mut *tx)
+        .await
+        .map_err(err)?;
+        repo::enqueue_on_as(
+            &mut tx,
+            actor,
+            me,
+            if recipient.is_some() {
+                "interest_buttons"
+            } else {
+                "introduction"
+            },
+            text,
+            Some(keyboard),
+            Some(id),
+        )
+        .await
+        .map_err(err)?;
+    }
+    if recipient.is_none() {
+        MatchRepo::record_transition_on(
+            &mut tx,
+            actor,
+            id,
+            MatchStatus::Approved,
+            MatchStatus::IntroductionProposed,
+            None,
+            None,
+            None,
+        )
+        .await
+        .map_err(err)?;
+    }
+    let action = if recipient.is_some() {
+        "resend_interest_buttons"
+    } else {
+        "propose_introduction"
+    };
+    sqlx::query("INSERT INTO mm_audit_log(org_id,actor,action,entity,entity_id,detail,at) VALUES (?,?,?,'match',?,NULL,?)")
+        .bind(ORG).bind(actor.as_text()).bind(action).bind(id).bind(now.to_rfc3339()).execute(&mut *tx).await.map_err(err)?;
+    tx.commit().await.map_err(err)?;
+    Ok(messages.len())
+}

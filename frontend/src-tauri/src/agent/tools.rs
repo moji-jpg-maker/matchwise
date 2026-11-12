@@ -149,6 +149,10 @@ pub async fn check_match_action(
     if pair.profile_a != target && pair.profile_b != target {
         return Err("Match is outside target".into());
     }
+    if matches!(action.tool.as_str(), "propose_introduction" | "resend_interest_buttons") {
+        crate::telegram::notify::check_agent_introduction(pool, id,
+            (action.tool == "resend_interest_buttons").then(|| action.string("profile_id")), locale).await?;
+    }
     if action.tool == "transition_match" {
         let to: MatchStatus = action.string("to_status").parse()?;
         check_transition_as(
@@ -190,7 +194,7 @@ pub async fn execute(
                 .map_err(|error| error.to_string())?;
             Ok(
                 json!({"suggestions":suggestions.iter().take(100).map(|suggestion| json!({"suggestion_id":suggestion.id,"confidence":suggestion.confidence})).collect::<Vec<_>>(),
-                "matches":matches.iter().filter(|(pair, _)| pair.profile_a == target || pair.profile_b == target).take(100).map(|(pair, card)| json!({"match_id":pair.id,"status":pair.status,"eligible":card.as_ref().and_then(|c| c["eligible"].as_bool()).unwrap_or(false)})).collect::<Vec<_>>(),
+                "matches":matches.iter().filter(|(pair, _)| pair.profile_a == target || pair.profile_b == target).take(100).map(|(pair, card)| json!({"match_id":pair.id,"profile_a":pair.profile_a,"profile_b":pair.profile_b,"a_response":pair.a_response,"b_response":pair.b_response,"status":pair.status,"eligible":card.as_ref().and_then(|c| c["eligible"].as_bool()).unwrap_or(false)})).collect::<Vec<_>>(),
                 "rule_sets":rules.iter().map(|(rule, _)| json!({"rule_set_id":rule.id})).collect::<Vec<_>>()}),
             )
         }
@@ -330,6 +334,14 @@ pub async fn execute(
                 add_match_note_as(pool, actor, id, action.string("text"), session.locale).await?;
                 Ok(json!({"match_id":id,"note_added":true}))
             }
+        }
+        "propose_introduction" | "resend_interest_buttons" => {
+            action.validate()?;
+            check_match_action(pool, target, action, session.locale).await?;
+            let id = action.string("match_id");
+            let queued = crate::telegram::notify::queue_agent_introduction(pool, actor, id,
+                (action.tool == "resend_interest_buttons").then(|| action.string("profile_id")), session.locale).await?;
+            Ok(json!({"match_id":id,"queued":queued}))
         }
         "analyse_pair" => {
             let id = action.string("match_id");

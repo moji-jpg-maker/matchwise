@@ -1387,3 +1387,219 @@ async fn files_are_located_and_fetched_from_the_right_urls() {
     assert!(reqs[0].starts_with(&format!("POST /bot{token}/getFile ")), "{}", reqs[0]);
     assert!(reqs[1].starts_with(&format!("GET /file/bot{token}/photos/file_1.jpg ")), "{}", reqs[1]);
 }
+
+#[tokio::test]
+async fn agent_template_conversations_accept_with_buttons_or_decline_neutrally_in_both_languages() {
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{Actor, AutonomyPolicy, Step, StepMode};
+    for locale in [Locale::En, Locale::Fa] {
+        for accept in [true, false] {
+            let pool = test_pool().await;
+            make_profile(
+                &pool,
+                "pa",
+                &[
+                    ("full_name", txt("Sara <Karimi>")),
+                    ("age", Value::Num(30.0)),
+                    ("city", txt("Shiraz & <city>")),
+                    ("phone", txt("+989123456789")),
+                    ("religion", txt("PrivateFaith")),
+                ],
+            )
+            .await;
+            make_profile(
+                &pool,
+                "pb",
+                &[
+                    ("full_name", txt("Ali Rezaei")),
+                    ("age", Value::Num(30.0)),
+                    ("city", txt("Shiraz & <city>")),
+                    ("telegram_username", txt("private_handle")),
+                ],
+            )
+            .await;
+            link(&pool, "pa", 100).await;
+            link(&pool, "pb", 200).await;
+            for profile in ["pa", "pb"] {
+                repo::set_language(&pool, profile, locale).await.unwrap();
+            }
+            let mut policy = AutonomyPolicy::default();
+            policy.steps.insert(Step::SendIntroduction, StepMode::Auto);
+            AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+            let m = new_match(&pool, "pa", "pb").await;
+            assert_eq!(
+                notify::queue_agent_introduction(
+                    &pool,
+                    Actor::Agent { run_id: 51 },
+                    &m,
+                    None,
+                    locale
+                )
+                .await
+                .unwrap(),
+                2
+            );
+            for profile in ["pa", "pb"] {
+                let messages = outbox(&pool, profile).await;
+                assert_eq!(messages.len(), 1);
+                assert!(
+                    messages[0].text.contains("&amp;") && messages[0].text.contains("&lt;city&gt;")
+                );
+                assert!(
+                    messages[0]
+                        .text
+                        .contains(locale.pick("Would you like", "مایل به معرفی")),
+                    "{}",
+                    messages[0].text
+                );
+                for private in [
+                    "Karimi",
+                    "Rezaei",
+                    "+989123456789",
+                    "private_handle",
+                    "PrivateFaith",
+                    "ranking_score",
+                ] {
+                    assert!(!messages[0].text.contains(private));
+                }
+                assert_eq!(
+                    messages[0].keyboard.as_ref().unwrap()[0][0].callback_data,
+                    format!("intro:y:{m}")
+                );
+            }
+            // A free-text yes cannot set Interest.
+            say(&pool, 100, "yes").await;
+            assert_eq!(
+                MatchRepo::get(&pool, &m).await.unwrap().unwrap().a_response,
+                Interest::Unknown
+            );
+            press(&pool, 100, &format!("intro:y:{m}")).await;
+            assert_eq!(
+                MatchRepo::get(&pool, &m).await.unwrap().unwrap().status,
+                MatchStatus::IntroductionProposed
+            );
+            press(
+                &pool,
+                200,
+                &format!("intro:{}:{m}", if accept { "y" } else { "n" }),
+            )
+            .await;
+            let row = MatchRepo::get(&pool, &m).await.unwrap().unwrap();
+            if accept {
+                assert_eq!(row.status, MatchStatus::ContactExchanged);
+                assert_eq!(
+                    (row.a_response, row.b_response),
+                    (Interest::Interested, Interest::Interested)
+                );
+                for profile in ["pa", "pb"] {
+                    let messages = outbox(&pool, profile).await;
+                    assert_eq!(
+                        messages
+                            .iter()
+                            .filter(|m| m.kind == "both_interested")
+                            .count(),
+                        1
+                    );
+                    assert!(!messages
+                        .iter()
+                        .any(|m| m.text.contains("+989123456789")
+                            || m.text.contains("private_handle")));
+                }
+                let events = MatchRepo::events(&pool, &m).await.unwrap();
+                assert!(events
+                    .iter()
+                    .any(|e| e.to_status.as_deref() == Some("introduction_proposed")
+                        && e.actor == "agent:51"));
+                assert!(events
+                    .iter()
+                    .any(|e| e.to_status.as_deref() == Some("contact_exchanged")
+                        && e.actor == "system"));
+                press(&pool, 200, &format!("intro:y:{m}")).await;
+                assert_eq!(outbox(&pool, "pa").await.len(), 2);
+            } else {
+                assert_eq!(row.status, MatchStatus::Declined);
+                let notice = outbox(&pool, "pa")
+                    .await
+                    .into_iter()
+                    .find(|m| m.kind == "not_going_ahead")
+                    .unwrap();
+                assert_eq!(notice.text, super::render::not_going_ahead_text(locale));
+                assert!(!notice.text.contains("Ali"));
+                assert!(outbox(&pool, "pb")
+                    .await
+                    .iter()
+                    .all(|m| m.kind != "not_going_ahead"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn agent_outbox_waits_for_open_gate_and_unpause_and_cancels_stale_buttons() {
+    use crate::ai::settings::{save_config, AiConfig};
+    use crate::mm::autonomy_repo::AutonomyRepo;
+    use matchmaking_core::autonomy::{Actor, AutonomyPolicy, Step, StepMode};
+    let pool = test_pool().await;
+    for (profile, chat) in [("pa", 100), ("pb", 200)] {
+        make_profile(&pool, profile, &[("city", txt("Shiraz"))]).await;
+        link(&pool, profile, chat).await;
+    }
+    let mut policy = AutonomyPolicy::default();
+    policy.steps.insert(Step::SendIntroduction, StepMode::Auto);
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let m = new_match(&pool, "pa", "pb").await;
+    notify::queue_agent_introduction(&pool, Actor::Agent { run_id: 51 }, &m, None, Locale::En)
+        .await
+        .unwrap();
+    let api = MockApi::default();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 0);
+    assert!(repo::due(&pool, 20)
+        .await
+        .unwrap()
+        .iter()
+        .all(|r| r.attempts == 0));
+    save_config(
+        &pool,
+        &AiConfig {
+            provider: "ollama".into(),
+            model: "scripted".into(),
+            base_url: "http://localhost:11434".into(),
+            local_include_sensitive: false,
+        },
+    )
+    .await
+    .unwrap();
+    policy.paused = true;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    repo::enqueue(&pool, "pa", "test", "System notice", None, None)
+        .await
+        .unwrap();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 1);
+    assert_eq!(api.sent.lock().unwrap()[0].1, "System notice");
+    policy.paused = false;
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert_eq!(flush_outbox(&pool, &api).await.unwrap().sent, 2);
+    notify::queue_agent_introduction(
+        &pool,
+        Actor::Agent { run_id: 51 },
+        &m,
+        Some("pa"),
+        Locale::En,
+    )
+    .await
+    .unwrap();
+    MatchRepo::record_transition(
+        &pool,
+        &m,
+        MatchStatus::IntroductionProposed,
+        MatchStatus::Stopped,
+        None,
+        None,
+        Some("Stopped by matchmaker"),
+    )
+    .await
+    .unwrap();
+    let stats = flush_outbox(&pool, &api).await.unwrap();
+    assert_eq!((stats.sent, stats.cancelled), (0, 1));
+    assert_eq!(api.sent.lock().unwrap().len(), 3);
+}

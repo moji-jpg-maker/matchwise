@@ -233,25 +233,36 @@ impl MatchRepo {
         override_reason: Option<&str>,
         detail: Option<&str>,
     ) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        Self::record_transition_on(&mut tx, actor, id, from, to, outcome, override_reason, detail).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Shared transaction path for transitions that atomically enqueue candidate messages.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn record_transition_on(
+        connection: &mut sqlx::SqliteConnection, actor: Actor, id: &str,
+        from: MatchStatus, to: MatchStatus, outcome: Option<Outcome>,
+        override_reason: Option<&str>, detail: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
         let actor_text = actor.as_text();
         let now = Utc::now().to_rfc3339();
-        let mut tx = pool.begin().await?;
         let prior = sqlx::query("SELECT override_reason, override_by FROM mm_matches WHERE id = ?")
-            .bind(id).fetch_one(&mut *tx).await?;
+            .bind(id).fetch_one(&mut *connection).await?;
         let updated = sqlx::query("UPDATE mm_matches SET status = ?, outcome = COALESCE(?, outcome), override_reason = COALESCE(?, override_reason), override_by = CASE WHEN ? IS NOT NULL THEN ? ELSE override_by END, updated_at = ? WHERE id = ? AND status = ?")
             .bind(to.as_str()).bind(outcome.map(|o| o.as_str())).bind(override_reason).bind(override_reason).bind(&actor_text).bind(&now).bind(id).bind(from.as_str())
-            .execute(&mut *tx).await?;
+            .execute(&mut *connection).await?;
         if updated.rows_affected() != 1 { return Err(bad("Match status changed")); }
         let event = sqlx::query("INSERT INTO mm_match_events (match_id, at, actor, kind, from_status, to_status, detail) VALUES (?, ?, ?, 'status_changed', ?, ?, ?)")
             .bind(id).bind(&now).bind(&actor_text).bind(from.as_str()).bind(to.as_str()).bind(detail)
-            .execute(&mut *tx).await?;
+            .execute(&mut *connection).await?;
         if actor.is_agent() && matches!((from, to),
             (MatchStatus::Identified, MatchStatus::Recommended) | (MatchStatus::Recommended, MatchStatus::Reviewed)) {
             sqlx::query("INSERT INTO mm_agent_transition_undo (event_id, prior_override_reason, prior_override_by) VALUES (?, ?, ?)")
                 .bind(event.last_insert_rowid()).bind(prior.get::<Option<String>, _>("override_reason"))
-                .bind(prior.get::<Option<String>, _>("override_by")).execute(&mut *tx).await?;
+                .bind(prior.get::<Option<String>, _>("override_by")).execute(&mut *connection).await?;
         }
-        tx.commit().await?;
         Ok(())
     }
 

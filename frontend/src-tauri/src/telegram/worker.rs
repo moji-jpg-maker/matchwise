@@ -124,6 +124,25 @@ async fn fetch_photo(pool: &SqlitePool, api: &dyn TelegramApi, store: &PhotoStor
 pub async fn flush_outbox(pool: &SqlitePool, api: &dyn TelegramApi) -> Result<FlushStats, String> {
     let mut stats = FlushStats::default();
     for row in repo::due(pool, 20).await.map_err(err)? {
+        if row.actor.starts_with("agent:") {
+            let policy = crate::mm::autonomy_repo::AutonomyRepo::load_policy(pool).await.map_err(err)?;
+            if policy.paused || crate::mm::autonomy::ai_gate(pool).await? != matchmaking_core::autonomy::AiGate::Open {
+                continue;
+            }
+            let current = match row.match_id.as_deref() {
+                Some(id) => crate::mm::match_repo::MatchRepo::get(pool, id).await.map_err(err)?,
+                None => None,
+            };
+            let waiting = current.is_some_and(|m| !m.hidden && m.hold_reason.is_none()
+                && m.status == matchmaking_core::MatchStatus::IntroductionProposed
+                && ((m.profile_a == row.profile_id && m.a_response == matchmaking_core::Interest::Unknown)
+                    || (m.profile_b == row.profile_id && m.b_response == matchmaking_core::Interest::Unknown)));
+            if !waiting {
+                repo::cancel(pool, row.id, "introduction no longer awaiting an answer").await.map_err(err)?;
+                stats.cancelled += 1;
+                continue;
+            }
+        }
         let link = repo::link_by_profile(pool, &row.profile_id).await.map_err(err)?.filter(|l| l.consented && l.notifications_enabled);
         let Some(link) = link else {
             repo::cancel(pool, row.id, "recipient not reachable").await.map_err(err)?;

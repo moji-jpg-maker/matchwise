@@ -956,12 +956,23 @@ async fn handle_callback(pool: &SqlitePool, cb: CallbackQuery) -> R {
             if mine == response {
                 return Ok(vec![toast(&cb.id, loc.pick("Already recorded.", "قبلاً ثبت شده است."))]);
             }
-            let (_, new_status) = set_response_inner(pool, &m.id, side, response, loc).await?;
+            let (_, mut new_status) = set_response_inner(pool, &m.id, side, response, loc).await?;
+            // Agent introductions complete the mutual-interest workflow only after real
+            // Telegram buttons from both participants. No contact values are sent.
+            if new_status == MatchStatus::BothInterested {
+                let agent_introduction: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mm_match_events WHERE match_id=? AND to_status='introduction_proposed' AND actor LIKE 'agent:%'")
+                    .bind(&m.id).fetch_one(pool).await.map_err(err)?;
+                if agent_introduction > 0 {
+                    crate::mm::match_commands::transition_match_as(pool, matchmaking_core::autonomy::Actor::System,
+                        &m.id, MatchStatus::ContactExchanged, None, None, None, loc).await?;
+                    new_status = MatchStatus::ContactExchanged;
+                }
+            }
             out.push(done(&cb.id));
             out.extend(clear(None));
             match (response, new_status) {
                 // both-interested and declined notices come from the notification layer, to avoid saying things twice
-                (Interest::Interested, MatchStatus::BothInterested) => {}
+                (Interest::Interested, MatchStatus::BothInterested | MatchStatus::ContactExchanged) => {}
                 (Interest::NotInterested, _) => out.push(Reply::text(chat_id, loc.pick("Understood, thank you. I have noted that you are not interested. Nothing more will be shared.", "متوجه شدم، ممنون. ثبت کردم که علاقه‌ای ندارید. چیز دیگری به اشتراک گذاشته نمی‌شود."))),
                 (Interest::Interested, _) => {
                     let name = other_name(pool, &other, link.locale).await?;

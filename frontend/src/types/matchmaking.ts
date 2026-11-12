@@ -957,7 +957,7 @@ export const AUTONOMY_STEPS: AutonomyStep[] = [
 ];
 
 /** Steps built in this release; the rest stay Off and are disabled in the UI. */
-export const BUILT_AUTONOMY_STEPS: AutonomyStep[] = ['run_extraction', 'accept_extraction', 'find_matches', 'create_match', 'analyse_pair', 'add_note', 'recommend', 'approve', 'reject', 'rule_override'];
+export const BUILT_AUTONOMY_STEPS: AutonomyStep[] = ['run_extraction', 'accept_extraction', 'find_matches', 'create_match', 'analyse_pair', 'add_note', 'recommend', 'approve', 'reject', 'rule_override', 'send_introduction'];
 
 export type AutonomyLevel = 'l0_manual' | 'l1_assisted' | 'l2_supervised' | 'l3_delegated' | 'l4_autonomous';
 

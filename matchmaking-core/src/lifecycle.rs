@@ -252,10 +252,10 @@ pub fn validate_transition_by(actor: Actor, ctx: &TransitionContext, to: MatchSt
 
 pub fn validate_transition_by_for(actor: Actor, ctx: &TransitionContext, to: MatchStatus, req: &TransitionRequest, locale: Locale) -> Result<TransitionPlan, String> {
     if actor.is_agent() {
-        if !matches!(to, MatchStatus::Recommended | MatchStatus::Reviewed | MatchStatus::Approved | MatchStatus::Rejected) || ctx.current == MatchStatus::Rejected {
+        if !matches!(to, MatchStatus::Recommended | MatchStatus::Reviewed | MatchStatus::Approved | MatchStatus::Rejected | MatchStatus::IntroductionProposed) || ctx.current == MatchStatus::Rejected {
             return Err(locale.pick("This transition requires a matchmaker", "این تغییر وضعیت به همسان‌گزین نیاز دارد").into());
         }
-        if (!ctx.eligible && to == MatchStatus::Reviewed)
+        if (!ctx.eligible && matches!(to, MatchStatus::Reviewed | MatchStatus::IntroductionProposed))
             || (clean(&req.override_reason).is_some() && (ctx.eligible || !matches!(to, MatchStatus::Recommended | MatchStatus::Approved))) {
             return Err(locale.pick("This transition cannot use a rule override", "این تغییر وضعیت نمی‌تواند از استثنای قوانین استفاده کند").into());
         }

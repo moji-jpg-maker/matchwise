@@ -333,6 +333,7 @@ pub fn first_kept_of_album(chat_id: i64, media_group_id: Option<&str>) -> bool {
 #[derive(Debug, Clone)]
 pub struct OutboxRow {
     pub id: i64,
+    pub actor: String,
     pub profile_id: String,
     pub kind: String,
     pub text: String,
@@ -349,6 +350,7 @@ fn row_to_outbox(r: &sqlx::sqlite::SqliteRow) -> Result<OutboxRow, sqlx::Error> 
     let kb: Option<String> = r.get("keyboard");
     Ok(OutboxRow {
         id: r.get("id"),
+        actor: r.get("actor"),
         profile_id: r.get("profile_id"),
         kind: r.get("kind"),
         text: r.get("text"),
@@ -362,14 +364,19 @@ fn row_to_outbox(r: &sqlx::sqlite::SqliteRow) -> Result<OutboxRow, sqlx::Error> 
     })
 }
 
-const OUTBOX_COLS: &str = "id, profile_id, kind, text, keyboard, match_id, attempts, status, created_at, sent_at, last_error";
+const OUTBOX_COLS: &str = "id, actor, profile_id, kind, text, keyboard, match_id, attempts, status, created_at, sent_at, last_error";
 
 pub async fn enqueue(pool: &SqlitePool, profile_id: &str, kind: &str, text: &str, keyboard: Option<&Keyboard>, match_id: Option<&str>) -> Result<i64, sqlx::Error> {
+    let mut connection = pool.acquire().await?;
+    enqueue_on_as(&mut connection, matchmaking_core::autonomy::Actor::System, profile_id, kind, text, keyboard, match_id).await
+}
+
+pub(crate) async fn enqueue_on_as(connection: &mut sqlx::SqliteConnection, actor: matchmaking_core::autonomy::Actor, profile_id: &str, kind: &str, text: &str, keyboard: Option<&Keyboard>, match_id: Option<&str>) -> Result<i64, sqlx::Error> {
     let now = now_str();
     let kb = keyboard.map(|k| serde_json::to_string(k)).transpose().map_err(|e| bad(e.to_string()))?;
-    let r = sqlx::query("INSERT INTO mm_outbox (profile_id, kind, text, keyboard, match_id, status, attempts, next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)")
-        .bind(profile_id).bind(kind).bind(text).bind(kb).bind(match_id).bind(&now).bind(&now)
-        .execute(pool).await?;
+    let r = sqlx::query("INSERT INTO mm_outbox (profile_id, kind, text, keyboard, match_id, status, attempts, next_attempt_at, created_at, actor) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)")
+        .bind(profile_id).bind(kind).bind(text).bind(kb).bind(match_id).bind(&now).bind(&now).bind(actor.as_text())
+        .execute(connection).await?;
     Ok(r.last_insert_rowid())
 }
 

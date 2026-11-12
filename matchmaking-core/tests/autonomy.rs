@@ -187,7 +187,21 @@ fn the_never_shared_list_covers_the_private_fields() {
 #[test]
 fn disclosure_of_an_ordinary_field_follows_the_step_mode() {
     let action = Action::Disclose { step: Step::SendIntroduction, what: Disclosure::Field("city".into()) };
-    assert_eq!(decide(&action, &open(), &AutonomyPolicy::preset(Level::L3Delegated)), denied(DenyReason::StepOff));
+    for (level, expected) in [
+        (Level::L0Manual, denied(DenyReason::StepOff)),
+        (Level::L1Assisted, Decision::Propose),
+        (Level::L2Supervised, Decision::Propose),
+        (Level::L3Delegated, Decision::Schedule { at: NOW + 3600 }),
+    ] {
+        assert_eq!(decide(&action, &open(), &AutonomyPolicy::preset(level)), expected);
+    }
+    let mut policy = all_auto();
+    assert_eq!(decide(&action, &open(), &policy), Decision::Execute);
+    policy.steps.insert(Step::SendIntroduction, StepMode::Off);
+    assert_eq!(decide(&action, &open(), &policy), denied(DenyReason::StepOff));
+    for what in [Disclosure::Identifier, Disclosure::ContactDetail, Disclosure::Score, Disclosure::Rule] {
+        assert_eq!(decide(&Action::Disclose { step: Step::SendIntroduction, what }, &open(), &policy), denied(DenyReason::NeverShared));
+    }
 }
 
 #[test]

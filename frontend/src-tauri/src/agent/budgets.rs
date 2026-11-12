@@ -20,11 +20,8 @@ pub async fn reserve_model_call(pool: &SqlitePool, run_id: i64, kind: &str) -> R
     Ok(())
 }
 
-/// Introduction admission for the future SendIntroduction tool. Count both
-/// sides of each still-open introduction, including ones initiated by a human.
-/// The caller must hold runtime_lock through this check and the transition.
-/// Messaging tools remain unavailable until step 5.1.
-#[allow(dead_code)]
+/// Read-only admission preview. Delivery repeats this count inside its write transaction.
+#[cfg(test)]
 pub async fn introduction_allowed(pool: &SqlitePool, a: &str, b: &str) -> Result<bool, String> {
     let policy = AutonomyRepo::load_policy(pool)
         .await
