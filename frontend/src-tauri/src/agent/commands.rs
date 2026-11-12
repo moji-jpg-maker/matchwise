@@ -79,3 +79,8 @@ pub async fn agent_decide_proposal(
     };
     decide_proposal(pool, Some(&session), proposal_id, true, args).await
 }
+
+#[tauri::command]
+pub async fn agent_veto(state: State<'_, AppState>, proposal_id: i64) -> Result<(), String> {
+    super::veto(state.db_manager.pool(), proposal_id).await
+}

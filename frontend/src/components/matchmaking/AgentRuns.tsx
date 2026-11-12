@@ -13,6 +13,22 @@ function Proposal({ trace, onDecided }: { trace: AgentTrace; onDecided: () => vo
   const { t, locale, fmt } = useI18n();
   const [args, setArgs] = useState(JSON.stringify(trace.action.args, null, 2));
   const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const scheduled = trace.status === 'scheduled';
+  useEffect(() => {
+    if (!scheduled) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [scheduled]);
+  const veto = async () => {
+    setBusy(true);
+    try {
+      await invoke('agent_veto', { proposalId: trace.id });
+      onDecided();
+    } catch (error) {
+      toast.error(t('agent.decisionFailed'), { description: String(error) });
+    } finally { setBusy(false); }
+  };
   const decide = async (approve: boolean) => {
     setBusy(true);
     try {
@@ -26,14 +42,21 @@ function Proposal({ trace, onDecided }: { trace: AgentTrace; onDecided: () => vo
   };
   return <div className="border rounded p-3 space-y-2">
     <p className="text-sm">{t('agent.runNumber', { id: fmt.number(trace.run_id) })} · {t(`agent.tool.${trace.action.tool}`)}</p>
-    <label className="block text-xs space-y-1">
+    {scheduled ? <>
+      <p className="text-xs" role="timer">{(trace.due_at ?? 0) * 1000 > now
+        ? t('agent.countdown', { seconds: fmt.number(Math.ceil(((trace.due_at ?? 0) * 1000 - now) / 1000)) })
+        : t('agent.due')}</p>
+      {trace.due_at !== null && <time className="block text-xs text-gray-500">{new Date(trace.due_at * 1000).toLocaleString(locale)}</time>}
+      <pre dir="ltr" className="text-xs whitespace-pre-wrap break-all">{JSON.stringify(trace.action.args, null, 2)}</pre>
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => void veto()}>{t('agent.veto')}</Button>
+    </> : <><label className="block text-xs space-y-1">
       <span>{t('agent.editArgs')}</span>
       <Textarea dir="ltr" className="font-mono text-xs" value={args} onChange={(event) => setArgs(event.target.value)} disabled={busy} />
     </label>
     <div className="flex gap-2">
       <Button size="sm" disabled={busy} onClick={() => void decide(true)}>{t('agent.approve')}</Button>
       <Button size="sm" variant="outline" disabled={busy} onClick={() => void decide(false)}>{t('agent.reject')}</Button>
-    </div>
+    </div></>}
   </div>;
 }
 

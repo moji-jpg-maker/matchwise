@@ -793,6 +793,7 @@ pub fn run() {
             agent::commands::agent_run_detail,
             agent::commands::agent_proposals,
             agent::commands::agent_decide_proposal,
+            agent::commands::agent_veto,
             mm::autonomy_commands::agent_save_policy,
             mm::autonomy_commands::agent_set_paused,
             mm::autonomy_commands::agent_undo,

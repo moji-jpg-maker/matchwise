@@ -48,6 +48,16 @@ async fn policy_decision(
     target: &str,
     session: &Session<'_>,
 ) -> Result<Decision, String> {
+    policy_decision_review(pool, action, target, session, None).await
+}
+
+async fn policy_decision_review(
+    pool: &SqlitePool,
+    action: &protocol::Action,
+    target: &str,
+    session: &Session<'_>,
+    review: Option<(i64, i64)>,
+) -> Result<Decision, String> {
     ensure_open(pool, session).await?;
     let stored = MmRepository::get_profile(pool, target)
         .await
@@ -57,12 +67,24 @@ async fn policy_decision(
         return Err("Target is inactive".into());
     }
     let step = action.step()?;
-    let policy = AutonomyRepo::load_policy(pool)
+    let mut policy = AutonomyRepo::load_policy(pool)
         .await
         .map_err(|error| error.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+    if let Some((anchor, due)) = review {
+        // Only elapsed windows become Auto for this evaluation. Suggest/Off and
+        // every invariant still apply, including the independent override step.
+        for mode in policy.steps.values_mut() {
+            if let matchmaking_core::autonomy::StepMode::ReviewWindow { minutes } = *mode {
+                if now >= due.max(anchor + i64::from(minutes) * 60) {
+                    *mode = matchmaking_core::autonomy::StepMode::Auto;
+                }
+            }
+        }
+    }
     let context = DecisionContext {
         gate: ai_gate(pool).await?,
-        now: chrono::Utc::now().timestamp(),
+        now: review.map_or(now, |(anchor, _)| anchor),
     };
     if context.gate != AiGate::Open {
         return Err("AI gate is closed".into());
@@ -93,8 +115,9 @@ async fn perform(
     trace_id: i64,
     action: &protocol::Action,
     approved: bool,
+    review: Option<(i64, i64)>,
 ) -> Result<Value, String> {
-    let result = match policy_decision(pool, action, target, session).await {
+    let result = match policy_decision_review(pool, action, target, session, review).await {
         Ok(Decision::Execute) => {
             tools::execute(pool, session, target, Actor::Agent { run_id }, action).await
         }
@@ -298,14 +321,29 @@ async fn run_loop(
         let (status, observation) = match decision {
             Ok(Decision::Execute) => ("executing", json!({})),
             Ok(Decision::Propose) => ("proposed", json!({"approval_required":true})),
-            Ok(Decision::Schedule { .. }) => {
-                ("denied", json!({"error":"review_windows_not_available"}))
-            }
+            Ok(Decision::Schedule { at }) => (
+                "scheduled",
+                json!({"scheduled_at":chrono::Utc::now().timestamp(),"due_at":at}),
+            ),
             _ => ("denied", json!({"error":"policy_or_invariant_denied"})),
         };
         let trace_id = repo::record(pool, run_id, turn, &action, status, &observation).await?;
+        if status == "scheduled" {
+            MmRepository::audit_as(
+                pool,
+                Actor::Agent { run_id },
+                "agent_action_scheduled",
+                "agent_step",
+                &trace_id.to_string(),
+                None,
+            )
+            .await;
+        }
         let observation = if status == "executing" {
-            perform(pool, session, target, run_id, trace_id, &action, false).await?
+            perform(
+                pool, session, target, run_id, trace_id, &action, false, None,
+            )
+            .await?
         } else {
             json!({"status":status,"result":observation})
         };
@@ -333,7 +371,7 @@ pub async fn decide_proposal(
     let proposal = repo::traces(pool, None, true)
         .await?
         .into_iter()
-        .find(|trace| trace.id == id)
+        .find(|trace| trace.id == id && trace.status == "proposed")
         .ok_or("Proposal not found")?;
     let mut action = proposal.action;
     if let Some(args) = args {
@@ -350,7 +388,17 @@ pub async fn decide_proposal(
             _ => return Err("Current policy denies this proposal".into()),
         }
         repo::claim(pool, id, &action, false).await?;
-        perform(pool, session, &target, proposal.run_id, id, &action, true).await?;
+        perform(
+            pool,
+            session,
+            &target,
+            proposal.run_id,
+            id,
+            &action,
+            true,
+            None,
+        )
+        .await?;
     }
     MmRepository::audit_as(
         pool,
@@ -362,6 +410,112 @@ pub async fn decide_proposal(
     )
     .await;
     Ok(())
+}
+
+/// Veto does not need an AI session. A conditional update is the linearization
+/// point shared with due-action claims; a successful veto can never execute.
+pub async fn veto(pool: &SqlitePool, id: i64) -> Result<(), String> {
+    let changed = sqlx::query("UPDATE mm_agent_steps SET status='vetoed', decided_by='matchmaker' WHERE id=? AND status='scheduled' AND run_id IN (SELECT id FROM mm_agent_runs WHERE org_id=?)")
+        .bind(id).bind(crate::mm::repository::ORG).execute(pool).await.map_err(|e| e.to_string())?.rows_affected();
+    if changed != 1 {
+        return Err("Scheduled action already claimed or not found".into());
+    }
+    MmRepository::audit_as(
+        pool,
+        Actor::Matchmaker,
+        "agent_action_vetoed",
+        "agent_step",
+        &id.to_string(),
+        None,
+    )
+    .await;
+    Ok(())
+}
+
+/// Caller holds runtime_lock. Pending receipts survive restart and closed gates.
+/// Claim before execution prevents duplicate writes; an interrupted claimed
+/// action is never automatically retried, since its side effects may have run.
+async fn process_due(
+    pool: &SqlitePool,
+    session: &Session<'_>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<bool, String> {
+    if cancel.is_cancelled() || ensure_open(pool, session).await.is_err() {
+        return Ok(false);
+    }
+    let now = chrono::Utc::now().timestamp();
+    let pending = repo::next_due(pool, now).await?;
+    let Some(trace) = pending else {
+        return Ok(false);
+    };
+    let anchor = trace.scheduled_at.ok_or("Missing review anchor")?;
+    let due = trace.due_at.ok_or("Missing review deadline")?;
+    let target = repo::target(pool, trace.run_id).await?;
+    let decision =
+        policy_decision_review(pool, &trace.action, &target, session, Some((anchor, due))).await;
+    if cancel.is_cancelled() || ensure_open(pool, session).await.is_err() {
+        return Ok(false);
+    }
+    let status = match decision {
+        Ok(Decision::Execute) => "executing",
+        Ok(Decision::Propose) => "proposed",
+        Ok(Decision::Schedule { at }) => {
+            sqlx::query(
+                "UPDATE mm_agent_steps SET due_at=MAX(due_at, ?) WHERE id=? AND status='scheduled'",
+            )
+            .bind(at)
+            .bind(trace.id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            return Ok(true);
+        }
+        _ => "denied",
+    };
+    let changed =
+        sqlx::query("UPDATE mm_agent_steps SET status=? WHERE id=? AND status='scheduled'")
+            .bind(status)
+            .bind(trace.id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected();
+    if changed != 1 {
+        return Ok(true);
+    } // A veto won the race.
+    if status == "executing" {
+        perform(
+            pool,
+            session,
+            &target,
+            trace.run_id,
+            trace.id,
+            &trace.action,
+            false,
+            Some((anchor, due)),
+        )
+        .await?;
+    } else {
+        repo::update(
+            pool,
+            trace.id,
+            status,
+            &json!({"review_finished":true,"approval_required":status == "proposed"}),
+        )
+        .await?;
+        MmRepository::audit_as(
+            pool,
+            Actor::Agent {
+                run_id: trace.run_id,
+            },
+            "agent_review_finished",
+            "agent_step",
+            &trace.id.to_string(),
+            Some(status),
+        )
+        .await;
+    }
+    Ok(true)
 }
 
 #[cfg(test)]

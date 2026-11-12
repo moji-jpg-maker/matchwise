@@ -622,7 +622,7 @@ async fn batch_runs_have_one_subject_each_and_review_windows_do_not_execute() {
         .unwrap();
     assert_eq!(
         repo::traces(&pool, Some(run_id), false).await.unwrap()[0].status,
-        "denied"
+        "scheduled"
     );
     assert!(ai_repo::latest_profile_run(&pool, "target")
         .await
@@ -1534,7 +1534,7 @@ async fn overrides_do_not_bypass_transition_modes_or_current_rule_exclusions() {
         (
             StepMode::Auto,
             StepMode::ReviewWindow { minutes: 60 },
-            "denied",
+            "scheduled",
         ),
         (StepMode::Auto, StepMode::Auto, "executed"),
     ] {
@@ -2015,4 +2015,359 @@ async fn scheduler_repeats_the_periodic_scan_after_draining_work() {
     .await
     .unwrap();
     assert_eq!(scans.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+// Move the persisted clock facts, without sleeps, to exercise worker expiry.
+async fn expire_review(pool: &SqlitePool, id: i64) {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query("UPDATE mm_agent_steps SET scheduled_at=?, due_at=? WHERE id=?")
+        .bind(now - 3601)
+        .bind(now - 1)
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn scheduled_approval(pool: &SqlitePool, _rules: &str) -> (String, i64, i64) {
+    let mut hard_rules = matchmaking_core::default_ruleset();
+    hard_rules
+        .rules
+        .iter_mut()
+        .find(|rule| rule.id == "age_gap")
+        .unwrap()
+        .kind = matchmaking_core::RuleKind::Hard;
+    let rules = MmRepository::create_rule_set(pool, "Review age rule", "", &hard_rules, None)
+        .await
+        .unwrap();
+    let id = tracked_pair(pool, &rules, "candidate").await;
+    recommend_as_matchmaker(pool, &id).await;
+    let mut policy = AutonomyPolicy::preset(Level::L3Delegated);
+    policy
+        .steps
+        .insert(Step::Approve, StepMode::ReviewWindow { minutes: 60 });
+    AutonomyRepo::save_policy(pool, &policy).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"approved"}),
+        ),
+        finish(),
+    ]);
+    let run = super::run(pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let traces = repo::traces(pool, Some(run), false).await.unwrap();
+    assert_eq!(traces[0].status, "scheduled");
+    assert!((3599..=3600).contains(&(traces[0].due_at.unwrap() - traces[0].scheduled_at.unwrap())));
+    (id, run, traces[0].id)
+}
+
+#[tokio::test]
+async fn review_window_waits_then_worker_executes_once_with_original_actor() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L3Delegated).await;
+    let (id, run, receipt) = scheduled_approval(&pool, &rules).await;
+    let backend = ScriptedLlmBackend::new(vec![]);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    assert!(!super::process_due(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap());
+    assert!(
+        super::decide_proposal(&pool, Some(&session(&backend)), receipt, true, None)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Recommended
+    );
+    assert_eq!(
+        repo::traces(&pool, None, true).await.unwrap()[0].id,
+        receipt
+    );
+    expire_review(&pool, receipt).await;
+    // Even with no queued subjects, the worker must execute a due receipt.
+    sqlx::query("DELETE FROM mm_agent_work")
+        .execute(&pool)
+        .await
+        .unwrap();
+    super::scheduler::process_next(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Approved
+    );
+    assert_eq!(
+        repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+        "executed"
+    );
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM mm_match_events WHERE match_id=? AND actor=?")
+            .bind(&id)
+            .bind(format!("agent:{run}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+    assert!(!super::process_due(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap());
+    assert!(super::veto(&pool, receipt).await.is_err());
+    assert!(backend.prompts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn veto_works_while_paused_and_after_deadline_until_claimed() {
+    let _serial = serial().await;
+    for expired in [false, true] {
+        let (pool, rules) = setup(Level::L3Delegated).await;
+        let (id, run, receipt) = scheduled_approval(&pool, &rules).await;
+        if expired {
+            expire_review(&pool, receipt).await;
+        }
+        let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+        policy.paused = true;
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        // Veto remains available while another runtime operation owns the lock.
+        let _guard = super::runtime_lock().lock().await;
+        super::veto(&pool, receipt).await.unwrap();
+        assert!(super::veto(&pool, receipt).await.is_err());
+        policy.paused = false;
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let backend = ScriptedLlmBackend::new(vec![]);
+        assert!(!super::process_due(
+            &pool,
+            &session(&backend),
+            &tokio_util::sync::CancellationToken::new()
+        )
+        .await
+        .unwrap());
+        let traces = repo::traces(&pool, Some(run), false).await.unwrap();
+        assert_eq!(traces[0].status, "vetoed");
+        assert_eq!(traces[0].decided_by.as_deref(), Some("matchmaker"));
+        assert_eq!(
+            MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+            MatchStatus::Recommended
+        );
+        let actor: String =
+            sqlx::query_scalar("SELECT actor FROM mm_audit_log WHERE action='agent_action_vetoed'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(actor, "matchmaker");
+    }
+}
+
+#[tokio::test]
+async fn due_reviews_recheck_gates_policy_and_current_eligibility() {
+    let _serial = serial().await;
+    for change in ["paused", "gate", "off", "suggest", "inactive", "excluded"] {
+        let (pool, rules) = setup(Level::L3Delegated).await;
+        let (id, run, receipt) = scheduled_approval(&pool, &rules).await;
+        expire_review(&pool, receipt).await;
+        let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+        match change {
+            "paused" => policy.paused = true,
+            "gate" => {
+                let mut config = config();
+                config.provider = "none".into();
+                settings::save_config(&pool, &config).await.unwrap();
+            }
+            "off" => {
+                policy.steps.insert(Step::Approve, StepMode::Off);
+            }
+            "suggest" => {
+                policy.steps.insert(Step::Approve, StepMode::Suggest);
+            }
+            "inactive" => {
+                sqlx::query("UPDATE mm_profiles SET status='archived' WHERE id='target'")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "excluded" => {
+                let mut changed = profile("candidate");
+                changed.set("age", Value::Num(60.0), Provenance::Matchmaker);
+                MmRepository::update_profile_data(&pool, &changed)
+                    .await
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let backend = ScriptedLlmBackend::new(vec![]);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        super::process_due(&pool, &session(&backend), &cancel)
+            .await
+            .unwrap();
+        let expected = match change {
+            "paused" | "gate" => "scheduled",
+            "suggest" => "proposed",
+            _ => "denied",
+        };
+        assert_eq!(
+            repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+            expected,
+            "{change}"
+        );
+        assert_eq!(
+            MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+            MatchStatus::Recommended
+        );
+        if matches!(change, "paused" | "gate") {
+            policy.paused = false;
+            AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+            settings::save_config(&pool, &config()).await.unwrap();
+            super::process_due(&pool, &session(&backend), &cancel)
+                .await
+                .unwrap();
+            assert_eq!(
+                MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+                MatchStatus::Approved
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn review_deadline_extends_but_never_shortens_and_override_still_needs_permission() {
+    let _serial = serial().await;
+    let (pool, rules) = setup(Level::L3Delegated).await;
+    let (id, run, receipt) = scheduled_approval(&pool, &rules).await;
+    expire_review(&pool, receipt).await;
+    let mut policy = AutonomyRepo::load_policy(&pool).await.unwrap();
+    policy
+        .steps
+        .insert(Step::Approve, StepMode::ReviewWindow { minutes: 120 });
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let backend = ScriptedLlmBackend::new(vec![]);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    super::process_due(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap();
+    let trace = repo::traces(&pool, Some(run), false)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(trace.status, "scheduled");
+    assert_eq!(trace.due_at.unwrap(), trace.scheduled_at.unwrap() + 7200);
+    policy.steps.insert(Step::Approve, StepMode::Auto);
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    assert!(!super::process_due(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap());
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Recommended
+    );
+    // A scheduled override cannot absorb an independent Suggest permission.
+    policy.steps.insert(Step::Approve, StepMode::Suggest);
+    policy
+        .steps
+        .insert(Step::RuleOverride, StepMode::ReviewWindow { minutes: 60 });
+    AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+    let mut changed = profile("candidate");
+    changed.set("age", Value::Num(60.0), Provenance::Matchmaker);
+    MmRepository::update_profile_data(&pool, &changed)
+        .await
+        .unwrap();
+    let backend = ScriptedLlmBackend::new(vec![
+        call(
+            "transition_match",
+            json!({"match_id":id,"to_status":"approved","override_reason":"Reviewed exception"}),
+        ),
+        finish(),
+    ]);
+    let override_run = super::run(&pool, &session(&backend), "target", None)
+        .await
+        .unwrap();
+    let override_trace = repo::traces(&pool, Some(override_run), false)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(override_trace.status, "scheduled");
+    expire_review(&pool, override_trace.id).await;
+    super::process_due(&pool, &session(&backend), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo::traces(&pool, Some(override_run), false)
+            .await
+            .unwrap()[0]
+            .status,
+        "proposed"
+    );
+    assert_eq!(
+        MatchRepo::get(&pool, &id).await.unwrap().unwrap().status,
+        MatchStatus::Recommended
+    );
+}
+
+#[tokio::test]
+async fn extraction_review_rechecks_person_ownership_and_retains_undo() {
+    let _serial = serial().await;
+    for person_edit in [false, true] {
+        let (pool, _) = setup(Level::L2Supervised).await;
+        let suggestion = suggestion(&pool, "target", "smoking", 0.99, false, false).await;
+        let mut policy = AutonomyPolicy::preset(Level::L2Supervised);
+        policy.steps.insert(
+            Step::AcceptExtraction,
+            StepMode::ReviewWindow { minutes: 1 },
+        );
+        AutonomyRepo::save_policy(&pool, &policy).await.unwrap();
+        let backend = ScriptedLlmBackend::new(vec![
+            call("accept_suggestion", json!({"suggestion_id":suggestion})),
+            finish(),
+        ]);
+        let run = super::run(&pool, &session(&backend), "target", None)
+            .await
+            .unwrap();
+        let receipt = repo::traces(&pool, Some(run), false)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(receipt.status, "scheduled");
+        if person_edit {
+            let mut changed = profile("target");
+            changed.set(
+                "smoking",
+                Value::Text("sometimes".into()),
+                Provenance::Matchmaker,
+            );
+            MmRepository::update_profile_data(&pool, &changed)
+                .await
+                .unwrap();
+        }
+        expire_review(&pool, receipt.id).await;
+        super::process_due(
+            &pool,
+            &session(&backend),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repo::traces(&pool, Some(run), false).await.unwrap()[0].status,
+            if person_edit { "denied" } else { "executed" }
+        );
+        let stored = MmRepository::get_profile(&pool, "target")
+            .await
+            .unwrap()
+            .unwrap();
+        let field = stored.profile.fields.get("smoking").unwrap();
+        assert_eq!(
+            field.source,
+            if person_edit {
+                Provenance::Matchmaker
+            } else {
+                Provenance::AiInferred
+            }
+        );
+        if !person_edit {
+            let actions = AutonomyRepo::active_actions(&pool, "target").await.unwrap();
+            assert_eq!(actions.len(), 1);
+        }
+    }
 }

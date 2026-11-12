@@ -27,6 +27,8 @@ pub struct Trace {
     pub actor: String,
     pub decided_by: Option<String>,
     pub created_at: String,
+    pub scheduled_at: Option<i64>,
+    pub due_at: Option<i64>,
 }
 
 fn trace(row: sqlx::sqlite::SqliteRow) -> Result<Trace, String> {
@@ -42,6 +44,8 @@ fn trace(row: sqlx::sqlite::SqliteRow) -> Result<Trace, String> {
         actor: row.get("actor"),
         decided_by: row.get("decided_by"),
         created_at: row.get("created_at"),
+        scheduled_at: row.get("scheduled_at"),
+        due_at: row.get("due_at"),
     })
 }
 
@@ -104,9 +108,16 @@ pub async fn traces(
     run_id: Option<i64>,
     proposals: bool,
 ) -> Result<Vec<Trace>, String> {
-    let rows = sqlx::query("SELECT s.* FROM mm_agent_steps s JOIN mm_agent_runs r ON r.id = s.run_id WHERE r.org_id = ? AND (? IS NULL OR s.run_id = ?) AND (? = 0 OR s.status = 'proposed') ORDER BY s.id")
+    let rows = sqlx::query("SELECT s.* FROM mm_agent_steps s JOIN mm_agent_runs r ON r.id = s.run_id WHERE r.org_id = ? AND (? IS NULL OR s.run_id = ?) AND (? = 0 OR s.status IN ('proposed', 'scheduled')) ORDER BY s.id")
         .bind(ORG).bind(run_id).bind(run_id).bind(proposals).fetch_all(pool).await.map_err(|error| error.to_string())?;
     rows.into_iter().map(trace).collect()
+}
+
+/// Select one due receipt without loading the rest of the approvals inbox.
+pub async fn next_due(pool: &SqlitePool, now: i64) -> Result<Option<Trace>, String> {
+    sqlx::query("SELECT s.* FROM mm_agent_steps s JOIN mm_agent_runs r ON r.id=s.run_id WHERE r.org_id=? AND s.status='scheduled' AND s.due_at<=? ORDER BY s.due_at, s.id LIMIT 1")
+        .bind(ORG).bind(now).fetch_optional(pool).await.map_err(|e| e.to_string())?
+        .map(trace).transpose()
 }
 
 pub async fn record(
@@ -117,8 +128,8 @@ pub async fn record(
     status: &str,
     observation: &Value,
 ) -> Result<i64, String> {
-    Ok(sqlx::query("INSERT INTO mm_agent_steps (run_id, turn, action, status, observation, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .bind(run_id).bind(turn as i64).bind(serde_json::to_string(action).map_err(|error| error.to_string())?).bind(status).bind(observation.to_string()).bind(format!("agent:{run_id}")).bind(Utc::now().to_rfc3339()).execute(pool).await.map_err(|error| error.to_string())?.last_insert_rowid())
+    Ok(sqlx::query("INSERT INTO mm_agent_steps (run_id, turn, action, status, observation, actor, created_at, scheduled_at, due_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(run_id).bind(turn as i64).bind(serde_json::to_string(action).map_err(|error| error.to_string())?).bind(status).bind(observation.to_string()).bind(format!("agent:{run_id}")).bind(Utc::now().to_rfc3339()).bind(observation["scheduled_at"].as_i64()).bind(observation["due_at"].as_i64()).execute(pool).await.map_err(|error| error.to_string())?.last_insert_rowid())
 }
 
 pub async fn update(

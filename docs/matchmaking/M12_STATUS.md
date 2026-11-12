@@ -1,8 +1,8 @@
 # M12 status: configurable autonomy
 
-M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1 are built:
+M12 adds an autonomy level, L0 Manual to L4 Autonomous, in eight vertical phases. **Phases 1–2 and steps 3.1–3.3 and 4.1–4.2 are built:
 policy-checked extraction acceptance, an on-demand read/analysis agent, eligible-pair recommendation/review/approval,
-reasoned rejection, policy-controlled rule overrides and background scheduling.** Nothing has been run with a real model.
+reasoned rejection, policy-controlled rule overrides, background scheduling, review windows and veto.** Nothing has been run with a real model.
 
 ## Phase 1: what shipped
 - `matchmaking-core/src/autonomy.rs`: `Actor`, `Step` (all 18, so a stored policy never changes shape), `StepMode`
@@ -82,7 +82,7 @@ reasoned rejection, policy-controlled rule overrides and background scheduling.*
 - `transition_match` accepts an optional `override_reason`, trimmed to at least three characters and bounded
   to 2,000 characters, including Persian. Excluded pairs can be recommended or approved only with both the
   destination step's permission and RuleOverride permission. Off denies either operation; Suggest proposes;
-  review windows remain unavailable and cannot be bypassed through proposal approval.
+  review windows schedule the action and cannot be bypassed through proposal approval.
 - Current-profile rescoring, active-profile checks, target ownership, the AI gate and kill switch still apply.
   Overrides cannot reconsider a rejection, review an excluded pair, record outcomes or change candidate Interest.
   Edited proposal approval repeats the same policy and lifecycle validation.
@@ -111,10 +111,30 @@ reasoned rejection, policy-controlled rule overrides and background scheduling.*
   one-second policy tick or on shutdown cancellation. An already executing validated tool finishes its audit.
   Stopped runs are finalized as stopped and their queued work remains available after resume.
 - Existing run history, traces, agent actors, approvals inbox and kill switch serve background runs too.
-  The autonomy page explains the background behavior in English and Persian. Review windows remain unavailable.
+  The autonomy page explains the background behavior in English and Persian.
 - Scripted tests cover unattended L2 execution and L1 proposals, stable ordering, intake completion, coalesced
   transactional status events, events during runs, proposal deferral, inactive profiles, gate/pause/L0 checks,
   shared-lock contention, waiting-model cancellation, repeated periodic scans and idempotent worker start/stop/restart.
+
+## Step 4.2: what shipped
+- ReviewWindow actions persist their original run, arguments, review start and deadline in `mm_agent_steps`
+  (migration `20261112050000_add_agent_review_windows.sql`). Scheduled receipts appear in the approvals inbox
+  with live countdowns, deadline times and a Veto button in English and Persian.
+- The existing one-second worker processes one due receipt before queued model work, even without queued subjects.
+  Expiry repeats current policy, AI/consent gates, active-profile, suggestion ownership/confidence and lifecycle/eligibility
+  checks, then uses the existing validated tool with the original agent actor. It does not ask a model to regenerate the action.
+- Pausing, closing the AI gate or shutting down preserves pending receipts. Restarting resumes from stored deadlines.
+  A longer current window extends the wait from the original review start; shortening a window or selecting Auto never
+  executes before the persisted deadline. Off denies; Suggest converts a due receipt to a human approval proposal.
+  Combined destination/RuleOverride permissions remain independent, using the longest required window.
+- `agent_veto` needs no AI session and remains available while paused or another run is busy. An atomic conditional
+  status update races safely with the worker claim: a successful veto cannot execute. Veto remains possible after the
+  deadline until the worker claims the action. Claimed actions are not automatically retried after interruption.
+- Scheduled/vetoed/executed receipts remain in the run log. Schedule and veto audit entries carry their actors without
+  free text. Scheduled subjects wait before another background run; manual proposal approval cannot skip the window.
+- Scripted tests cover expiry, no early execution, once-only execution, actor attribution, veto before/after expiry,
+  paused veto, closed gates and resume, changed policies/windows, stale eligibility, independent override permissions,
+  and suggestion ownership and undo receipts. No real model was used.
 
 ## Decisions worth knowing
 - The phase-1 deterministic step still records actor `agent:0`; its `run_id` remains NULL in `mm_agent_actions`.
@@ -126,8 +146,8 @@ reasoned rejection, policy-controlled rule overrides and background scheduling.*
 - Ten steps are built: RunExtraction, AcceptExtraction, FindMatches, CreateMatch, AnalysePair, AddNote, Recommend,
   Approve, Reject and RuleOverride.
   Read-only inventory/profile tools and finish still require an open AI gate and an unpaused policy.
-- Runtime/model access is serialized. The desktop background scheduler uses the same runtime; there is no review-window executor. A ReviewWindow
-  action is explicitly denied as unavailable, never executed early. Hourly/message budgets belong to later phases.
+- Runtime/model access and due execution are serialized. Veto uses an atomic status check and does not wait for
+  model work. Hourly/message budgets belong to later phases.
 
 ## Verified here
 - `cargo test -p matchmaking-core`: 193 passed, including the built-step policy matrix, invariant denials
@@ -136,12 +156,12 @@ reasoned rejection, policy-controlled rule overrides and background scheduling.*
 - Frontend: `tsc --noEmit`, `check:i18n`, `check:invoke` and `check:autonomy` pass.
 - Scripted backend agent tests cover stored matches plus analyses at L2, proposals/edited approval/rejection at L1,
   extraction and explicit acceptance, redacted observations, rank-zero undo, invariant denials, gate/config changes,
-  batch subjects, unavailable review windows, invalid actions and the 20-turn stop. A prompt regression test lives in
-  `ai/tests.rs`. All 32 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
+  batch subjects, durable review windows and veto, invalid actions and the 20-turn stop. A prompt regression test lives in
+  `ai/tests.rs`. All 37 agent tests pass, including recommendation/review, notes, transition undo, and step 3.2
   approval/rejection, rule override, migration and proposal checks.
-- `cargo test -p matchwise --lib`: 466 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml --lib`: 471 passed, 2 ignored. The suite was rerun outside the filesystem/network sandbox
   so its local HTTP fixture servers could bind sockets; no real model was used.
 
 ## Still open
-- Steps 4.2–8: review-window execution, budgets and agent messages to candidates remain unavailable.
+- Steps 4.3–8: budgets and agent messages to candidates remain unavailable.
 - No run with a real model, and the UI was type-checked but not clicked through in a running app.

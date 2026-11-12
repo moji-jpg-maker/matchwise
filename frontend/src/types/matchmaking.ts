@@ -899,14 +899,16 @@ export interface AgentRun {
   finished_at: string | null;
 }
 
-export type AgentTool = 'list_work' | 'get_profile_redacted' | 'run_extraction' | 'accept_suggestion' | 'find_matches' | 'create_match' | 'analyse_pair' | 'finish';
+export type AgentTool = 'list_work' | 'get_profile_redacted' | 'transition_match' | 'add_note' | 'run_extraction' | 'accept_suggestion' | 'find_matches' | 'create_match' | 'analyse_pair' | 'finish';
 
 export interface AgentTrace {
   id: number;
   run_id: number;
   turn: number;
   action: { tool: AgentTool; args: Record<string, unknown> };
-  status: 'executing' | 'executed' | 'proposed' | 'denied' | 'failed' | 'rejected';
+  scheduled_at: number | null;
+  due_at: number | null;
+  status: 'executing' | 'executed' | 'proposed' | 'scheduled' | 'vetoed' | 'denied' | 'failed' | 'rejected';
   observation: unknown;
   actor: string;
   decided_by: string | null;

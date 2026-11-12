@@ -106,9 +106,12 @@ async fn enabled(pool: &SqlitePool) -> Result<bool, String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(!policy.paused
-        && Step::ALL
-            .into_iter()
-            .any(|step| matches!(policy.mode_of(step), StepMode::Auto | StepMode::Suggest)))
+        && Step::ALL.into_iter().any(|step| {
+            matches!(
+                policy.mode_of(step),
+                StepMode::Auto | StepMode::Suggest | StepMode::ReviewWindow { .. }
+            )
+        }))
 }
 
 /// Called only after the whole intake batch has completed, including extraction
@@ -156,12 +159,14 @@ pub(super) async fn tick_once(pool: &SqlitePool, cancel: &CancellationToken) -> 
          JOIN mm_profiles p ON p.id=w.profile_id AND p.org_id=w.org_id
          WHERE w.org_id='default' AND p.status='active' AND NOT EXISTS (
            SELECT 1 FROM mm_agent_runs r JOIN mm_agent_steps s ON s.run_id=r.id
-           WHERE r.org_id=w.org_id AND r.profile_id=w.profile_id AND s.status='proposed'))",
+           WHERE r.org_id=w.org_id AND r.profile_id=w.profile_id AND s.status IN ('proposed', 'scheduled')))",
     )
     .fetch_one(pool)
     .await
     .map_err(|e| e.to_string())?;
-    if !has_work {
+    let has_due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mm_agent_steps s JOIN mm_agent_runs r ON r.id=s.run_id WHERE r.org_id='default' AND s.status='scheduled' AND s.due_at<=?)")
+        .bind(chrono::Utc::now().timestamp()).fetch_one(pool).await.map_err(|e| e.to_string())?;
+    if !has_work && !has_due {
         return Ok(());
     }
     // Gate validation precedes construction and any model call. Closed gates
@@ -190,6 +195,10 @@ pub(crate) async fn process_next(
     if !enabled(pool).await? || cancel.is_cancelled() || ensure_open(pool, session).await.is_err() {
         return Ok(());
     }
+    // Due receipts take priority and consume no new model turns.
+    if super::process_due(pool, session, cancel).await? {
+        return Ok(());
+    }
     // Inactive targets cannot block the queue. Pending proposals defer that
     // subject until a person decides them, preventing repeated proposal copies.
     sqlx::query(
@@ -203,7 +212,7 @@ pub(crate) async fn process_next(
         "SELECT w.id, w.profile_id, w.batch_id, w.generation FROM mm_agent_work w
          WHERE w.org_id='default' AND NOT EXISTS (
            SELECT 1 FROM mm_agent_runs r JOIN mm_agent_steps s ON s.run_id=r.id
-           WHERE r.org_id=w.org_id AND r.profile_id=w.profile_id AND s.status='proposed')
+           WHERE r.org_id=w.org_id AND r.profile_id=w.profile_id AND s.status IN ('proposed', 'scheduled'))
          ORDER BY w.id LIMIT 1",
     )
     .fetch_optional(pool)
