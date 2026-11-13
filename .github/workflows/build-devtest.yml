@@ -96,6 +96,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.99.1
           targets: ${{ matrix.target }}
 
       - name: Setup Perl and NASM for vendored OpenSSL

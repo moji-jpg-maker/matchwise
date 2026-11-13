@@ -113,6 +113,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           # Only aarch64-apple-darwin for Apple Silicon (no Intel support)
+          toolchain: 1.99.1
           targets: ${{ contains(inputs.platform, 'macos') && 'aarch64-apple-darwin' || '' }}
 
       - name: Setup Perl and NASM for vendored OpenSSL

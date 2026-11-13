@@ -522,6 +522,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.99.1
           targets: x86_64-pc-windows-msvc
 
       - name: Setup Perl and NASM for vendored OpenSSL
