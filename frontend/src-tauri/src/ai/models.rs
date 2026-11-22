@@ -138,9 +138,9 @@ impl TaskProfile {
 
     pub fn timeout_secs(self) -> u64 {
         match self {
-            TaskProfile::Agent => 120,
-            TaskProfile::Extraction | TaskProfile::SlimExtraction { .. } => 180,
-            TaskProfile::PairAnalysis => 300,
+            TaskProfile::Agent => 1600,
+            TaskProfile::Extraction | TaskProfile::SlimExtraction { .. } => 1600,
+            TaskProfile::PairAnalysis => 1600,
         }
     }
 

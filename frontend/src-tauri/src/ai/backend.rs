@@ -131,7 +131,7 @@ pub struct HttpBackend {
 impl HttpBackend {
     pub fn new(kind: Kind, base_url: &str, model: &str, key: Option<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300)) // a local model on modest hardware can be slow
+            .timeout(Duration::from_secs(1600)) // a local model on modest hardware can be slow
             .connect_timeout(Duration::from_secs(10))
             .build()
             .expect("reqwest client");

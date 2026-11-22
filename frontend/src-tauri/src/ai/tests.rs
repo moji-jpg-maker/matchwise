@@ -1349,7 +1349,7 @@ mod selection {
         assert_eq!(slim(3, false).max_tokens(), 96 * 3 + 128);
         assert_eq!(slim(50, false).max_tokens(), 1024, "the slim budget is capped");
         assert_eq!(slim(3, true).max_tokens(), 2048, "preferences need room");
-        assert_eq!(slim(3, false).timeout_secs(), 180);
+        assert_eq!(slim(3, false).timeout_secs(), 1600);
         assert!(slim(3, false).temperature() <= 0.2);
         for t in [TaskProfile::Extraction, slim(3, false), slim(3, true), TaskProfile::PairAnalysis] {
             assert!(t.temperature() <= 0.2);
@@ -1446,5 +1446,5 @@ fn agent_prompt_limits_actions_and_labels_observations_untrusted() {
         assert!(prompt.contains(tool.name));
     }
     assert_eq!(super::models::TaskProfile::Agent.max_tokens(), 512);
-    assert_eq!(super::models::TaskProfile::Agent.timeout_secs(), 120);
+    assert_eq!(super::models::TaskProfile::Agent.timeout_secs(), 1600);
 }
