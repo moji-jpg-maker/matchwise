@@ -1,0 +1,127 @@
+diff --git a/docs/matchmaking/M10_STATUS.md b/docs/matchmaking/M10_STATUS.md
+index 40db7eb..ed333c7 100644
+--- a/docs/matchmaking/M10_STATUS.md
++++ b/docs/matchmaking/M10_STATUS.md
+@@ -36,7 +36,7 @@ existing Extraction and PairAnalysis tasks are covered.
+ - `ai/models.rs` (new):
+   - `MmModelDef` registry: `qwen3.5:4b` (recommended), `qwen3.5:2b`, `gemma3:4b`, each mapped to the summary model that
+     supplies the file and download.
+-  - `TaskProfile { Extraction, PairAnalysis }`: temperature 0.1 / 0.2, max tokens 3072 / 1536, timeout 600 / 300 s,
++  - `TaskProfile { Extraction, PairAnalysis }`: temperature 0.1 / 0.2, max tokens 3072 / 1536, timeout 6000 / 6000 s,
+     near-greedy sampling that keeps the model's stop tokens. `for_kind` maps the logged call kind to a profile.
+   - `provider_catalog()`, `normalize_provider` (`builtin-ai` becomes `builtin` on read and save), and a typed
+     `Readiness` (`ready`, `disabled`, `model_missing`, `needs_key`, `needs_consent`, `invalid`).
+diff --git a/frontend/src-tauri/src/ai/backend.rs b/frontend/src-tauri/src/ai/backend.rs
+index 024f9dc..244b0ac 100644
+--- a/frontend/src-tauri/src/ai/backend.rs
++++ b/frontend/src-tauri/src/ai/backend.rs
+@@ -16,6 +16,8 @@ pub enum AiError {
+     Unreachable(String),
+     /// The server answered with an error.
+     Server(String),
++    /// The built-in model did not finish in time (seconds waited). Slow hardware or too much text, not a fault.
++    TimedOut(u64),
+     /// The answer was not in the expected shape.
+     BadResponse(String),
+ }
+@@ -27,11 +29,25 @@ impl std::fmt::Display for AiError {
+             AiError::RateLimited => write!(f, "The AI provider is rate limiting requests; try again shortly"),
+             AiError::Unreachable(m) => write!(f, "Could not reach the AI provider: {m}"),
+             AiError::Server(m) => write!(f, "The AI provider returned an error: {m}"),
++            AiError::TimedOut(secs) => write!(
++                f,
++                "The built-in model did not finish within {secs} seconds. Try a smaller model, or less text at once"
++            ),
+             AiError::BadResponse(m) => write!(f, "The AI provider's answer could not be read: {m}"),
+         }
+     }
+ }
+ 
++impl AiError {
++    /// An error from the built-in engine: a timeout keeps its own kind, anything else is a server-side failure.
++    pub fn from_builtin(e: anyhow::Error) -> AiError {
++        match e.downcast_ref::<crate::summary::summary_engine::sidecar::GenerationTimedOut>() {
++            Some(t) => AiError::TimedOut(t.0.as_secs()),
++            None => AiError::Server(e.to_string().chars().take(300).collect()),
++        }
++    }
++}
++
+ #[async_trait]
+ pub trait LlmBackend: Send + Sync {
+     /// One question, one answer. `json` asks the server to produce JSON where it supports that.
+@@ -95,7 +111,7 @@ impl BuiltinBackend {
+         let overrides = task.and_then(|t| t.overrides_for(def));
+         crate::summary::summary_engine::generate_with_builtin_overrides(dir, def.summary_model, system, user, None, overrides.as_ref())
+             .await
+-            .map_err(|e| AiError::Server(e.to_string().chars().take(300).collect()))
++            .map_err(AiError::from_builtin)
+     }
+ }
+ 
+diff --git a/frontend/src-tauri/src/ai/models.rs b/frontend/src-tauri/src/ai/models.rs
+index 81adcb8..a60fe34 100644
+--- a/frontend/src-tauri/src/ai/models.rs
++++ b/frontend/src-tauri/src/ai/models.rs
+@@ -117,8 +117,8 @@ impl TaskProfile {
+ 
+     pub fn timeout_secs(self) -> u64 {
+         match self {
+-            TaskProfile::Extraction => 600,
+-            TaskProfile::PairAnalysis => 300,
++            TaskProfile::Extraction => 6000,
++            TaskProfile::PairAnalysis => 6000,
+         }
+     }
+ 
+diff --git a/frontend/src-tauri/src/ai/tests.rs b/frontend/src-tauri/src/ai/tests.rs
+index a0ace3e..ce0037f 100644
+--- a/frontend/src-tauri/src/ai/tests.rs
++++ b/frontend/src-tauri/src/ai/tests.rs
+@@ -1171,3 +1171,13 @@ mod selection {
+         assert_eq!(rec.0.lock().unwrap().first(), Some(&TaskProfile::Extraction));
+     }
+ }
++
++#[test]
++fn a_built_in_timeout_keeps_its_own_error_and_other_failures_stay_server_errors() {
++    use crate::summary::summary_engine::sidecar::GenerationTimedOut;
++    let slow = anyhow::Error::new(GenerationTimedOut(std::time::Duration::from_secs(180))).context("generating");
++    assert_eq!(AiError::from_builtin(slow), AiError::TimedOut(180));
++    assert!(matches!(AiError::from_builtin(anyhow::anyhow!("boom")), AiError::Server(m) if m == "boom"));
++    let shown = AiError::TimedOut(180).to_string();
++    assert!(shown.contains("180 seconds") && !shown.contains("provider returned an error"));
++}
+diff --git a/frontend/src-tauri/src/summary/summary_engine/sidecar.rs b/frontend/src-tauri/src/summary/summary_engine/sidecar.rs
+index c3494ad..5b51075 100644
+--- a/frontend/src-tauri/src/summary/summary_engine/sidecar.rs
++++ b/frontend/src-tauri/src/summary/summary_engine/sidecar.rs
+@@ -17,6 +17,19 @@ use std::os::windows::process::CommandExt;
+ 
+ use super::models;
+ 
++/// The sidecar did not answer within the time it was given. A typed error (same message as before) so callers
++/// can tell a slow model from a broken one without matching on text.
++#[derive(Debug)]
++pub struct GenerationTimedOut(pub Duration);
++
++impl std::fmt::Display for GenerationTimedOut {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "Request timed out after {:?}", self.0)
++    }
++}
++
++impl std::error::Error for GenerationTimedOut {}
++
+ // ============================================================================
+ // Sidecar State Management
+ // ============================================================================
+@@ -384,7 +397,7 @@ impl SidecarManager {
+                 if let Err(shutdown_err) = self.shutdown().await {
+                     log::error!("Failed to shutdown sidecar after timeout: {}", shutdown_err);
+                 }
+-                Err(anyhow!("Request timed out after {:?}", timeout))
++                Err(anyhow::Error::new(GenerationTimedOut(timeout)))
+             }
+         }
+     }
