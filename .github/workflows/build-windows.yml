@@ -718,11 +718,23 @@ jobs:
           path: frontend/src-tauri/binaries/ffmpeg-*.exe
           key: ${{ runner.os }}-ffmpeg-${{ hashFiles('frontend/src-tauri/build.rs', 'frontend/src-tauri/build/ffmpeg.rs') }}
       - name: Cache Windows ONNX Runtime
+        id: onnxruntime-cache
         uses: actions/cache@v4
         with:
           path: frontend/src-tauri/binaries/onnxruntime
           key: ${{ runner.os }}-onnxruntime-x86_64-pc-windows-msvc-${{ hashFiles('frontend/src-tauri/build/onnxruntime.rs') }}
 
+      - name: Report ONNX Runtime cache status
+        shell: pwsh
+        env:
+          ONNXRUNTIME_CACHE_HIT: ${{ steps.onnxruntime-cache.outputs.cache-hit }}
+        run: |
+          if ($env:ONNXRUNTIME_CACHE_HIT -eq "true") {
+            Write-Host "ONNX Runtime cache HIT: restored verified runtime."
+          } else {
+            Write-Warning "ONNX Runtime cache MISS: downloading pinned archive."
+            Write-Host "The Rust build script will verify archive size and SHA-256."
+          }
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
