@@ -10,7 +10,21 @@ runs:
     - name: Install and verify Perl and NASM
       shell: pwsh
       run: |
-        choco install -y --no-progress strawberryperl nasm
+        # community.chocolatey.org intermittently answers 504; one blip must not fail the whole build.
+        # Install only what is missing, retry with backoff, and accept choco's "success, reboot pending" codes.
+        function Install-WithRetry([string]$package, [string]$probe) {
+          if (Test-Path $probe) { Write-Host "$package already present at $probe"; return }
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            choco install -y --no-progress $package
+            if (@(0, 1641, 3010) -contains $LASTEXITCODE) { return }
+            $wait = 20 * $attempt
+            Write-Host "choco install $package failed (exit $LASTEXITCODE), attempt $attempt of 5; retrying in ${wait}s"
+            Start-Sleep -Seconds $wait
+          }
+          throw "choco install $package failed after 5 attempts"
+        }
+        Install-WithRetry 'strawberryperl' 'C:\Strawberry\perl\bin\perl.exe'
+        Install-WithRetry 'nasm' 'C:\Program Files\NASM\nasm.exe'
 
         $perlBin = 'C:\Strawberry\perl\bin'
         $nasmBin = 'C:\Program Files\NASM'
