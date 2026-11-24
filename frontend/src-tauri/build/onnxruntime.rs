@@ -11,27 +11,36 @@ use std::{
 use std::os::windows::fs::MetadataExt;
 
 const WINDOWS_X64_TARGET: &str = "x86_64-pc-windows-msvc";
-const ARCHIVE_URL: &str = "https://github.com/microsoft/onnxruntime/releases/download/v1.22.1/onnxruntime-win-x64-1.22.1.zip";
-// SHA-256 published for the official Microsoft ONNX Runtime 1.22.1 Windows x64 CPU archive.
-const ARCHIVE_SHA256: &str = "855276cd4be3cda14fe636c69eb038d75bf5bcd552bda1193a5d79c51f436dfe";
+// Mirror of the pinned Windows x64 files from Microsoft's official ONNX Runtime 1.22.0 NuGet package.
+const ARCHIVE_URL: &str = "https://github.com/moji-jpg-maker/matchwise/releases/download/deps-onnxruntime-1.22.0/onnxruntime-win-x64-1.22.0.zip";
+const ARCHIVE_SIZE: u64 = 4_711_356;
+const ARCHIVE_SHA256: &str = "57096d304f88fd9bb8665bf32a46b2b6995a34e82c3ef711bf54ccd21378b312";
 
 struct Artifact {
     archive_path: &'static str,
     output_name: &'static str,
+    size: u64,
+    sha256: &'static str,
 }
 
 const ARTIFACTS: [Artifact; 3] = [
     Artifact {
-        archive_path: "onnxruntime-win-x64-1.22.1/lib/onnxruntime.dll",
+        archive_path: "onnxruntime-win-x64-1.22.0/lib/onnxruntime.dll",
         output_name: "onnxruntime.dll",
+        size: 12_418_080,
+        sha256: "579b636403983254346a5c1d80bd28f1519cd1e284cd204f8d4ff41f8d711559",
     },
     Artifact {
-        archive_path: "onnxruntime-win-x64-1.22.1/lib/onnxruntime_providers_shared.dll",
+        archive_path: "onnxruntime-win-x64-1.22.0/lib/onnxruntime_providers_shared.dll",
         output_name: "onnxruntime_providers_shared.dll",
+        size: 22_064,
+        sha256: "ba00ea1ef846c9b909c7854bc56c51051a20f9773b3e1153dda118d4b85d0b93",
     },
     Artifact {
-        archive_path: "onnxruntime-win-x64-1.22.1/LICENSE",
+        archive_path: "onnxruntime-win-x64-1.22.0/LICENSE",
         output_name: "onnxruntime-LICENSE.txt",
+        size: 1_094,
+        sha256: "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
     },
 ];
 
@@ -149,7 +158,7 @@ pub fn ensure_onnxruntime_runtime() {
 
 fn stage_runtime(archive_path: &Path, destination: &Path) -> Result<(), String> {
     download_archive(archive_path)?;
-    verify_sha256(archive_path, ARCHIVE_URL, ARCHIVE_SHA256)?;
+    verify_file(archive_path, ARCHIVE_URL, ARCHIVE_SIZE, ARCHIVE_SHA256)?;
 
     fs::create_dir_all(destination)
         .map_err(|error| format!("failed to create {}: {error}", destination.display()))?;
@@ -173,7 +182,12 @@ fn stage_runtime(archive_path: &Path, destination: &Path) -> Result<(), String> 
             .map_err(|error| format!("failed to extract {}: {error}", artifact.archive_path))?;
         file.flush()
             .map_err(|error| format!("failed to flush {}: {error}", output.display()))?;
-        verify_nonempty_file(&output, artifact.output_name)?;
+        verify_file(
+            &output,
+            artifact.output_name,
+            artifact.size,
+            artifact.sha256,
+        )?;
     }
 
     Ok(())
@@ -187,15 +201,41 @@ fn download_archive(destination: &Path) -> Result<(), String> {
     let mut response = client
         .get(ARCHIVE_URL)
         .send()
-        .map_err(|error| format!("failed to download ONNX Runtime from {ARCHIVE_URL}: {error}"))?
+        .map_err(|error| format!("failed to download ONNX Runtime: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("ONNX Runtime download failed from {ARCHIVE_URL}: {error}"))?;
+        .map_err(|error| format!("ONNX Runtime download failed: {error}"))?;
     let mut file = File::create(destination)
         .map_err(|error| format!("failed to create {}: {error}", destination.display()))?;
-    std::io::copy(&mut response, &mut file)
-        .map_err(|error| format!("failed to write ONNX Runtime archive: {error}"))?;
+    copy_exact(&mut response, &mut file, ARCHIVE_SIZE)?;
     file.flush()
         .map_err(|error| format!("failed to flush ONNX Runtime archive: {error}"))?;
+    Ok(())
+}
+
+fn copy_exact<R: Read, W: Write>(
+    source: &mut R,
+    destination: &mut W,
+    expected_size: u64,
+) -> Result<(), String> {
+    let copied = std::io::copy(&mut source.by_ref().take(expected_size), destination)
+        .map_err(|error| format!("failed to copy ONNX Runtime download: {error}"))?;
+    if copied != expected_size {
+        return Err(format!(
+            "downloaded ONNX Runtime archive has size {copied}, expected {expected_size}"
+        ));
+    }
+
+    let mut probe = [0_u8; 1];
+    if source
+        .read(&mut probe)
+        .map_err(|error| format!("failed to copy ONNX Runtime download: {error}"))?
+        != 0
+    {
+        return Err(format!(
+            "downloaded ONNX Runtime archive exceeds expected size {expected_size}"
+        ));
+    }
+
     Ok(())
 }
 
@@ -260,27 +300,34 @@ fn verify_staged_runtime(destination: &Path) -> Result<(), String> {
     }
 
     for artifact in ARTIFACTS {
-        verify_nonempty_file(
+        verify_file(
             &destination.join(artifact.output_name),
             artifact.output_name,
+            artifact.size,
+            artifact.sha256,
         )?;
     }
     Ok(())
 }
 
-fn verify_nonempty_file(path: &Path, name: &str) -> Result<(), String> {
+fn verify_file(
+    path: &Path,
+    name: &str,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| format!("failed to inspect {name}: {error}"))?;
     if !metadata.file_type().is_file() || is_link_or_reparse_point(&metadata) {
         return Err(format!("{name} is not a regular file"));
     }
-    if metadata.len() == 0 {
-        return Err(format!("{name} is empty"));
+    if metadata.len() != expected_size {
+        return Err(format!(
+            "{name} has size {}, expected {expected_size}",
+            metadata.len()
+        ));
     }
-    Ok(())
-}
 
-fn verify_sha256(path: &Path, name: &str, expected_sha256: &str) -> Result<(), String> {
     let mut file = File::open(path).map_err(|error| format!("failed to open {name}: {error}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
